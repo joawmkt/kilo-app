@@ -25,10 +25,26 @@ export type ItemOperacion = {
   confidence: number;
 };
 
+// El "item en construcción" cuando falta un dato o hay que desambiguar —
+// campos todos opcionales porque justamente lo que define este estado es
+// que TODAVÍA no está completo. Se persiste y se re-inyecta como contexto
+// en el turno siguiente para que la IA no "olvide" lo que ya se sabía del
+// item apenas cambia de tipo de respuesta (bug real encontrado en la
+// prueba del 22/08/2026: se preguntaba "¿cuántos kilos de costilla?", el
+// carnicero respondía "2" y después "👍", y el item de costilla
+// directamente desaparecía del resumen final — porque itemsActuales nunca
+// se enteraba de que existía un item de costilla a medio construir).
+export type ItemParcial = {
+  producto_codigo?: string;
+  accion?: "ingreso" | "baja" | "ajuste";
+  cantidad?: number;
+  unidad?: string;
+};
+
 export type ResultadoInterpretacion =
   | { tipo: "operacion"; items: ItemOperacion[] }
-  | { tipo: "aclaracion"; pregunta: string }
-  | { tipo: "info_faltante"; pregunta: string }
+  | { tipo: "aclaracion"; pregunta: string; itemParcial?: ItemParcial }
+  | { tipo: "info_faltante"; pregunta: string; itemParcial?: ItemParcial }
   | { tipo: "no_entendido" };
 
 // Contexto de una operación que ya está en curso (aclaración, dato
@@ -39,6 +55,7 @@ export type ResultadoInterpretacion =
 export type ContextoPendiente = {
   itemsActuales: ItemOperacion[];
   preguntaPendiente?: string;
+  itemParcial?: ItemParcial;
 };
 
 const NOMBRE_HERRAMIENTA = "registrar_interpretacion";
@@ -84,6 +101,20 @@ const TOOL_SCHEMA: Anthropic.Tool = {
         type: "string",
         description: "Solo si tipo=aclaracion o tipo=info_faltante. La pregunta a mandarle al carnicero.",
       },
+      item_parcial: {
+        type: "object",
+        description:
+          "Solo si tipo=aclaracion o tipo=info_faltante. Lo que YA se sabe del item que se está armando, aunque " +
+          "esté incompleto (poné solo los campos que ya estén claros, dejá afuera los que falten). Esto es lo que " +
+          "permite retomarlo en el próximo mensaje sin perderlo — SIEMPRE completalo con todo lo que ya sepas, " +
+          "aunque la pregunta sea sobre un solo dato puntual.",
+        properties: {
+          producto_codigo: { type: "string", description: "Si ya se sabe (o no aplica porque es justo lo ambiguo)." },
+          accion: { type: "string", enum: ["ingreso", "baja", "ajuste"] },
+          cantidad: { type: "number" },
+          unidad: { type: "string" },
+        },
+      },
     },
     required: ["tipo"],
   },
@@ -92,9 +123,23 @@ const TOOL_SCHEMA: Anthropic.Tool = {
 function construirSystemPrompt(promptCatalogo: string, contexto?: ContextoPendiente): string {
   const bloqueContexto = contexto
     ? `\n\nCONTEXTO DE LA CONVERSACIÓN EN CURSO — el mensaje del usuario es una respuesta a algo que ya se venía hablando, no un mensaje nuevo aislado:
-- Items ya identificados hasta ahora: ${JSON.stringify(contexto.itemsActuales)}
+- Items ya identificados y confirmados hasta ahora: ${JSON.stringify(contexto.itemsActuales)}
+- Item en construcción, todavía incompleto (puede venir vacío): ${JSON.stringify(contexto.itemParcial ?? {})}
 - Pregunta que se le había hecho al carnicero: ${contexto.preguntaPendiente ?? "(ninguna — el carnicero está corrigiendo una operación ya armada)"}
-Interpretá el mensaje nuevo COMO RESPUESTA a ese contexto: si responde el dato que faltaba (ej. "15" o "15 kilos" respondiendo cuánto entró), completá el item correspondiente. Si corrige una cantidad o producto ya puesto (ej. "no, eran 12", "en realidad era vacío"), devolvé la lista COMPLETA de items actualizada (los que no cambian, igual; el que corrige, con el valor nuevo). Si agrega un producto más al mismo pedido, sumalo a la lista sin borrar los anteriores.`
+
+Interpretá el mensaje nuevo COMO RESPUESTA a ese contexto, nunca como un mensaje nuevo aislado:
+- Si responde el dato que faltaba del item en construcción (ej. "15" o "15 kilos" respondiendo cuánto entró, o
+  un "sí"/"dale"/"👍"/similar confirmando un dato puntual que vos preguntaste), COMPLETÁ ese item combinando lo
+  que ya tenías en "item en construcción" con el dato nuevo.
+- En cuanto el item en construcción quede completo (producto, acción, cantidad y unidad, los cuatro), NO vuelvas
+  a preguntar de nuevo por las dudas — devolvé tipo "operacion" con la lista completa: los items ya confirmados
+  MÁS este item recién completado (nunca lo pierdas ni lo dejes afuera).
+- Si en cambio el mensaje corrige un dato de un item YA CONFIRMADO (ej. "no, eran 12", "en realidad era vacío"),
+  devolvé tipo "operacion" con la lista COMPLETA actualizada (los que no cambian, igual; el que corrige, con el
+  valor nuevo).
+- Si el mensaje agrega un producto más al mismo pedido (no relacionado con la pregunta pendiente), tratalo como
+  un item en construcción nuevo (aclaracion o info_faltante con su propio item_parcial) o, si ya viene completo,
+  sumalo directo a la lista de items sin borrar los anteriores.`
     : "";
 
   return `Sos el intérprete de mensajes del carnicero de Carnicom, una app para carnicerías de barrio.
@@ -123,6 +168,10 @@ Reglas:
   palabra), pero no inventes sinónimos nuevos que no estén en la lista del catálogo.
 - "confidence" (0 a 1) es qué tan segura está tu interpretación de ESE item puntual — no afecta si se pide
   o no confirmación (eso siempre se le pide al carnicero de todos modos), es solo para que quede registrado.
+- Cada vez que respondas tipo "aclaracion" o "info_faltante", completá SIEMPRE "item_parcial" con todo lo que
+  ya sepas de ese item (aunque sea un solo campo) — es lo único que le permite al sistema no perder ese item
+  en el próximo mensaje. Nunca respondas "aclaracion"/"info_faltante" sin "item_parcial", salvo que
+  literalmente no sepas nada todavía de ese item.
 ${bloqueContexto}
 
 ${promptCatalogo}`;
@@ -182,6 +231,27 @@ function validarItem(valor: unknown): ItemOperacion | null {
   return null;
 }
 
+function validarItemParcial(valor: unknown): ItemParcial | undefined {
+  if (typeof valor !== "object" || valor === null) return undefined;
+  const item = valor as Record<string, unknown>;
+  const parcial: ItemParcial = {};
+
+  if (typeof item.producto_codigo === "string" && item.producto_codigo.trim()) {
+    parcial.producto_codigo = item.producto_codigo.trim();
+  }
+  if (item.accion === "ingreso" || item.accion === "baja" || item.accion === "ajuste") {
+    parcial.accion = item.accion;
+  }
+  if (typeof item.cantidad === "number" && Number.isFinite(item.cantidad) && item.cantidad > 0) {
+    parcial.cantidad = item.cantidad;
+  }
+  if (typeof item.unidad === "string" && item.unidad.trim()) {
+    parcial.unidad = item.unidad.trim();
+  }
+
+  return Object.keys(parcial).length > 0 ? parcial : undefined;
+}
+
 function validarInterpretacion(input: unknown): ResultadoInterpretacion {
   if (typeof input !== "object" || input === null) {
     return { tipo: "no_entendido" };
@@ -190,7 +260,8 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacion {
   const datos = input as Record<string, unknown>;
 
   if ((datos.tipo === "aclaracion" || datos.tipo === "info_faltante") && typeof datos.pregunta === "string" && datos.pregunta.trim()) {
-    return { tipo: datos.tipo, pregunta: datos.pregunta.trim() };
+    const itemParcial = validarItemParcial(datos.item_parcial);
+    return { tipo: datos.tipo, pregunta: datos.pregunta.trim(), ...(itemParcial ? { itemParcial } : {}) };
   }
 
   if (datos.tipo === "operacion" && Array.isArray(datos.items) && datos.items.length > 0) {

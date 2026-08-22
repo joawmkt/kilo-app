@@ -2,7 +2,7 @@ import { getSupabaseAdmin } from "./supabaseAdmin";
 import { cargarCatalogo, CatalogoCarniceria } from "./catalogo";
 import { descargarAudioTwilio } from "./twilioMedia";
 import { transcribirAudio } from "./whisper";
-import { interpretarMensajeStock, ItemOperacion, ResultadoInterpretacion } from "./interpretarStock";
+import { interpretarMensajeStock, ItemOperacion, ItemParcial, ResultadoInterpretacion } from "./interpretarStock";
 import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
 
@@ -24,6 +24,7 @@ type OperacionPendiente = {
   estado: "pendiente_aclaracion" | "pendiente_confirmacion" | "pendiente_modificacion";
   items: ItemGuardado[];
   pregunta_pendiente: string | null;
+  itemParcial?: ItemParcial;
   vencida: boolean;
 };
 
@@ -51,7 +52,7 @@ async function obtenerOperacionPendienteActiva(
   const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("operaciones_stock")
-    .select("id, estado, items, pregunta_pendiente, expires_at")
+    .select("id, estado, items, pregunta_pendiente, interpretacion, expires_at")
     .eq("carniceria_id", carniceriaId)
     .eq("telefono", telefono)
     .in("estado", ["pendiente_aclaracion", "pendiente_confirmacion", "pendiente_modificacion"])
@@ -80,11 +81,27 @@ async function obtenerOperacionPendienteActiva(
       .eq("id", data.id);
   }
 
+  // El item en construcción vive dentro de la última interpretación
+  // guardada (resultado crudo de la IA) — solo aplica si esa última
+  // respuesta fue de tipo aclaracion/info_faltante; si el registro es de
+  // otro tipo (ej. quedó de una operación vieja) no hay nada que rescatar.
+  const interpretacion = data.interpretacion as
+    | { tipo?: string; itemParcial?: ItemParcial }
+    | null
+    | undefined;
+  const itemParcial =
+    interpretacion &&
+    (interpretacion.tipo === "aclaracion" || interpretacion.tipo === "info_faltante") &&
+    interpretacion.itemParcial
+      ? interpretacion.itemParcial
+      : undefined;
+
   return {
     id: data.id as string,
     estado: data.estado as OperacionPendiente["estado"],
     items: (data.items ?? []) as ItemGuardado[],
     pregunta_pendiente: (data.pregunta_pendiente as string | null) ?? null,
+    itemParcial,
     vencida: estaVencida,
   };
 }
@@ -286,7 +303,13 @@ export async function procesarAudioDeStock(params: {
   const resultado = await interpretarMensajeStock(
     transcripcion,
     catalogo.promptCatalogo,
-    opActiva ? { itemsActuales: opActiva.items, preguntaPendiente: opActiva.pregunta_pendiente ?? undefined } : undefined
+    opActiva
+      ? {
+          itemsActuales: opActiva.items,
+          preguntaPendiente: opActiva.pregunta_pendiente ?? undefined,
+          itemParcial: opActiva.itemParcial,
+        }
+      : undefined
   );
 
   return await guardarResultado({
@@ -342,6 +365,7 @@ export async function procesarTextoEntrante(params: {
   const resultado = await interpretarMensajeStock(texto, catalogo.promptCatalogo, {
     itemsActuales: op.items,
     preguntaPendiente: op.pregunta_pendiente ?? undefined,
+    itemParcial: op.itemParcial,
   });
 
   return await guardarResultado({

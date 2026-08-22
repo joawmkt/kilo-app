@@ -121,8 +121,19 @@ const PALABRAS_MODIFICACION = [
   "espera que no",
 ];
 
+const SELECTORES_INVISIBLES = new RegExp(
+  "[" + String.fromCharCode(0xfe0f) + String.fromCharCode(0x200d) + "]",
+  "g"
+);
+
 function limpiar(texto: string): string {
   return normalizarTexto(texto)
+    // WhatsApp le agrega a los emojis un "selector de variación" invisible
+    // (U+FE0F) y a veces un "zero-width joiner" (U+200D) — sin sacarlos, un
+    // 👍 que llega del celular no matchea el "👍" pelado de nuestras listas
+    // (bug real, encontrado en la prueba del 22/08/2026: el 👍 del carnicero
+    // no se reconoció como confirmación).
+    .replace(SELECTORES_INVISIBLES, "")
     .replace(/[.,!¡¿?;:]/g, "")
     .replace(/\s+/g, " ")
     .trim();

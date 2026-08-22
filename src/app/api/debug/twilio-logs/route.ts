@@ -31,6 +31,13 @@ export async function GET(request: NextRequest) {
 
   try {
     const client = twilio(accountSid, authToken);
+
+    // Primero confirmamos A QUÉ CUENTA pertenecen estas credenciales — así
+    // podemos comparar directo contra lo que se ve en la consola del
+    // navegador (nombre de la cuenta, si sigue en trial o no) sin tener que
+    // comparar el Account SID letra por letra a mano.
+    const cuenta = await client.api.v2010.accounts(accountSid).fetch();
+
     const mensajes = await client.messages.list({ limit: 20 });
 
     const resumen = mensajes.map((m) => ({
@@ -45,7 +52,17 @@ export async function GET(request: NextRequest) {
       num_media: m.numMedia,
     }));
 
-    return NextResponse.json({ ok: true, cantidad: resumen.length, mensajes: resumen });
+    return NextResponse.json({
+      ok: true,
+      cuenta: {
+        account_sid: cuenta.sid,
+        nombre: cuenta.friendlyName,
+        status: cuenta.status, // "active" | "suspended" | "closed"
+        type: cuenta.type, // "Trial" | "Full"
+      },
+      cantidad: resumen.length,
+      mensajes: resumen,
+    });
   } catch (err) {
     return NextResponse.json({ error: `Error consultando la API de Twilio: ${String(err)}` }, { status: 500 });
   }

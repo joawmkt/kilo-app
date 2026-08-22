@@ -1,0 +1,139 @@
+[
+  {
+    "texto": "tapa",
+    "pregunta": "¿Tapa de asado, tapa de nalga o tapa de cuadril?",
+    "opciones": [
+      "tapa_de_asado",
+      "tapa_de_nalga",
+      "tapa_de_cuadril"
+    ]
+  },
+  {
+    "texto": "picada",
+    "pregunta": "¿Picada común, especial o magra?",
+    "opciones": [
+      "picada_comun",
+      "picada_especial",
+      "picada_magra"
+    ]
+  },
+  {
+    "texto": "bife",
+    "pregunta": "¿Qué bife: ancho, angosto o de chorizo?",
+    "opciones": [
+      "bife_ancho",
+      "bife_angosto",
+      "bife_de_chorizo"
+    ]
+  },
+  {
+    "texto": "mila",
+    "pregunta": "¿Milanesa de carne, de pollo o de cerdo?",
+    "opciones": [
+      "milanesa_de_carne",
+      "milanesa_de_pollo",
+      "milanesa_de_cerdo"
+    ]
+  },
+  {
+    "texto": "milanesa",
+    "pregunta": "¿Milanesa de carne, de pollo o de cerdo?",
+    "opciones": [
+      "milanesa_de_carne",
+      "milanesa_de_pollo",
+      "milanesa_de_cerdo"
+    ]
+  },
+  {
+    "texto": "medallon",
+    "pregunta": "¿Medallón de carne, de pollo, de cerdo o relleno?",
+    "opciones": [
+      "medallon_de_carne",
+      "medallon_de_pollo",
+      "medallon_de_cerdo",
+      "medallon_relleno"
+    ]
+  },
+  {
+    "texto": "achuras",
+    "pregunta": "¿Qué achuras querés?",
+    "opciones": [
+      "chinchulines",
+      "mollejas",
+      "rinon",
+      "higado",
+      "lengua",
+      "corazon",
+      "tripa_gorda",
+      "choto",
+      "mondongo",
+      "sesos"
+    ]
+  },
+  {
+    "texto": "pollo",
+    "pregunta": "¿Pollo entero, pata y muslo o pechuga?",
+    "opciones": [
+      "pollo_entero",
+      "pata_y_muslo",
+      "pechuga_desosada"
+    ]
+  },
+  {
+    "texto": "brochette",
+    "pregunta": "¿Brochette de carne, de pollo o mixta?",
+    "opciones": [
+      "brochette_de_carne",
+      "brochette_de_pollo",
+      "brochette_mixta"
+    ]
+  },
+  {
+    "texto": "brocheta",
+    "pregunta": "¿Brochette de carne, de pollo o mixta?",
+    "opciones": [
+      "brochette_de_carne",
+      "brochette_de_pollo",
+      "brochette_mixta"
+    ]
+  },
+  {
+    "texto": "chori",
+    "pregunta": "¿Qué chorizo: común, de cerdo, bombón, colorado o saborizado?",
+    "opciones": [
+      "chorizo",
+      "chorizo_de_cerdo",
+      "chorizo_bombon",
+      "chorizo_colorado",
+      "chorizo_saborizado"
+    ]
+  },
+  {
+    "texto": "chorizo",
+    "pregunta": "¿Qué chorizo: común, de cerdo, bombón, colorado o saborizado?",
+    "opciones": [
+      "chorizo",
+      "chorizo_de_cerdo",
+      "chorizo_bombon",
+      "chorizo_colorado",
+      "chorizo_saborizado"
+    ]
+  },
+  {
+    "texto": "hamburguesa",
+    "pregunta": "¿Hamburguesa de carne, de pollo o de cerdo?",
+    "opciones": [
+      "hamburguesa_de_carne",
+      "hamburguesa_de_pollo",
+      "hamburguesa_de_cerdo"
+    ]
+  },
+  {
+    "texto": "pechito",
+    "pregunta": "¿Pechito de vaca (para puchero) o pechito de cerdo (costillitas)?",
+    "opciones": [
+      "pecho",
+      "pechito_de_cerdo"
+    ]
+  }
+]

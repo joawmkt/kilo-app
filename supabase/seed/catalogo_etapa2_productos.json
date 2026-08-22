@@ -1,0 +1,1553 @@
+[
+  {
+    "codigo": "asado",
+    "nombre_display": "Asado",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "asado",
+      "tira de asado",
+      "tira",
+      "asado de tira",
+      "costilla",
+      "costillas",
+      "asado común",
+      "asado para parrilla",
+      "asado parrillero",
+      "asado con hueso",
+      "asado del medio",
+      "asado de costilla"
+    ],
+    "notas": "Ambigüedad: `costillar` puede representar una pieza completa y no debe convertirse automáticamente a kg de asado."
+  },
+  {
+    "codigo": "vacio",
+    "nombre_display": "Vacío",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "vacío",
+      "vacio",
+      "un vacío",
+      "vacío entero",
+      "vacío para la parrilla",
+      "vacío parrillero",
+      "bife de vacío"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "entrana",
+    "nombre_display": "Entraña",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "entraña",
+      "entrañita",
+      "entrañas",
+      "entraña fina",
+      "entraña gruesa"
+    ],
+    "notas": "Si el catálogo real distingue fina/gruesa, conservarlas separadas."
+  },
+  {
+    "codigo": "matambre",
+    "nombre_display": "Matambre",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "matambre",
+      "mata hambre",
+      "matambre vacuno",
+      "matambre para parrilla",
+      "matambre para arrollar"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "tapa_de_asado",
+    "nombre_display": "Tapa de asado",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "tapa de asado",
+      "tapa asado",
+      "tapa del asado"
+    ],
+    "notas": "`Tapa` sola es ambigua."
+  },
+  {
+    "codigo": "falda",
+    "nombre_display": "Falda",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "falda",
+      "faldita",
+      "falda parrillera",
+      "falda con hueso",
+      "falda para puchero"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pecho",
+    "nombre_display": "Pecho",
+    "familia": "vacuno_parrilla",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pecho",
+      "pecho vacuno",
+      "pechito de vaca",
+      "pecho para puchero"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "nalga",
+    "nombre_display": "Nalga",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "nalga",
+      "nalga de adentro",
+      "nalga de afuera",
+      "nalga para milanesa",
+      "nalga para milanesas",
+      "nalga feteada",
+      "nalga cortada",
+      "nalga en bifes"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "cuadrada",
+    "nombre_display": "Cuadrada",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "cuadrada",
+      "cuadrada para milanesa",
+      "cuadrada para milanesas",
+      "cuadrada para bifes",
+      "cuadrada feteada"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "bola_de_lomo",
+    "nombre_display": "Bola de lomo",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "bola de lomo",
+      "bola",
+      "bola para milanesa",
+      "bola de lomo para milanesa"
+    ],
+    "notas": "`Bola` sola puede requerir contexto."
+  },
+  {
+    "codigo": "peceto",
+    "nombre_display": "Peceto",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "peceto",
+      "peceto entero",
+      "peceto para horno",
+      "peceto para vitel toné",
+      "peceto para milanesa"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "cuadril",
+    "nombre_display": "Cuadril",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "cuadril",
+      "cuadril entero",
+      "bife de cuadril",
+      "cuadril para horno",
+      "cuadril para bifes"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "colita_de_cuadril",
+    "nombre_display": "Colita de cuadril",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "colita de cuadril",
+      "colita",
+      "colita de cuadril para horno"
+    ],
+    "notas": "`Colita` sola puede requerir contexto."
+  },
+  {
+    "codigo": "tapa_de_cuadril",
+    "nombre_display": "Tapa de cuadril",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "tapa de cuadril",
+      "tapa del cuadril",
+      "picanha",
+      "picaña"
+    ],
+    "notas": "No asumir que picanha/picaña siempre equivale a tapa de cuadril si la carnicería maneja ambos conceptos por separado."
+  },
+  {
+    "codigo": "tapa_de_nalga",
+    "nombre_display": "Tapa de nalga",
+    "familia": "vacuno_sin_hueso",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "tapa de nalga",
+      "tapa nalga"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "lomo",
+    "nombre_display": "Lomo",
+    "familia": "vacuno_bifes_plancha",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "lomo",
+      "lomito",
+      "lomo entero",
+      "lomo para bifes",
+      "medallones de lomo"
+    ],
+    "notas": "`Lomito` puede requerir contexto."
+  },
+  {
+    "codigo": "bife_ancho",
+    "nombre_display": "Bife ancho",
+    "familia": "vacuno_bifes_plancha",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "bife ancho",
+      "ojo de bife",
+      "ojo bife",
+      "ojo de bife entero",
+      "ojo",
+      "bife ancho sin hueso"
+    ],
+    "notas": "No fusionar automáticamente con bife de chorizo."
+  },
+  {
+    "codigo": "bife_angosto",
+    "nombre_display": "Bife angosto",
+    "familia": "vacuno_bifes_plancha",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "bife angosto",
+      "bife angosto entero"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "bife_de_chorizo",
+    "nombre_display": "Bife de chorizo",
+    "familia": "vacuno_bifes_plancha",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "bife de chorizo",
+      "bife chorizo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "roast_beef",
+    "nombre_display": "Roast beef",
+    "familia": "vacuno_bifes_plancha",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "roast beef",
+      "roastbeef",
+      "roast",
+      "rosbif",
+      "roast beef para olla",
+      "roast beef para bifes"
+    ],
+    "notas": "`Bife` solo es ambiguo y puede requerir aclaración."
+  },
+  {
+    "codigo": "paleta",
+    "nombre_display": "Paleta",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "paleta",
+      "paleta vacuna"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "carnaza_de_paleta",
+    "nombre_display": "Carnaza de paleta",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "carnaza",
+      "carnaza de paleta"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "marucha",
+    "nombre_display": "Marucha",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "marucha"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "palomita",
+    "nombre_display": "Palomita",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "palomita",
+      "chingolo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "tortuguita",
+    "nombre_display": "Tortuguita",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "tortuguita"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "aguja",
+    "nombre_display": "Aguja",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "aguja",
+      "aguja vacuna"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "azotillo",
+    "nombre_display": "Azotillo",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "azotillo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "osobuco",
+    "nombre_display": "Osobuco",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "osobuco",
+      "ossobuco",
+      "garrón"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "brazuelo",
+    "nombre_display": "Brazuelo",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "brazuelo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "cogote",
+    "nombre_display": "Cogote",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "cogote",
+      "cogote vacuno"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "espinazo",
+    "nombre_display": "Espinazo",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "espinazo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "rabo",
+    "nombre_display": "Rabo",
+    "familia": "vacuno_otros",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "rabo",
+      "cola",
+      "rabo de vaca"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "picada_comun",
+    "nombre_display": "Picada comun",
+    "familia": "picada",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "carne picada",
+      "picada",
+      "carne molida",
+      "carne para picar",
+      "carne picada común",
+      "picada común"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "picada_especial",
+    "nombre_display": "Picada especial",
+    "familia": "picada",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "picada especial",
+      "especial"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "picada_magra",
+    "nombre_display": "Picada magra",
+    "familia": "picada",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "picada magra",
+      "picada sin grasa",
+      "picada con poca grasa"
+    ],
+    "notas": "Solo usar si la carnicería ofrece explícitamente esta variedad."
+  },
+  {
+    "codigo": "pollo_entero",
+    "nombre_display": "Pollo entero",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pollo",
+      "pollo entero",
+      "pollo entero limpio",
+      "pollo chico",
+      "pollo grande",
+      "pollo para horno",
+      "pollo para asar"
+    ],
+    "notas": "`pollo` solo depende del catálogo/contexto."
+  },
+  {
+    "codigo": "pata",
+    "nombre_display": "Pata",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pata",
+      "patas",
+      "pata de pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "muslo",
+    "nombre_display": "Muslo",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "muslo",
+      "muslos",
+      "muslo de pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pata_y_muslo",
+    "nombre_display": "Pata y muslo",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pata y muslo",
+      "pata-muslo",
+      "pata muslo",
+      "patamuslo",
+      "pata con muslo"
+    ],
+    "notas": "IMPORTANTE: NO incluir `cuarto trasero` como sinónimo."
+  },
+  {
+    "codigo": "cuarto_trasero",
+    "nombre_display": "Cuarto trasero",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "cuarto trasero",
+      "cuartos traseros"
+    ],
+    "notas": "Incluye pata + muslo + rancho."
+  },
+  {
+    "codigo": "rancho",
+    "nombre_display": "Rancho",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "rancho",
+      "rancho de pollo"
+    ],
+    "notas": "Debe existir como producto/concepto separado si la carnicería lo vende separadamente."
+  },
+  {
+    "codigo": "pechuga_desosada",
+    "nombre_display": "Pechuga desosada",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pechuga",
+      "pechugas",
+      "pechuga de pollo",
+      "pechuga sin hueso",
+      "pechuga sin piel",
+      "pechuga deshuesada",
+      "bifes de pechuga",
+      "bife de pechuga",
+      "bifecitos de pollo",
+      "bifes de pollo",
+      "filetes de pollo",
+      "filetes de pechuga",
+      "suprema",
+      "supremas",
+      "suprema de pollo",
+      "suprema fileteada"
+    ],
+    "notas": "Producto canónico prioritario para el uso cotidiano. Nota: `suprema` se reconoce como expresión, pero no se crea una categoría comercial separada salvo que la carnicería la necesite."
+  },
+  {
+    "codigo": "alitas",
+    "nombre_display": "Alitas",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "alitas",
+      "alas",
+      "alas de pollo",
+      "alitas de pollo",
+      "alitas para horno",
+      "alitas para parrilla"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "menudos",
+    "nombre_display": "Menudos",
+    "familia": "pollo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "menudo",
+      "menudos",
+      "menudencia",
+      "hígado y corazón",
+      "menuditos"
+    ],
+    "notas": "Si la carnicería vende hígado/corazón/molleja de pollo por separado, crear productos independientes."
+  },
+  {
+    "codigo": "patitas_rebozadas",
+    "nombre_display": "Patitas rebozadas",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "patitas",
+      "patitas de pollo",
+      "patitas rebozadas",
+      "patitas para chicos"
+    ],
+    "notas": "IMPORTANTE: `patitas` NO significa patas del pollo."
+  },
+  {
+    "codigo": "milanesa_de_pollo",
+    "nombre_display": "Milanesa de pollo",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa de pollo",
+      "milanesas de pollo",
+      "mila de pollo",
+      "mila pollo",
+      "milanesa de suprema",
+      "suprema rebozada",
+      "supremas rebozadas",
+      "pollo rebozado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "hamburguesa_de_pollo",
+    "nombre_display": "Hamburguesa de pollo",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "hamburguesa de pollo",
+      "hamburguesas de pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "medallon_de_pollo",
+    "nombre_display": "Medallón de pollo",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "medallón de pollo",
+      "medallones de pollo",
+      "medallón rebozado",
+      "medallón de pollo rebozado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "nuggets_de_pollo",
+    "nombre_display": "Nuggets de pollo",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "nuggets",
+      "nuggets de pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "brochette_de_pollo",
+    "nombre_display": "Brochette de pollo",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "brochette de pollo",
+      "brochetas de pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pollo_relleno",
+    "nombre_display": "Pollo relleno",
+    "familia": "pollo_elaborados",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pollo relleno"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "bondiola",
+    "nombre_display": "Bondiola",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "bondiola",
+      "bondiola de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "carre",
+    "nombre_display": "Carré",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "carré",
+      "carre",
+      "carré de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "costeleta_de_cerdo",
+    "nombre_display": "Costeleta de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "costeleta de cerdo",
+      "costeletas de cerdo",
+      "costeleta",
+      "costeletas"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pechito_de_cerdo",
+    "nombre_display": "Pechito de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pechito de cerdo",
+      "costillitas de cerdo",
+      "costillitas"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "matambre_de_cerdo",
+    "nombre_display": "Matambre de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "matambre de cerdo",
+      "matambre de chancho"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "vacio_de_cerdo",
+    "nombre_display": "Vacio de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "vacío de cerdo",
+      "vacio de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "solomillo",
+    "nombre_display": "Solomillo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "solomillo",
+      "solomillo de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pulpa_de_cerdo",
+    "nombre_display": "Pulpa de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pulpa de cerdo",
+      "carne de cerdo",
+      "pulpa"
+    ],
+    "notas": "`pulpa` sola puede requerir contexto."
+  },
+  {
+    "codigo": "paleta_de_cerdo",
+    "nombre_display": "Paleta de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "paleta de cerdo",
+      "paleta de chancho"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pata_de_cerdo",
+    "nombre_display": "Pata de cerdo",
+    "familia": "cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "pata de cerdo",
+      "pata de chancho"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chorizo",
+    "nombre_display": "Chorizo",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chorizo",
+      "chori",
+      "choris",
+      "chorizo común",
+      "chorizo criollo",
+      "criollo",
+      "chorizo parrillero",
+      "chorizo para asado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chorizo_de_cerdo",
+    "nombre_display": "Chorizo de cerdo",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chorizo de cerdo",
+      "chorizo puro cerdo",
+      "puro cerdo",
+      "chori de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chorizo_bombon",
+    "nombre_display": "Chorizo bombón",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chorizo bombón",
+      "bombón",
+      "chori bombón",
+      "bombones"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chorizo_colorado",
+    "nombre_display": "Chorizo colorado",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chorizo colorado",
+      "colorado",
+      "chori colorado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chorizo_saborizado",
+    "nombre_display": "Chorizo saborizado",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chorizo saborizado",
+      "chori saborizado",
+      "chorizo con queso",
+      "chorizo con cheddar",
+      "chorizo con verdeo",
+      "chorizo con morrón",
+      "chorizo con panceta",
+      "chorizo especial"
+    ],
+    "notas": "Los sabores específicos solo deben activarse si existen en el catálogo real."
+  },
+  {
+    "codigo": "morcilla",
+    "nombre_display": "Morcilla",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "morcilla",
+      "morcillas",
+      "morci",
+      "morcilla común"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "morcilla_bombon",
+    "nombre_display": "Morcilla bombón",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "morcilla bombón",
+      "bombón de morcilla"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "morcilla_vasca",
+    "nombre_display": "Morcilla vasca",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "morcilla vasca"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "morcilla_rosca",
+    "nombre_display": "Morcilla rosca",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "morcilla rosca"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "salchicha_parrillera",
+    "nombre_display": "Salchicha parrillera",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "salchicha parrillera",
+      "parrillera",
+      "salchicha de parrilla",
+      "salchicha para asado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "salchicha_viena",
+    "nombre_display": "Salchicha viena",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "salchicha",
+      "salchichas",
+      "viena",
+      "salchicha viena"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "salame",
+    "nombre_display": "Salame",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "salame",
+      "salamín",
+      "salamines",
+      "salame chico",
+      "salamito"
+    ],
+    "notas": "Producto único para salame/salamín."
+  },
+  {
+    "codigo": "longaniza",
+    "nombre_display": "Longaniza",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "longaniza",
+      "longanizas",
+      "longaniza calabresa"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "panceta",
+    "nombre_display": "Panceta",
+    "familia": "embutidos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "panceta",
+      "panceta salada",
+      "panceta ahumada",
+      "panceta para parrilla"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chinchulines",
+    "nombre_display": "Chinchulines",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "chinchulines",
+      "chinchu",
+      "chinchulín"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "mollejas",
+    "nombre_display": "Mollejas",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "molleja",
+      "mollejas"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "rinon",
+    "nombre_display": "Riñón",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "riñón",
+      "riñones"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "higado",
+    "nombre_display": "Hígado",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "hígado",
+      "hígado vacuno"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "lengua",
+    "nombre_display": "Lengua",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "lengua",
+      "lengua vacuna"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "corazon",
+    "nombre_display": "Corazón",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "corazón",
+      "corazón vacuno"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "tripa_gorda",
+    "nombre_display": "Tripa gorda",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "tripa gorda",
+      "tripa"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "choto",
+    "nombre_display": "Choto",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "choto"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "mondongo",
+    "nombre_display": "Mondongo",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "mondongo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "sesos",
+    "nombre_display": "Sesos",
+    "familia": "achuras",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "sesos",
+      "seso"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "milanesa_de_carne",
+    "nombre_display": "Milanesa de carne",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa",
+      "milanesa de carne",
+      "milanesa vacuna",
+      "mila",
+      "milas"
+    ],
+    "notas": "La expresión `mila` sin contexto puede requerir aclarar el tipo."
+  },
+  {
+    "codigo": "milanesa_de_nalga",
+    "nombre_display": "Milanesa de nalga",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa de nalga",
+      "mila de nalga"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "milanesa_de_cuadrada",
+    "nombre_display": "Milanesa de cuadrada",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa de cuadrada",
+      "mila de cuadrada"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "milanesa_de_bola",
+    "nombre_display": "Milanesa de bola",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa de bola",
+      "mila de bola"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "hamburguesa_de_carne",
+    "nombre_display": "Hamburguesa de carne",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "hamburguesa",
+      "hamburguesas",
+      "hamburguesa de carne",
+      "hamburguesa vacuna",
+      "burger",
+      "hamburguesa casera"
+    ],
+    "notas": "`hamburguesa` sola puede requerir contexto si también existen hamburguesas de pollo/cerdo."
+  },
+  {
+    "codigo": "medallon_de_carne",
+    "nombre_display": "Medallón de carne",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "medallón",
+      "medallones",
+      "medallón de carne",
+      "medallón vacuno"
+    ],
+    "notas": "`medallón` solo puede requerir contexto."
+  },
+  {
+    "codigo": "albondigas",
+    "nombre_display": "Albóndigas",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "albóndigas",
+      "albóndiga",
+      "albóndigas de carne"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "brochette_de_carne",
+    "nombre_display": "Brochette de carne",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "brochette",
+      "brocheta",
+      "brochette de carne"
+    ],
+    "notas": "`brochette` sola puede requerir contexto."
+  },
+  {
+    "codigo": "matambre_arrollado",
+    "nombre_display": "Matambre arrollado",
+    "familia": "elaborados_vacunos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "matambre arrollado",
+      "matambre relleno"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "hamburguesa_de_cerdo",
+    "nombre_display": "Hamburguesa de cerdo",
+    "familia": "elaborados_cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "hamburguesa de cerdo",
+      "hamburguesas de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "milanesa_de_cerdo",
+    "nombre_display": "Milanesa de cerdo",
+    "familia": "elaborados_cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "milanesa de cerdo",
+      "mila de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "medallon_de_cerdo",
+    "nombre_display": "Medallón de cerdo",
+    "familia": "elaborados_cerdo",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "medallón de cerdo",
+      "medallones de cerdo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "brochette_mixta",
+    "nombre_display": "Brochette mixta",
+    "familia": "elaborados_mixtos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "brochette mixta",
+      "brocheta mixta",
+      "brochette de carne y pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "hamburguesa_rellena",
+    "nombre_display": "Hamburguesa rellena",
+    "familia": "elaborados_mixtos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "hamburguesa rellena",
+      "hamburguesa con queso",
+      "hamburguesa con jamón y queso"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "medallon_relleno",
+    "nombre_display": "Medallón relleno",
+    "familia": "elaborados_mixtos",
+    "es_complementario": false,
+    "unidad": "kg",
+    "sinonimos": [
+      "medallón relleno",
+      "medallones rellenos"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "carbon",
+    "nombre_display": "Carbon",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "bolsa",
+    "sinonimos": [
+      "carbón",
+      "bolsa de carbón",
+      "carbón para asado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "sal_parrillera",
+    "nombre_display": "Sal parrillera",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "kg",
+    "sinonimos": [
+      "sal parrillera",
+      "sal para parrilla",
+      "sal para asado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "sal_gruesa",
+    "nombre_display": "Sal gruesa",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "sal gruesa"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "sal_fina",
+    "nombre_display": "Sal fina",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "sal fina",
+      "sal común"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pimienta",
+    "nombre_display": "Pimienta",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "pimienta",
+      "pimienta negra",
+      "pimienta molida"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "oregano",
+    "nombre_display": "Orégano",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "orégano"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "aji_molido",
+    "nombre_display": "Ají molido",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "ají molido",
+      "aji molido"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "provenzal",
+    "nombre_display": "Provenzal",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "provenzal"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "chimichurri",
+    "nombre_display": "Chimichurri",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "chimichurri",
+      "chimi"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "especias",
+    "nombre_display": "Especias",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "especias",
+      "condimentos",
+      "condimento para carne",
+      "condimento para pollo"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "queso",
+    "nombre_display": "Queso",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "kg",
+    "sinonimos": [
+      "queso"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "provoleta",
+    "nombre_display": "Provoleta",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "provoleta",
+      "provoleta para parrilla"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pan",
+    "nombre_display": "Pan",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "pan",
+      "pan para el asado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "pan_rallado",
+    "nombre_display": "Pan rallado",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "pan rallado",
+      "pan rallado para milanesas",
+      "rallado"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "huevos",
+    "nombre_display": "Huevos",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "docena",
+    "sinonimos": [
+      "huevos",
+      "huevo",
+      "docena de huevos"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "salsas",
+    "nombre_display": "Salsas",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "salsa",
+      "salsas"
+    ],
+    "notas": ""
+  },
+  {
+    "codigo": "criolla",
+    "nombre_display": "Criolla",
+    "familia": "complementarios",
+    "es_complementario": true,
+    "unidad": "unidad",
+    "sinonimos": [
+      "salsa criolla",
+      "criolla"
+    ],
+    "notas": ""
+  }
+]

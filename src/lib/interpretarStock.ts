@@ -159,6 +159,11 @@ Reglas:
   No inventes una cantidad.
 - "producto_codigo" tiene que ser EXACTAMENTE uno de los códigos listados en PRODUCTOS ACTIVOS. Nunca
   inventes un código que no esté en esa lista.
+- Cada producto en PRODUCTOS ACTIVOS tiene su unidad real entre paréntesis (kg, unidad, docena, bolsa) — ESA
+  es la unidad correcta, el sistema la va a usar tal cual sin importar lo que pongas en "unidad" (podés
+  copiarla ahí igual, es solo de referencia). Lo importante es que "cantidad" sea el NÚMERO exacto que dijo
+  el carnicero en esa unidad — nunca conviertas ni estimes un equivalente en otra unidad. Ej.: si dice "3
+  chorizos" y chorizo está en "(unidad)", cantidad=3 tal cual (NO lo conviertas a un peso estimado en kg).
 - accion "ingreso" = llegó/entró mercadería (sumar al stock actual). "baja" = se vendió, se terminó, se
   rompió, se tiró (restar, o directamente a 0 si dice que se terminó). "ajuste" = te da un número final ya
   corregido ("dejalo en 8 kilos", "quedan 3").

@@ -162,6 +162,16 @@ async function guardarResultado(params: {
     }
     itemsResueltos.push({
       ...item,
+      // La unidad SIEMPRE es la que tiene registrada el producto en el
+      // catálogo, nunca la que "cree" la IA a partir del mensaje — la
+      // matemática de stock (confirmarYEjecutar) suma/resta "cantidad" tal
+      // cual, asumiendo que está expresada en la unidad real del producto.
+      // Si dejáramos que la IA eligiera la unidad libremente y el producto
+      // tuviera mal cargada su unidad real, el número quedaría mal
+      // aplicado sin importar qué tan bien se haya entendido el mensaje
+      // (bug real detectado 22/08/2026: "chorizo" estaba en kg cuando se
+      // cuenta por unidad).
+      unidad: producto.unidad,
       producto_id: producto.id,
       nombre_display: producto.nombre_display,
       familia: producto.familia,

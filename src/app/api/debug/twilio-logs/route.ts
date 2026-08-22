@@ -1,19 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
 
-// Endpoint TEMPORAL de diagnóstico (22/08/2026) — para ver, sin pelear con la
-// consola de Twilio, qué pasó realmente con los últimos mensajes (entrantes
-// y salientes) usando la propia API de Twilio con las credenciales que ya
-// están cargadas en Vercel. Se puede borrar una vez resuelto el problema del
-// audio de prueba que no recibió respuesta.
+// Endpoint de diagnóstico (22/08/2026) — para ver, sin pelear con la consola
+// de Twilio, qué pasó realmente con los últimos mensajes (entrantes y
+// salientes) usando la propia API de Twilio con las credenciales que ya
+// están cargadas en Vercel. Se decidió con el fundador dejarlo de forma
+// permanente como herramienta de diagnóstico para el resto del piloto
+// (en vez de borrarlo apenas se resolvió el problema puntual del sandbox).
 //
-// Protegido con un secreto simple en la URL para que no quede abierto a
-// cualquiera en internet (no es autenticación real, solo para no dejarlo
-// totalmente público mientras esté en el repo).
+// El secreto vive en una variable de entorno (DEBUG_SECRET) — antes estaba
+// escrito directo en este archivo, visible para cualquiera con acceso al
+// repo. Si DEBUG_SECRET no está configurado, el endpoint se niega a andar
+// (mejor eso que quedar accesible sin protección real).
 
-const SECRETO_DEBUG = "carnicom-diag-2608";
+const SECRETO_DEBUG = process.env.DEBUG_SECRET;
 
 export async function GET(request: NextRequest) {
+  if (!SECRETO_DEBUG) {
+    return NextResponse.json(
+      { error: "Falta configurar DEBUG_SECRET en las variables de entorno de Vercel." },
+      { status: 500 }
+    );
+  }
+
   const secreto = request.nextUrl.searchParams.get("secreto");
   if (secreto !== SECRETO_DEBUG) {
     return NextResponse.json({ error: "falta o es incorrecto el parámetro ?secreto=" }, { status: 403 });

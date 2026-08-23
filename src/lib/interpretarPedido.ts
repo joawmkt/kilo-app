@@ -218,6 +218,15 @@ Interpretá el mensaje nuevo COMO RESPUESTA a ese contexto, nunca como un mensaj
   "items_parciales" (nunca la pierdas, aunque en este turno todavía no puedas responder tipo="pedido" porque
   falta otro dato). Si trae producto pero la cantidad es una referencia relativa al total ya calculado (ver
   arriba), marcá "usar_resto": true para ese producto en vez de inventar un número.
+- El cliente puede contestar VARIOS datos juntos en un solo mensaje (ej. "medio kilo de vacío, el resto de
+  costilla, paso a las 8 y somos 4") — extraé TODOS los que reconozcas en ese mismo mensaje (items, hora de
+  retiro, personas), no solo el primero. Nunca hace falta que el cliente los repita en mensajes separados.
+- Si la "Pregunta que se le había hecho al cliente" fue sobre CUÁNTAS PERSONAS son (algo como "¿Para cuántas
+  personas es?" o "¿cuántos hombres y cuántas mujeres?"), y el mensaje la contesta — aunque sea con un número
+  suelto tipo "4" o "somos 4" o "2 y 2", sin mencionar ningún producto — completá "personas" igual. En ese caso
+  como no hay productos nuevos que agregar, repetí "items_parciales" EXACTAMENTE igual a como está arriba en
+  "Productos del pedido en construcción" (no lo vacíes) y respondé tipo "info_faltante" (la pregunta puede
+  seguir pidiendo la cantidad de esos productos, o dejarla igual — el sistema la va a reemplazar si corresponde).
 - Devolvé tipo "pedido" (con "items" = TODOS los productos ya completos, incluyendo los de turnos anteriores)
   recién cuando TODOS los productos mencionados en la conversación tengan producto, cantidad y unidad, y ya se
   sepa la hora de retiro. Si todavía falta algún dato de algún producto, respondé "info_faltante" (o
@@ -278,69 +287,6 @@ export async function interpretarMensajePedido(
   }
 
   return validarInterpretacion(bloqueHerramienta.input);
-}
-
-// Intérprete chico y separado, específico para cuando el sistema le
-// preguntó al cliente "¿para cuántos son?" (ver flujoPedidos.ts,
-// manejarRespuestaPersonas) — una pregunta acotada tiene una respuesta
-// corta y bastante libre ("4", "somos 5, 2 mujeres", "todos hombres,
-// 3"), así que usa su propia herramienta en vez de reusar el schema
-// grande de pedidos (que además en este punto de la conversación no
-// tiene productos nuevos que interpretar).
-const NOMBRE_HERRAMIENTA_PERSONAS = "registrar_personas";
-
-const TOOL_SCHEMA_PERSONAS: Anthropic.Tool = {
-  name: NOMBRE_HERRAMIENTA_PERSONAS,
-  description: "Extrae cuántas personas menciona la respuesta del cliente, para estimar cantidad de asado.",
-  input_schema: {
-    type: "object",
-    properties: {
-      hombres: { type: "number", description: "Cantidad de hombres, si el cliente desglosó por género." },
-      mujeres: { type: "number", description: "Cantidad de mujeres, si el cliente desglosó por género." },
-      cantidad_sin_genero: {
-        type: "number",
-        description:
-          "Cantidad total de personas, SOLO si el cliente no desglosó por género (ej. '4', 'somos 4', 'para 4').",
-      },
-    },
-  },
-};
-
-export async function interpretarPersonas(texto: string): Promise<InfoPersonas> {
-  const respuesta = await getClient().messages.create({
-    model: MODELO,
-    max_tokens: 256,
-    system:
-      "Sos parte del asistente de pedidos de una carnicería. El cliente te está contestando a la pregunta de " +
-      `para cuántas personas es su pedido de asado. Extraé los números que dio, usando SIEMPRE la herramienta ${NOMBRE_HERRAMIENTA_PERSONAS}. ` +
-      'Si desglosó por género (ej. "3 hombres y 2 mujeres", "somos 5, 2 mujeres y el resto hombres"), completá ' +
-      "hombres y mujeres (hacé la resta si hace falta). Si solo dio un número total sin género (ej. \"4\", " +
-      '"somos 4", "para 4 personas"), completá cantidad_sin_genero. Si el mensaje no menciona ningún número de ' +
-      "personas, no completes ningún campo.",
-    messages: [{ role: "user", content: texto }],
-    tools: [TOOL_SCHEMA_PERSONAS],
-    tool_choice: { type: "tool", name: NOMBRE_HERRAMIENTA_PERSONAS },
-  });
-
-  const bloque = respuesta.content.find((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
-  if (!bloque) return {};
-
-  const datos = bloque.input as Record<string, unknown>;
-  const personas: InfoPersonas = {};
-  if (typeof datos.hombres === "number" && Number.isFinite(datos.hombres) && datos.hombres >= 0) {
-    personas.hombres = datos.hombres;
-  }
-  if (typeof datos.mujeres === "number" && Number.isFinite(datos.mujeres) && datos.mujeres >= 0) {
-    personas.mujeres = datos.mujeres;
-  }
-  if (
-    typeof datos.cantidad_sin_genero === "number" &&
-    Number.isFinite(datos.cantidad_sin_genero) &&
-    datos.cantidad_sin_genero >= 0
-  ) {
-    personas.sinGenero = datos.cantidad_sin_genero;
-  }
-  return personas;
 }
 
 function validarItem(valor: unknown): ItemPedido | null {

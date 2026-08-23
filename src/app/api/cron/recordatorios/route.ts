@@ -27,7 +27,9 @@ import { formatearHoraArgentina } from "@/lib/tiempo";
 //   respuesta más simple a la pregunta 8 del roadmap, no una decisión
 //   cerrada con el fundador — ajustar si en la práctica genera ruido.
 // ============================================================
-const RECORDATORIO_MINUTOS_ANTES = Number(process.env.RECORDATORIO_MINUTOS_ANTES ?? "30");
+// 23/08/2026: el fundador pidió que el recordatorio salga 1 hora antes
+// (no 30 minutos) — le da más margen al cliente para organizarse.
+const RECORDATORIO_MINUTOS_ANTES = Number(process.env.RECORDATORIO_MINUTOS_ANTES ?? "60");
 const GRACIA_NO_SHOW_MINUTOS = Number(process.env.GRACIA_NO_SHOW_MINUTOS ?? "60");
 
 export async function GET(request: NextRequest) {

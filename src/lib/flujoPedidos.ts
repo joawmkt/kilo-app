@@ -4,7 +4,6 @@ import { descargarAudioTwilio } from "./twilioMedia";
 import { transcribirAudio } from "./whisper";
 import {
   interpretarMensajePedido,
-  interpretarPersonas,
   ItemPedido,
   ItemParcialPedido,
   ResultadoInterpretacionPedido,
@@ -57,14 +56,21 @@ type FaseInterna =
   | {
       fase: "esperando_dato_item";
       // Cálculo de "asado para X personas" (23/08/2026, a pedido del
-      // fundador) — ver PERSONAS_KG y calcularKgAsadoObjetivo más abajo.
-      // `recomendacionMostrada` evita repetirle al cliente el total
-      // calculado en cada turno una vez que ya se lo dijimos una vez.
+      // fundador) — ver KG_POR_HOMBRE/KG_POR_MUJER y calcularKgAsadoObjetivo
+      // más abajo. `recomendacionMostrada` evita repetirle al cliente el
+      // total calculado en cada turno una vez que ya se lo dijimos una vez.
+      // Antes existía una fase separada "esperando_personas" con su propio
+      // intérprete chico — se sacó (23/08/2026, a pedido del fundador: "que
+      // el bot agarre todos los datos al mismo tiempo") porque hacía que un
+      // mensaje que contestaba la pregunta de personas Y agregaba otro dato
+      // a la vez (hora de retiro, otro producto) perdiera ese dato extra.
+      // Ahora todo pasa siempre por el mismo intérprete general
+      // (interpretarMensajePedido), que ya extrae items + hora + personas
+      // juntos del mismo mensaje.
       personas?: InfoPersonas;
       asadoKgObjetivo?: number;
       recomendacionMostrada?: boolean;
     }
-  | { fase: "esperando_personas"; personas?: InfoPersonas }
   | { fase: "esperando_hora_retiro" }
   | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] };
 
@@ -230,9 +236,7 @@ function resolverUsoDeResto(
 }
 
 function personasDeFase(fase: FaseInterna | null | undefined): InfoPersonas | undefined {
-  if (!fase) return undefined;
-  if (fase.fase === "esperando_dato_item" || fase.fase === "esperando_personas") return fase.personas;
-  return undefined;
+  return fase?.fase === "esperando_dato_item" ? fase.personas : undefined;
 }
 
 function asadoKgObjetivoDeFase(fase: FaseInterna | null | undefined): number | undefined {
@@ -535,6 +539,8 @@ async function procesarResultado(params: {
   catalogo: CatalogoCarniceria;
   resultado: ResultadoInterpretacionPedido;
   texto: string;
+  itemsParcialesPrevios?: ItemParcialPedido[];
+  horaRetiroPrevia?: string;
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
   recomendacionMostrada?: boolean;
@@ -549,6 +555,8 @@ async function procesarResultado(params: {
     catalogo,
     resultado,
     texto,
+    itemsParcialesPrevios,
+    horaRetiroPrevia,
     personasPrevias,
     asadoKgObjetivoPrevio,
     recomendacionMostrada,
@@ -586,135 +594,160 @@ async function procesarResultado(params: {
     return "Te escucho, contame qué necesitás.";
   }
 
+  // A partir de acá tratamos TODOS los tipos de forma unificada. El
+  // cliente puede mandar varios datos juntos en un solo mensaje (un
+  // producto con su cantidad, la hora de retiro, cuántas personas son) y
+  // no querés perder ninguno solo porque la IA haya clasificado el "tipo"
+  // de una forma u otra — por eso itemsParciales/horaRetiroIso/personas se
+  // combinan SIEMPRE con lo que ya sabíamos de turnos anteriores, en vez
+  // de descartarlo cuando el tipo no es exactamente el esperado
+  // (23/08/2026, a pedido del fundador).
   const personas = combinarPersonas(personasPrevias, "personas" in resultado ? resultado.personas : undefined);
+  const horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
+  let itemsParciales =
+    (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante" ? resultado.itemsParciales : undefined) ??
+    itemsParcialesPrevios ??
+    [];
 
-  if (resultado.tipo === "no_entendido") {
-    if (pedidoId) {
-      return "No te entendí. ¿Podés contarme de nuevo qué necesitás, o responder la pregunta de arriba?";
-    }
-    return `No relacioné "${texto}" con un pedido. Contame qué necesitás llevarte 🙂`;
+  if (resultado.tipo === "pedido") {
+    return await armarYGuardarPedido({
+      carniceriaId,
+      telefono,
+      clienteId,
+      clienteNombre,
+      mensajeWhatsappId,
+      pedidoId,
+      catalogo,
+      itemsPedidos: resultado.items,
+      horaRetiroIso,
+      texto,
+    });
   }
 
-  if (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante") {
-    let itemsParciales = resultado.itemsParciales ?? [];
+  // tipo "aclaracion" | "info_faltante" | "no_entendido" — intentamos
+  // avanzar con lo que tengamos (resto, personas, recomendación, o
+  // directamente el pedido si ya quedó completo) antes de caer en un
+  // "no te entendí" genérico.
 
-    // Si ya sabíamos el total estimado de asado, primero intentamos
-    // resolver cualquier "el resto" que el cliente haya marcado.
-    let advertenciaResto: string | undefined;
-    if (asadoKgObjetivoPrevio != null) {
-      const resuelto = resolverUsoDeResto(itemsParciales, catalogo, asadoKgObjetivoPrevio);
-      itemsParciales = resuelto.items;
-      advertenciaResto = resuelto.advertencia;
-    }
+  // Si ya sabíamos el total estimado de asado, primero intentamos resolver
+  // cualquier "el resto" que el cliente haya marcado.
+  let advertenciaResto: string | undefined;
+  if (asadoKgObjetivoPrevio != null) {
+    const resuelto = resolverUsoDeResto(itemsParciales, catalogo, asadoKgObjetivoPrevio);
+    itemsParciales = resuelto.items;
+    advertenciaResto = resuelto.advertencia;
+  }
 
-    if (advertenciaResto) {
-      await guardar({
-        estado: "pendiente_aclaracion",
-        transcripcion: texto,
-        pregunta_pendiente: advertenciaResto,
-        item_parcial: itemsParciales,
-        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: asadoKgObjetivoPrevio, recomendacionMostrada: true },
-        expires_at: finDeHoyArgentina().toISOString(),
-        updated_at: ahora,
-      });
-      return advertenciaResto;
-    }
-
-    // ¿Hay algún corte de asado sin cantidad, y todavía no sabemos para
-    // cuánta gente es? Antes de preguntar la cantidad corte por corte, le
-    // preguntamos al cliente cuántos son, para poder recomendarle un total.
-    const hayAsadoIncompleto = itemsParciales.some(
-      (i) => esCategoriaAsado(catalogo, i.producto_codigo) && i.cantidad == null
-    );
-    const sabemosPersonas = personas.hombres != null && personas.mujeres != null;
-
-    if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null) {
-      const pregunta = armarPreguntaPersonas(personas);
-      await guardar({
-        estado: "pendiente_aclaracion",
-        transcripcion: texto,
-        pregunta_pendiente: pregunta,
-        item_parcial: itemsParciales,
-        interpretacion: { fase: "esperando_personas", personas },
-        expires_at: finDeHoyArgentina().toISOString(),
-        updated_at: ahora,
-      });
-      return pregunta;
-    }
-
-    // Ya sabemos (o acabamos de calcular) el total de asado — si hay
-    // cortes sin cantidad y todavía no le mostramos la recomendación,
-    // mostrársela ahora en vez de preguntar corte por corte.
-    const kgObjetivoActual = asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null);
-
-    if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
-      const pregunta = armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual);
-      await guardar({
-        estado: "pendiente_aclaracion",
-        transcripcion: texto,
-        pregunta_pendiente: pregunta,
-        item_parcial: itemsParciales,
-        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivoActual, recomendacionMostrada: true },
-        expires_at: finDeHoyArgentina().toISOString(),
-        updated_at: ahora,
-      });
-      return pregunta;
-    }
-
-    // ¿Quedó todo completo después de resolver "el resto"? Escalamos a
-    // "pedido" y seguimos el camino normal (stock, sustituciones, etc.)
-    // en vez de repetir esa lógica acá.
-    if (itemsParciales.length > 0 && itemsParciales.every((i) => i.producto_codigo && i.cantidad != null)) {
-      const itemsCompletos: ItemPedido[] = itemsParciales.map((i) => ({
-        producto_codigo: i.producto_codigo!,
-        cantidad: i.cantidad!,
-        unidad: i.unidad ?? catalogo.porCodigo.get(i.producto_codigo!)?.unidad ?? "kg",
-        confidence: 1,
-      }));
-      return await armarYGuardarPedido({
-        carniceriaId,
-        telefono,
-        clienteId,
-        clienteNombre,
-        mensajeWhatsappId,
-        pedidoId,
-        catalogo,
-        itemsPedidos: itemsCompletos,
-        horaRetiroIso: resultado.horaRetiroIso,
-        texto,
-      });
-    }
-
+  if (advertenciaResto) {
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
-      pregunta_pendiente: resultado.pregunta,
+      pregunta_pendiente: advertenciaResto,
       item_parcial: itemsParciales,
-      interpretacion: {
-        fase: "esperando_dato_item",
-        personas,
-        asadoKgObjetivo: kgObjetivoActual ?? undefined,
-        recomendacionMostrada,
-      },
+      ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
+      interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: asadoKgObjetivoPrevio, recomendacionMostrada: true },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
-    return resultado.pregunta;
+    return advertenciaResto;
   }
 
-  // tipo === "pedido"
-  return await armarYGuardarPedido({
-    carniceriaId,
-    telefono,
-    clienteId,
-    clienteNombre,
-    mensajeWhatsappId,
-    pedidoId,
-    catalogo,
-    itemsPedidos: resultado.items,
-    horaRetiroIso: resultado.horaRetiroIso,
-    texto,
+  // ¿Hay algún corte de asado sin cantidad, y todavía no sabemos para
+  // cuánta gente es? Antes de preguntar la cantidad corte por corte, le
+  // preguntamos al cliente cuántos son, para poder recomendarle un total.
+  const hayAsadoIncompleto = itemsParciales.some(
+    (i) => esCategoriaAsado(catalogo, i.producto_codigo) && i.cantidad == null
+  );
+  const sabemosPersonas = personas.hombres != null && personas.mujeres != null;
+
+  if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null) {
+    const pregunta = armarPreguntaPersonas(personas);
+    await guardar({
+      estado: "pendiente_aclaracion",
+      transcripcion: texto,
+      pregunta_pendiente: pregunta,
+      item_parcial: itemsParciales,
+      ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
+      interpretacion: { fase: "esperando_dato_item", personas },
+      expires_at: finDeHoyArgentina().toISOString(),
+      updated_at: ahora,
+    });
+    return pregunta;
+  }
+
+  // Ya sabemos (o acabamos de calcular) el total de asado — si hay cortes
+  // sin cantidad y todavía no le mostramos la recomendación, mostrársela
+  // ahora en vez de preguntar corte por corte.
+  const kgObjetivoActual = asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null);
+
+  if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
+    const pregunta = armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual);
+    await guardar({
+      estado: "pendiente_aclaracion",
+      transcripcion: texto,
+      pregunta_pendiente: pregunta,
+      item_parcial: itemsParciales,
+      ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
+      interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivoActual, recomendacionMostrada: true },
+      expires_at: finDeHoyArgentina().toISOString(),
+      updated_at: ahora,
+    });
+    return pregunta;
+  }
+
+  // ¿Quedó todo completo (productos Y hora de retiro, retenida de este
+  // mensaje o de uno anterior)? Escalamos a "pedido" y seguimos el camino
+  // normal (stock, sustituciones, etc.) en vez de repetir esa lógica acá.
+  if (itemsParciales.length > 0 && itemsParciales.every((i) => i.producto_codigo && i.cantidad != null)) {
+    const itemsCompletos: ItemPedido[] = itemsParciales.map((i) => ({
+      producto_codigo: i.producto_codigo!,
+      cantidad: i.cantidad!,
+      unidad: i.unidad ?? catalogo.porCodigo.get(i.producto_codigo!)?.unidad ?? "kg",
+      confidence: 1,
+    }));
+    return await armarYGuardarPedido({
+      carniceriaId,
+      telefono,
+      clienteId,
+      clienteNombre,
+      mensajeWhatsappId,
+      pedidoId,
+      catalogo,
+      itemsPedidos: itemsCompletos,
+      horaRetiroIso,
+      texto,
+    });
+  }
+
+  // No hay nada más que resolver automáticamente. Si además no logramos
+  // entender nada Y no hay ningún pedido en curso, mensaje genérico; si
+  // no, seguimos la pregunta puntual que armó la IA (o repetimos la
+  // pregunta pendiente si tampoco entendió esta vez).
+  if (resultado.tipo === "no_entendido" && itemsParciales.length === 0 && !pedidoId) {
+    return `No relacioné "${texto}" con un pedido. Contame qué necesitás llevarte 🙂`;
+  }
+
+  const pregunta =
+    resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante"
+      ? resultado.pregunta
+      : "No te entendí. ¿Podés contarme de nuevo qué necesitás, o responder la pregunta de arriba?";
+
+  await guardar({
+    estado: "pendiente_aclaracion",
+    transcripcion: texto,
+    pregunta_pendiente: pregunta,
+    item_parcial: itemsParciales,
+    ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
+    interpretacion: {
+      fase: "esperando_dato_item",
+      personas,
+      asadoKgObjetivo: kgObjetivoActual ?? undefined,
+      recomendacionMostrada,
+    },
+    expires_at: finDeHoyArgentina().toISOString(),
+    updated_at: ahora,
   });
+  return pregunta;
 }
 
 async function manejarRespuestaSustitucion(params: {
@@ -786,58 +819,6 @@ async function manejarRespuestaSustitucion(params: {
     horaRetiroIso: pedido.hora_retiro,
     avisoDescartados: "",
   });
-}
-
-// Sub-flujo especial: le preguntamos al cliente para cuántos es el asado
-// (ver esCategoriaAsado/armarPreguntaPersonas más arriba) y esta es su
-// respuesta. Usa un intérprete chico y separado (interpretarPersonas) en
-// vez del intérprete general de pedidos — acá no hay productos nuevos que
-// extraer, solo un número de personas.
-//
-// LIMITACIÓN CONOCIDA (aceptable para v1, revisar con uso real): si el
-// cliente aprovecha esta respuesta para agregar OTRO dato a la vez (ej.
-// "somos 4, y paso a las 8" o "somos 4, también quiero matambre"),
-// interpretarPersonas solo rescata el número de personas — la hora de
-// retiro o el producto nuevo mencionado ahí se pierden y hay que
-// repetirlos en un mensaje aparte. Si en la práctica pasa seguido,
-// conviene unificar esto con el intérprete general en vez de uno aparte.
-async function manejarRespuestaPersonas(params: {
-  pedido: PedidoPendiente;
-  catalogo: CatalogoCarniceria;
-  texto: string;
-}): Promise<string> {
-  const { pedido, catalogo, texto } = params;
-  const supabaseAdmin = getSupabaseAdmin();
-  const faseActual = pedido.fase as Extract<FaseInterna, { fase: "esperando_personas" }>;
-  const nuevas = await interpretarPersonas(texto);
-  const personas = combinarPersonas(faseActual.personas, nuevas);
-  const ahora = new Date().toISOString();
-
-  if (personas.hombres != null && personas.mujeres != null) {
-    const kgObjetivo = calcularKgAsadoObjetivo(personas)!;
-    const itemsBase = pedido.itemsParciales ?? [];
-    const pregunta = armarPreguntaRecomendacion(catalogo, itemsBase, kgObjetivo);
-    await supabaseAdmin
-      .from("pedidos")
-      .update({
-        pregunta_pendiente: pregunta,
-        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivo, recomendacionMostrada: true },
-        updated_at: ahora,
-      })
-      .eq("id", pedido.id);
-    return pregunta;
-  }
-
-  const pregunta = armarPreguntaPersonas(personas);
-  await supabaseAdmin
-    .from("pedidos")
-    .update({
-      pregunta_pendiente: pregunta,
-      interpretacion: { fase: "esperando_personas", personas },
-      updated_at: ahora,
-    })
-    .eq("id", pedido.id);
-  return pregunta;
 }
 
 export async function procesarAudioDePedido(params: {
@@ -912,11 +893,6 @@ async function procesarMensajeDeCliente(params: {
     });
   }
 
-  // Sub-flujo especial: esperando "¿para cuántos son?" (cálculo de asado).
-  if (pedidoActivo?.fase?.fase === "esperando_personas") {
-    return await manejarRespuestaPersonas({ pedido: pedidoActivo, catalogo, texto });
-  }
-
   const asadoKgObjetivoPrevio = asadoKgObjetivoDeFase(pedidoActivo?.fase);
 
   const contexto = pedidoActivo
@@ -949,6 +925,8 @@ async function procesarMensajeDeCliente(params: {
     personasPrevias: personasDeFase(pedidoActivo?.fase),
     asadoKgObjetivoPrevio,
     recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo?.fase),
+    itemsParcialesPrevios: pedidoActivo?.itemsParciales,
+    horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
   });
 }
 

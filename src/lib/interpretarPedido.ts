@@ -199,7 +199,7 @@ function construirSystemPrompt(
   // mensajes, y se puede preguntar por varios datos faltantes juntos.
   const bloqueContexto = contexto
     ? `\n\nCONTEXTO DE LA CONVERSACIÓN EN CURSO — el mensaje del cliente es una respuesta a algo que ya se venía hablando, no un pedido nuevo aislado:
-- Items ya completos y cerrados de turnos anteriores (esto solo tiene algo si el pedido entero ya estaba completo y el cliente está agregando más): ${JSON.stringify(contexto.itemsActuales)}
+- Items ya completos y cerrados de turnos anteriores (si el mensaje del cliente solo da un dato suelto que no es de ningún producto nuevo — por ejemplo la hora de retiro — estos productos siguen siendo el pedido, no los ignores ni preguntes por productos de nuevo): ${JSON.stringify(contexto.itemsActuales)}
 - Productos del pedido en construcción hasta ahora, completos o no (esto es lo importante — nunca dejes ninguno afuera): ${JSON.stringify(contexto.itemsParciales ?? [])}
 - Pregunta que se le había hecho al cliente: ${contexto.preguntaPendiente ?? "(ninguna)"}
 - ¿Ya se sabe la hora de retiro? ${contexto.yaTieneHoraRetiro ? "sí, no hace falta volver a preguntar" : "no"}
@@ -253,6 +253,10 @@ Reglas:
   sistema después, vos NO conviertas el número).
 - Extraé la hora de retiro (hora_retiro_iso) si el cliente la mencionó, en esta conversación o en un mensaje
   anterior (ver contexto). Nunca inventes una hora que no fue mencionada.
+- Si la hora viene en un formato mezclado o redundante (ej. "15 pm", "20hs de la tarde"), priorizá el NÚMERO
+  tal cual lo dijo: 13-23 es formato 24hs aunque además diga "pm" (es redundante, no un error — "15 pm" son las
+  15:00). Para un número de 1 a 12 sin más aclaración, usá el criterio más razonable según la hora actual (ej.
+  si ya es de tarde y dice "a las 8", probablemente sea las 20:00, no las 8:00 que ya pasaron).
 - Extraé "personas" si el cliente mencionó para cuánta gente es el pedido (ver descripción del campo) — esto
   puede venir junto con productos ("asado para 4, quiero vacío y costilla") o solo. Nunca inventes un número
   de personas que no se mencionó.

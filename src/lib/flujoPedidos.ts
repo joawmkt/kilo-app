@@ -540,6 +540,11 @@ async function procesarResultado(params: {
   resultado: ResultadoInterpretacionPedido;
   texto: string;
   itemsParcialesPrevios?: ItemParcialPedido[];
+  // Productos que el pedido activo YA tenía resueltos del todo (guardados
+  // en `pedido.items`, no en `item_parcial`) — típicamente porque solo
+  // faltaba la hora de retiro. Ver el comentario más abajo, junto a donde
+  // se fusionan con items_parciales, para el bug real que motivó esto.
+  itemsActualesPrevios?: ItemGuardadoPedido[];
   horaRetiroPrevia?: string;
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
@@ -556,6 +561,7 @@ async function procesarResultado(params: {
     resultado,
     texto,
     itemsParcialesPrevios,
+    itemsActualesPrevios,
     horaRetiroPrevia,
     personasPrevias,
     asadoKgObjetivoPrevio,
@@ -609,7 +615,33 @@ async function procesarResultado(params: {
     itemsParcialesPrevios ??
     [];
 
+  // Bug real del 23/08/2026: un pedido ya tenía TODOS sus productos
+  // resueltos (guardados en `pedido.items`, esperando solo la hora de
+  // retiro) y el cliente contestó con una hora en un formato raro ("15
+  // pm") que la IA no supo interpretar — como esos productos ya
+  // resueltos no viven en `items_parciales` (son un concepto aparte), el
+  // sistema se quedó sin ningún rastro de ellos y terminó preguntando
+  // "¿qué productos querés pedir?" de cero, perdiendo el pedido entero.
+  // Fix: NUNCA confiar en que la IA se acuerde de repetirlos — acá se
+  // fusionan siempre a items_parciales (si no estaban ya) para que el
+  // resto de esta función (y `armarYGuardarPedido` más abajo, que ya sabe
+  // volver a preguntar la hora si todavía falta) los tenga en cuenta pase
+  // lo que pase con la interpretación de este mensaje puntual.
+  if (itemsActualesPrevios && itemsActualesPrevios.length > 0) {
+    const codigosEnParciales = new Set(itemsParciales.map((i) => i.producto_codigo).filter(Boolean));
+    for (const item of itemsActualesPrevios) {
+      if (!codigosEnParciales.has(item.producto_codigo)) {
+        itemsParciales = [...itemsParciales, { producto_codigo: item.producto_codigo, cantidad: item.cantidad, unidad: item.unidad }];
+      }
+    }
+  }
+
   if (resultado.tipo === "pedido") {
+    const codigosCubiertos = new Set(resultado.items.map((i) => i.producto_codigo));
+    const itemsFaltantes: ItemPedido[] = (itemsActualesPrevios ?? [])
+      .filter((i) => !codigosCubiertos.has(i.producto_codigo))
+      .map((i) => ({ producto_codigo: i.producto_codigo, cantidad: i.cantidad, unidad: i.unidad, confidence: 1 }));
+
     return await armarYGuardarPedido({
       carniceriaId,
       telefono,
@@ -618,7 +650,7 @@ async function procesarResultado(params: {
       mensajeWhatsappId,
       pedidoId,
       catalogo,
-      itemsPedidos: resultado.items,
+      itemsPedidos: [...resultado.items, ...itemsFaltantes],
       horaRetiroIso,
       texto,
     });
@@ -926,6 +958,7 @@ async function procesarMensajeDeCliente(params: {
     asadoKgObjetivoPrevio,
     recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo?.fase),
     itemsParcialesPrevios: pedidoActivo?.itemsParciales,
+    itemsActualesPrevios: pedidoActivo?.items,
     horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
   });
 }

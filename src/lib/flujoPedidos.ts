@@ -4,9 +4,13 @@ import { descargarAudioTwilio } from "./twilioMedia";
 import { transcribirAudio } from "./whisper";
 import {
   interpretarMensajePedido,
+  interpretarPersonas,
   ItemPedido,
   ItemParcialPedido,
   ResultadoInterpretacionPedido,
+  InfoPersonas,
+  KG_POR_HOMBRE,
+  KG_POR_MUJER,
 } from "./interpretarPedido";
 import { clasificarRespuesta } from "./confirmacion";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
@@ -50,7 +54,17 @@ type Sustitucion = {
 };
 
 type FaseInterna =
-  | { fase: "esperando_dato_item" }
+  | {
+      fase: "esperando_dato_item";
+      // Cálculo de "asado para X personas" (23/08/2026, a pedido del
+      // fundador) — ver PERSONAS_KG y calcularKgAsadoObjetivo más abajo.
+      // `recomendacionMostrada` evita repetirle al cliente el total
+      // calculado en cada turno una vez que ya se lo dijimos una vez.
+      personas?: InfoPersonas;
+      asadoKgObjetivo?: number;
+      recomendacionMostrada?: boolean;
+    }
+  | { fase: "esperando_personas"; personas?: InfoPersonas }
   | { fase: "esperando_hora_retiro" }
   | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] };
 
@@ -59,7 +73,7 @@ type PedidoPendiente = {
   estado: "pendiente_aclaracion" | "pendiente_aprobacion";
   items: ItemGuardadoPedido[];
   pregunta_pendiente: string | null;
-  item_parcial?: ItemParcialPedido;
+  itemsParciales?: ItemParcialPedido[];
   hora_retiro: string | null;
   fase: FaseInterna | null;
   vencido: boolean;
@@ -105,7 +119,7 @@ async function obtenerPedidoPendienteCliente(
     estado: data.estado as PedidoPendiente["estado"],
     items: (data.items ?? []) as ItemGuardadoPedido[],
     pregunta_pendiente: (data.pregunta_pendiente as string | null) ?? null,
-    item_parcial: (data.item_parcial as ItemParcialPedido | undefined) ?? undefined,
+    itemsParciales: (data.item_parcial as ItemParcialPedido[] | undefined) ?? undefined,
     hora_retiro: (data.hora_retiro as string | null) ?? null,
     fase: interpretacion ?? null,
     vencido: estaVencido,
@@ -122,6 +136,112 @@ function convertirACantidadReal(producto: Producto, cantidad: number, unidadClie
     return Number((cantidad * producto.peso_aproximado_unidad_kg).toFixed(3));
   }
   return cantidad;
+}
+
+// ============================================================
+// Recomendación de cantidad de asado "para X personas" (23/08/2026, a
+// pedido del fundador: "de arranque él debería recomendarme cuánto de
+// cada uno"). Alcance decidido con el fundador: solo aplica a la
+// categoría de asado/parrilla (familia "vacuno_parrilla" en el catálogo
+// — asado, vacío, costilla, matambre, etc.), no a pollo/cerdo/embutidos.
+// Reparto decidido: NO se reparte solo automáticamente entre cortes — se
+// le muestra al cliente el total estimado y se le pregunta cuánto quiere
+// de cada corte (o si prefiere más de uno que de otro).
+// ============================================================
+
+const FAMILIA_ASADO = "vacuno_parrilla";
+
+function esCategoriaAsado(catalogo: CatalogoCarniceria, codigo: string | undefined): boolean {
+  if (!codigo) return false;
+  return catalogo.porCodigo.get(codigo)?.familia === FAMILIA_ASADO;
+}
+
+function combinarPersonas(previas: InfoPersonas | undefined, nuevas: InfoPersonas | undefined): InfoPersonas {
+  if (!nuevas) return previas ?? {};
+  return {
+    hombres: nuevas.hombres ?? previas?.hombres,
+    mujeres: nuevas.mujeres ?? previas?.mujeres,
+    sinGenero: nuevas.sinGenero ?? previas?.sinGenero,
+  };
+}
+
+function calcularKgAsadoObjetivo(personas: InfoPersonas): number | null {
+  if (personas.hombres == null || personas.mujeres == null) return null;
+  const total = personas.hombres * KG_POR_HOMBRE + personas.mujeres * KG_POR_MUJER;
+  return Math.round(total * 100) / 100;
+}
+
+function armarPreguntaPersonas(personas: InfoPersonas): string {
+  if (personas.sinGenero != null) {
+    return `Para calcular mejor la cantidad de asado, ¿más o menos cuántos de esos ${personas.sinGenero} son hombres y cuántas mujeres? (tomamos ${Math.round(KG_POR_HOMBRE * 1000)}g por hombre y ${Math.round(KG_POR_MUJER * 1000)}g por mujer)`;
+  }
+  return "¿Para cuántas personas es? Así te tiro una cantidad aproximada de asado 🙂 (más o menos, ¿cuántos hombres y cuántas mujeres son?)";
+}
+
+function armarPreguntaRecomendacion(
+  catalogo: CatalogoCarniceria,
+  items: ItemParcialPedido[],
+  kgObjetivo: number
+): string {
+  const nombres = items
+    .filter((i) => esCategoriaAsado(catalogo, i.producto_codigo))
+    .map((i) => catalogo.porCodigo.get(i.producto_codigo!)?.nombre_display ?? i.producto_codigo)
+    .join(" y ");
+  return `Para eso calculamos un total de ${kgObjetivo}kg de asado. ¿Cuánto querés de ${nombres || "cada corte"}, o preferís más de uno que de otro?`;
+}
+
+// Resuelve como máximo UNA marca "usarResto" por vez (ambigüedad entre dos
+// "el resto" simultáneos no se intenta adivinar — se deja para el próximo
+// mensaje). Si lo ya pedido llega o pasa el total estimado, no inventa un
+// número negativo/cero: devuelve una advertencia para preguntarle al
+// cliente en vez de asignar algo raro en silencio.
+function resolverUsoDeResto(
+  items: ItemParcialPedido[],
+  catalogo: CatalogoCarniceria,
+  kgObjetivo: number
+): { items: ItemParcialPedido[]; advertencia?: string } {
+  const enCategoria = items.filter((i) => esCategoriaAsado(catalogo, i.producto_codigo));
+  const pendientesResto = enCategoria.filter((i) => i.usarResto && i.cantidad == null);
+  if (pendientesResto.length !== 1) return { items };
+
+  const objetivo = pendientesResto[0];
+  const sumaConocida = enCategoria
+    .filter((i) => i !== objetivo && i.cantidad != null)
+    .reduce((acc, i) => acc + (i.cantidad ?? 0), 0);
+  const resto = Math.round((kgObjetivo - sumaConocida) * 100) / 100;
+
+  if (resto <= 0) {
+    const nombre = catalogo.porCodigo.get(objetivo.producto_codigo!)?.nombre_display ?? objetivo.producto_codigo;
+    return {
+      items,
+      advertencia: `Con lo que ya pediste (${sumaConocida}kg) llegás o pasás el cálculo total (${kgObjetivo}kg de asado). ¿Cuánto de ${nombre} querés igual?`,
+    };
+  }
+
+  const items2 = items.map((i): ItemParcialPedido => {
+    if (i !== objetivo) return i;
+    return {
+      producto_codigo: i.producto_codigo,
+      cantidad: resto,
+      unidad: catalogo.porCodigo.get(i.producto_codigo!)?.unidad ?? "kg",
+    };
+  });
+  return { items: items2 };
+}
+
+function personasDeFase(fase: FaseInterna | null | undefined): InfoPersonas | undefined {
+  if (!fase) return undefined;
+  if (fase.fase === "esperando_dato_item" || fase.fase === "esperando_personas") return fase.personas;
+  return undefined;
+}
+
+function asadoKgObjetivoDeFase(fase: FaseInterna | null | undefined): number | undefined {
+  if (fase?.fase === "esperando_dato_item") return fase.asadoKgObjetivo;
+  return undefined;
+}
+
+function recomendacionMostradaDeFase(fase: FaseInterna | null | undefined): boolean {
+  return fase?.fase === "esperando_dato_item" ? Boolean(fase.recomendacionMostrada) : false;
 }
 
 function mensajeBienvenida(nombre: string | null): string {
@@ -415,9 +535,24 @@ async function procesarResultado(params: {
   catalogo: CatalogoCarniceria;
   resultado: ResultadoInterpretacionPedido;
   texto: string;
+  personasPrevias?: InfoPersonas;
+  asadoKgObjetivoPrevio?: number;
+  recomendacionMostrada?: boolean;
 }): Promise<string> {
-  const { carniceriaId, telefono, clienteId, clienteNombre, mensajeWhatsappId, pedidoId, catalogo, resultado, texto } =
-    params;
+  const {
+    carniceriaId,
+    telefono,
+    clienteId,
+    clienteNombre,
+    mensajeWhatsappId,
+    pedidoId,
+    catalogo,
+    resultado,
+    texto,
+    personasPrevias,
+    asadoKgObjetivoPrevio,
+    recomendacionMostrada,
+  } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
 
@@ -451,6 +586,8 @@ async function procesarResultado(params: {
     return "Te escucho, contame qué necesitás.";
   }
 
+  const personas = combinarPersonas(personasPrevias, "personas" in resultado ? resultado.personas : undefined);
+
   if (resultado.tipo === "no_entendido") {
     if (pedidoId) {
       return "No te entendí. ¿Podés contarme de nuevo qué necesitás, o responder la pregunta de arriba?";
@@ -459,12 +596,106 @@ async function procesarResultado(params: {
   }
 
   if (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante") {
+    let itemsParciales = resultado.itemsParciales ?? [];
+
+    // Si ya sabíamos el total estimado de asado, primero intentamos
+    // resolver cualquier "el resto" que el cliente haya marcado.
+    let advertenciaResto: string | undefined;
+    if (asadoKgObjetivoPrevio != null) {
+      const resuelto = resolverUsoDeResto(itemsParciales, catalogo, asadoKgObjetivoPrevio);
+      itemsParciales = resuelto.items;
+      advertenciaResto = resuelto.advertencia;
+    }
+
+    if (advertenciaResto) {
+      await guardar({
+        estado: "pendiente_aclaracion",
+        transcripcion: texto,
+        pregunta_pendiente: advertenciaResto,
+        item_parcial: itemsParciales,
+        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: asadoKgObjetivoPrevio, recomendacionMostrada: true },
+        expires_at: finDeHoyArgentina().toISOString(),
+        updated_at: ahora,
+      });
+      return advertenciaResto;
+    }
+
+    // ¿Hay algún corte de asado sin cantidad, y todavía no sabemos para
+    // cuánta gente es? Antes de preguntar la cantidad corte por corte, le
+    // preguntamos al cliente cuántos son, para poder recomendarle un total.
+    const hayAsadoIncompleto = itemsParciales.some(
+      (i) => esCategoriaAsado(catalogo, i.producto_codigo) && i.cantidad == null
+    );
+    const sabemosPersonas = personas.hombres != null && personas.mujeres != null;
+
+    if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null) {
+      const pregunta = armarPreguntaPersonas(personas);
+      await guardar({
+        estado: "pendiente_aclaracion",
+        transcripcion: texto,
+        pregunta_pendiente: pregunta,
+        item_parcial: itemsParciales,
+        interpretacion: { fase: "esperando_personas", personas },
+        expires_at: finDeHoyArgentina().toISOString(),
+        updated_at: ahora,
+      });
+      return pregunta;
+    }
+
+    // Ya sabemos (o acabamos de calcular) el total de asado — si hay
+    // cortes sin cantidad y todavía no le mostramos la recomendación,
+    // mostrársela ahora en vez de preguntar corte por corte.
+    const kgObjetivoActual = asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null);
+
+    if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
+      const pregunta = armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual);
+      await guardar({
+        estado: "pendiente_aclaracion",
+        transcripcion: texto,
+        pregunta_pendiente: pregunta,
+        item_parcial: itemsParciales,
+        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivoActual, recomendacionMostrada: true },
+        expires_at: finDeHoyArgentina().toISOString(),
+        updated_at: ahora,
+      });
+      return pregunta;
+    }
+
+    // ¿Quedó todo completo después de resolver "el resto"? Escalamos a
+    // "pedido" y seguimos el camino normal (stock, sustituciones, etc.)
+    // en vez de repetir esa lógica acá.
+    if (itemsParciales.length > 0 && itemsParciales.every((i) => i.producto_codigo && i.cantidad != null)) {
+      const itemsCompletos: ItemPedido[] = itemsParciales.map((i) => ({
+        producto_codigo: i.producto_codigo!,
+        cantidad: i.cantidad!,
+        unidad: i.unidad ?? catalogo.porCodigo.get(i.producto_codigo!)?.unidad ?? "kg",
+        confidence: 1,
+      }));
+      return await armarYGuardarPedido({
+        carniceriaId,
+        telefono,
+        clienteId,
+        clienteNombre,
+        mensajeWhatsappId,
+        pedidoId,
+        catalogo,
+        itemsPedidos: itemsCompletos,
+        horaRetiroIso: resultado.horaRetiroIso,
+        texto,
+      });
+    }
+
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
       pregunta_pendiente: resultado.pregunta,
-      item_parcial: resultado.itemParcial ?? null,
-      interpretacion: { fase: "esperando_dato_item" },
+      item_parcial: itemsParciales,
+      interpretacion: {
+        fase: "esperando_dato_item",
+        personas,
+        asadoKgObjetivo: kgObjetivoActual ?? undefined,
+        recomendacionMostrada,
+      },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
@@ -557,6 +788,58 @@ async function manejarRespuestaSustitucion(params: {
   });
 }
 
+// Sub-flujo especial: le preguntamos al cliente para cuántos es el asado
+// (ver esCategoriaAsado/armarPreguntaPersonas más arriba) y esta es su
+// respuesta. Usa un intérprete chico y separado (interpretarPersonas) en
+// vez del intérprete general de pedidos — acá no hay productos nuevos que
+// extraer, solo un número de personas.
+//
+// LIMITACIÓN CONOCIDA (aceptable para v1, revisar con uso real): si el
+// cliente aprovecha esta respuesta para agregar OTRO dato a la vez (ej.
+// "somos 4, y paso a las 8" o "somos 4, también quiero matambre"),
+// interpretarPersonas solo rescata el número de personas — la hora de
+// retiro o el producto nuevo mencionado ahí se pierden y hay que
+// repetirlos en un mensaje aparte. Si en la práctica pasa seguido,
+// conviene unificar esto con el intérprete general en vez de uno aparte.
+async function manejarRespuestaPersonas(params: {
+  pedido: PedidoPendiente;
+  catalogo: CatalogoCarniceria;
+  texto: string;
+}): Promise<string> {
+  const { pedido, catalogo, texto } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const faseActual = pedido.fase as Extract<FaseInterna, { fase: "esperando_personas" }>;
+  const nuevas = await interpretarPersonas(texto);
+  const personas = combinarPersonas(faseActual.personas, nuevas);
+  const ahora = new Date().toISOString();
+
+  if (personas.hombres != null && personas.mujeres != null) {
+    const kgObjetivo = calcularKgAsadoObjetivo(personas)!;
+    const itemsBase = pedido.itemsParciales ?? [];
+    const pregunta = armarPreguntaRecomendacion(catalogo, itemsBase, kgObjetivo);
+    await supabaseAdmin
+      .from("pedidos")
+      .update({
+        pregunta_pendiente: pregunta,
+        interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivo, recomendacionMostrada: true },
+        updated_at: ahora,
+      })
+      .eq("id", pedido.id);
+    return pregunta;
+  }
+
+  const pregunta = armarPreguntaPersonas(personas);
+  await supabaseAdmin
+    .from("pedidos")
+    .update({
+      pregunta_pendiente: pregunta,
+      interpretacion: { fase: "esperando_personas", personas },
+      updated_at: ahora,
+    })
+    .eq("id", pedido.id);
+  return pregunta;
+}
+
 export async function procesarAudioDePedido(params: {
   carniceriaId: string;
   telefono: string;
@@ -629,6 +912,13 @@ async function procesarMensajeDeCliente(params: {
     });
   }
 
+  // Sub-flujo especial: esperando "¿para cuántos son?" (cálculo de asado).
+  if (pedidoActivo?.fase?.fase === "esperando_personas") {
+    return await manejarRespuestaPersonas({ pedido: pedidoActivo, catalogo, texto });
+  }
+
+  const asadoKgObjetivoPrevio = asadoKgObjetivoDeFase(pedidoActivo?.fase);
+
   const contexto = pedidoActivo
     ? {
         itemsActuales: pedidoActivo.items.map((i) => ({
@@ -638,8 +928,9 @@ async function procesarMensajeDeCliente(params: {
           confidence: 1,
         })),
         preguntaPendiente: pedidoActivo.pregunta_pendiente ?? undefined,
-        itemParcial: pedidoActivo.item_parcial,
+        itemsParciales: pedidoActivo.itemsParciales,
         yaTieneHoraRetiro: Boolean(pedidoActivo.hora_retiro),
+        asadoKgObjetivo: asadoKgObjetivoPrevio,
       }
     : undefined;
 
@@ -655,6 +946,9 @@ async function procesarMensajeDeCliente(params: {
     catalogo,
     resultado,
     texto,
+    personasPrevias: personasDeFase(pedidoActivo?.fase),
+    asadoKgObjetivoPrevio,
+    recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo?.fase),
   });
 }
 

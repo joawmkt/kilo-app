@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import twilio from "twilio";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { procesarAudioDeStock, procesarTextoEntrante } from "@/lib/flujoStock";
+import { procesarAudioDePedido, procesarTextoDePedido, procesarDecisionCarnicero } from "@/lib/flujoPedidos";
+import { esNumeroDeCarnicero } from "@/lib/numerosCarnicero";
 import { escapeXml } from "@/lib/texto";
 
-// Webhook de WhatsApp (Twilio) — Etapa 2.
+// Webhook de WhatsApp (Twilio) — Etapa 3.
 //
 // Etapa 1: solo guardaba el mensaje crudo en `mensajes_whatsapp`.
 // Etapa 2: si el mensaje entrante de la carnicería es un audio, se
@@ -12,6 +14,11 @@ import { escapeXml } from "@/lib/texto";
 // real de esa carnicería, y se le pide confirmación antes de tocar
 // `productos.stock_actual`. Si es texto y hay una actualización de stock
 // pendiente de confirmación/aclaración, se procesa esa respuesta.
+// Etapa 3 (Paso 0): a partir de acá, no CUALQUIER número que le escriba al
+// WhatsApp de la carnicería es "el carnicero" — se separa el enrutamiento:
+// números autorizados (numeros_carnicero) → flujo de stock (arriba, sin
+// cambios) + decisión sobre pedidos pendientes de aprobación; cualquier
+// otro número → flujo de pedidos (flujoPedidos.ts).
 
 function twimlResponse(mensaje?: string): NextResponse {
   const cuerpo = mensaje ? `<Message>${escapeXml(mensaje)}</Message>` : "";
@@ -54,6 +61,9 @@ export async function POST(request: NextRequest) {
   const numMedia = Number(params.NumMedia ?? "0");
   const tipo = numMedia > 0 ? "audio" : "texto";
   const mediaUrl = numMedia > 0 ? params.MediaUrl0 ?? null : null;
+  // Nombre de perfil de WhatsApp del remitente, cuando Twilio lo manda —
+  // se usa para saludar por nombre a un cliente nuevo (ver src/lib/clientes.ts).
+  const nombrePerfilWhatsapp = params.ProfileName ?? null;
 
   const supabaseAdmin = getSupabaseAdmin();
 
@@ -91,24 +101,64 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    if (tipo === "audio" && mediaUrl) {
-      const respuesta = await procesarAudioDeStock({
-        carniceriaId: carniceria.id,
-        telefono: telefonoOrigen,
-        mensajeWhatsappId: mensajeGuardado.id,
-        mediaUrl,
-      });
-      return twimlResponse(respuesta);
-    }
+    const esCarnicero = await esNumeroDeCarnicero(carniceria.id, telefonoOrigen);
 
-    if (tipo === "texto" && cuerpo) {
-      const respuesta = await procesarTextoEntrante({
-        carniceriaId: carniceria.id,
-        telefono: telefonoOrigen,
-        mensajeWhatsappId: mensajeGuardado.id,
-        texto: cuerpo,
-      });
-      return twimlResponse(respuesta ?? undefined);
+    if (esCarnicero) {
+      if (tipo === "audio" && mediaUrl) {
+        const respuesta = await procesarAudioDeStock({
+          carniceriaId: carniceria.id,
+          telefono: telefonoOrigen,
+          mensajeWhatsappId: mensajeGuardado.id,
+          mediaUrl,
+        });
+        return twimlResponse(respuesta);
+      }
+
+      if (tipo === "texto" && cuerpo) {
+        // Prioridad: si hay una operación de stock pendiente, el texto es
+        // sobre ESA (comportamiento sin cambios desde la Etapa 2). Solo si
+        // no hay nada de stock pendiente, se prueba si es una decisión
+        // sobre un pedido (aprobar/rechazar) — ver confirmacionPedido.ts
+        // para por qué las palabras gatillo son distintas a las de stock.
+        const respuestaStock = await procesarTextoEntrante({
+          carniceriaId: carniceria.id,
+          telefono: telefonoOrigen,
+          mensajeWhatsappId: mensajeGuardado.id,
+          texto: cuerpo,
+        });
+        if (respuestaStock !== null) return twimlResponse(respuestaStock);
+
+        const respuestaPedido = await procesarDecisionCarnicero({
+          carniceriaId: carniceria.id,
+          carniceroTelefono: telefonoOrigen,
+          texto: cuerpo,
+        });
+        return twimlResponse(respuestaPedido ?? undefined);
+      }
+    } else {
+      // Etapa 3 — cualquier número no autorizado como carnicero es un
+      // cliente potencial: flujo de pedidos, nunca el de stock.
+      if (tipo === "audio" && mediaUrl) {
+        const respuesta = await procesarAudioDePedido({
+          carniceriaId: carniceria.id,
+          telefono: telefonoOrigen,
+          mensajeWhatsappId: mensajeGuardado.id,
+          mediaUrl,
+          nombreWhatsapp: nombrePerfilWhatsapp,
+        });
+        return twimlResponse(respuesta);
+      }
+
+      if (tipo === "texto" && cuerpo) {
+        const respuesta = await procesarTextoDePedido({
+          carniceriaId: carniceria.id,
+          telefono: telefonoOrigen,
+          mensajeWhatsappId: mensajeGuardado.id,
+          texto: cuerpo,
+          nombreWhatsapp: nombrePerfilWhatsapp,
+        });
+        return twimlResponse(respuesta ?? undefined);
+      }
     }
   } catch (err) {
     // Cualquier falla en la interpretación (Whisper/Claude caídos, etc.) no
@@ -122,5 +172,5 @@ export async function POST(request: NextRequest) {
 
 export async function GET() {
   // Para chequear rápido desde el navegador que la ruta está viva.
-  return NextResponse.json({ ok: true, service: "carnicom whatsapp webhook", etapa: 2 });
+  return NextResponse.json({ ok: true, service: "carnicom whatsapp webhook", etapa: 3 });
 }

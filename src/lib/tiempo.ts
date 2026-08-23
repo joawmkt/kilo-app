@@ -20,3 +20,25 @@ export function finDeHoyArgentina(ahora: Date = new Date()): Date {
   );
   return new Date(medianocheSiguienteEnArgentina - OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
 }
+
+/**
+ * Fecha/hora actual en Argentina como ISO 8601 con offset -03:00 — se le
+ * pasa a la IA de interpretación de pedidos (Etapa 3) para que pueda
+ * calcular horas de retiro relativas ("en 20 minutos", "a las 6") sin
+ * tener que adivinar qué día/hora es "ahora".
+ */
+export function ahoraArgentinaIso(ahora: Date = new Date()): string {
+  const ahoraEnArgentina = new Date(ahora.getTime() + OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${ahoraEnArgentina.getUTCFullYear()}-${pad(ahoraEnArgentina.getUTCMonth() + 1)}-${pad(ahoraEnArgentina.getUTCDate())}` +
+    `T${pad(ahoraEnArgentina.getUTCHours())}:${pad(ahoraEnArgentina.getUTCMinutes())}:00-03:00`
+  );
+}
+
+/** Formatea un timestamp como "HH:MM" en hora Argentina, para mensajes de WhatsApp. */
+export function formatearHoraArgentina(fecha: Date): string {
+  const enArgentina = new Date(fecha.getTime() + OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(enArgentina.getUTCHours())}:${pad(enArgentina.getUTCMinutes())}`;
+}

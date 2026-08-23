@@ -1,0 +1,26 @@
+name: Recordatorios de pedidos (Etapa 3)
+
+# Llama al endpoint /api/cron/recordatorios cada 10 minutos. Se usa GitHub
+# Actions en vez de Vercel Cron porque el plan gratuito de Vercel solo
+# permite una ejecución programada por día (ver comentario en
+# src/app/api/cron/recordatorios/route.ts).
+#
+# Setup necesario en GitHub (Settings → Secrets and variables → Actions):
+#   - APP_URL: la URL del deploy de Vercel, ej https://carnicom-app-gules.vercel.app
+#   - CRON_SECRET: el mismo valor que CRON_SECRET en las variables de entorno de Vercel
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  llamar-recordatorios:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pegarle al endpoint de recordatorios
+        run: |
+          curl -sf "${{ secrets.APP_URL }}/api/cron/recordatorios?secreto=${{ secrets.CRON_SECRET }}" \
+            -o respuesta.json -w "\nHTTP %{http_code}\n"
+          cat respuesta.json
+          

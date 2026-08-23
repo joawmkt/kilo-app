@@ -11,6 +11,10 @@ export type Producto = {
   familia: string;
   unidad: string;
   stock_actual: number;
+  es_complementario: boolean;
+  // Solo para productos con unidad="kg" que el cliente puede llegar a pedir
+  // por unidad (ej. milanesas) — ver supabase/migrations/0009_conversion_kg_unidad.sql.
+  peso_aproximado_unidad_kg: number | null;
 };
 
 export type TerminoAmbiguo = {
@@ -33,6 +37,8 @@ type ProductoRow = {
   familia: string;
   unidad: string;
   stock_actual: number;
+  es_complementario: boolean;
+  peso_aproximado_unidad_kg: number | null;
   producto_sinonimos: { texto: string }[] | null;
 };
 
@@ -47,7 +53,9 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
 
   const { data: productosData, error: errProductos } = await supabaseAdmin
     .from("productos")
-    .select("id, codigo, nombre_display, familia, unidad, stock_actual, producto_sinonimos(texto)")
+    .select(
+      "id, codigo, nombre_display, familia, unidad, stock_actual, es_complementario, peso_aproximado_unidad_kg, producto_sinonimos(texto)"
+    )
     .eq("carniceria_id", carniceriaId)
     .eq("activo", true);
 
@@ -77,12 +85,19 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
       familia: fila.familia,
       unidad: fila.unidad,
       stock_actual: Number(fila.stock_actual),
+      es_complementario: fila.es_complementario,
+      peso_aproximado_unidad_kg:
+        fila.peso_aproximado_unidad_kg === null ? null : Number(fila.peso_aproximado_unidad_kg),
     };
     porCodigo.set(producto.codigo, producto);
 
     const sinonimos = (fila.producto_sinonimos ?? []).map((s) => s.texto);
     const vocabulario = [fila.nombre_display, ...sinonimos].join(", ");
-    lineasProductos.push(`- ${fila.codigo} (${fila.unidad}): ${vocabulario}`);
+    const nota =
+      producto.peso_aproximado_unidad_kg !== null
+        ? ` [también se puede pedir por unidad, ~${producto.peso_aproximado_unidad_kg}kg c/u]`
+        : "";
+    lineasProductos.push(`- ${fila.codigo} (${fila.unidad}): ${vocabulario}${nota}`);
   }
 
   // Un término ambiguo solo importa si quedan 2+ productos candidatos activos.

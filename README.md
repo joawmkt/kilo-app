@@ -121,3 +121,108 @@ que rehacer esta lógica.
   (no en una única transacción). Para el volumen de un piloto de una sola
   carnicería dictando por voz no es un problema real; documentado en
   `flujoStock.ts` por si en el futuro hace falta pasar a un update atómico.
+
+## Etapa 3 — Bot de pedidos asistido
+
+El cliente le escribe por WhatsApp a la carnicería, el bot arma el pedido
+contra el stock real (ofreciendo un sustituto si falta algo), pide la hora
+de retiro, y recién lo confirma al cliente cuando el carnicero lo aprueba.
+Ver el roadmap detallado en `claude/etapa3_roadmap_detallado.md` (Proyecto
+Carnicom en Claude) para el paso a paso completo.
+
+> **Los textos que le escribe el bot al cliente y al carnicero son
+> PROVISORIOS.** El Bloque A del roadmap de Etapa 3 (tono/redacción
+> definitiva, resuelto con otra IA especializada en contenido) todavía no
+> está cerrado — reemplazar cuando esté listo, el texto vive todo junto
+> arriba de cada mensaje en `src/lib/flujoPedidos.ts`.
+
+### 1. Correr las migraciones nuevas (en este orden)
+
+En el SQL Editor de Supabase:
+
+1. [`supabase/migrations/0007_numeros_carnicero.sql`](./supabase/migrations/0007_numeros_carnicero.sql) —
+   crea `numeros_carnicero` (quién es "el carnicero", separado de
+   cualquier cliente que le escriba al mismo número). **Antes de correrlo,
+   reemplazá el número de teléfono de ejemplo por el real** (ver el
+   comentario dentro del archivo) — si te salteás este paso, tus propios
+   mensajes de prueba van a caer en el flujo de pedidos, no en el de stock.
+2. [`supabase/migrations/0008_pedidos_etapa3.sql`](./supabase/migrations/0008_pedidos_etapa3.sql) —
+   alinea `pedidos` con `productos` (Etapa 2) y agrega los estados nuevos.
+3. [`supabase/migrations/0009_conversion_kg_unidad.sql`](./supabase/migrations/0009_conversion_kg_unidad.sql) —
+   agrega el peso aproximado por unidad de las milanesas (para poder
+   convertir "dame 4 milanesas" a kilos y descontar del stock real). Los
+   valores están puestos como estimación mía, no confirmados todavía —
+   ajustar cuando haya una respuesta real de la carnicería piloto.
+
+### 2. Variables de entorno nuevas
+
+`CRON_SECRET` (protege el endpoint de recordatorios) — ver
+`.env.local.example`. En Vercel: Project Settings → Environment Variables.
+
+### 3. Activar el cron de recordatorios (GitHub Actions)
+
+Vercel Cron en el plan gratuito solo permite una ejecución programada por
+día, insuficiente para avisar "30 minutos antes" del retiro. Se usa en
+cambio un workflow programado de GitHub Actions
+([`.github/workflows/recordatorios.yml`](./.github/workflows/recordatorios.yml))
+que llama a `/api/cron/recordatorios` cada 10 minutos. Para activarlo,
+en el repo de GitHub → Settings → Secrets and variables → Actions, cargar:
+
+- `APP_URL` — la URL del deploy, ej `https://carnicom-app-gules.vercel.app`
+- `CRON_SECRET` — el mismo valor que en Vercel
+
+### 4. Cómo funciona
+
+- `src/lib/numerosCarnicero.ts` — quién es "el carnicero" (o uno de sus
+  empleados autorizados) para esa carnicería (Paso 0). Cualquier otro
+  número que le escriba al mismo WhatsApp entra al flujo de pedidos, nunca
+  al de stock.
+- `src/lib/interpretarPedido.ts` — mismo patrón que `interpretarStock.ts`
+  pero para pedidos: interpreta qué pidió el cliente, si falta un dato, y
+  la hora de retiro (calculada con Claude Haiku a partir de la hora actual
+  real en Argentina).
+- `src/lib/alternativas.ts` — regla de "alternativa más parecida" cuando
+  falta stock (v1: mismo `familia`, con stock disponible) — respuesta
+  provisoria a una pregunta de negocio todavía sin cerrar.
+- `src/lib/clientes.ts` — identifica/crea al cliente por su teléfono; si
+  WhatsApp manda su nombre de perfil (`ProfileName`) y todavía no lo
+  teníamos guardado, lo usa para saludarlo por nombre la próxima vez.
+- `src/lib/confirmacionPedido.ts` — palabras gatillo para que el carnicero
+  apruebe/rechace un pedido — **deliberadamente distintas** de las de
+  `confirmacion.ts` (stock), para que no haya ambigüedad si tiene una
+  operación de stock y un pedido pendientes al mismo tiempo.
+- `src/lib/twilioEnviar.ts` — mensajes salientes por la API REST de
+  Twilio (hacía falta desde acá: avisarle al carnicero de un pedido nuevo,
+  o al cliente de la decisión del carnicero, son mensajes a un número
+  DISTINTO del que originó el evento — no alcanza con responder por TwiML).
+- `src/lib/flujoPedidos.ts` — orquesta todo el Paso 3 al 6: interpreta,
+  arma el pedido contra stock real, pide la hora si falta, avisa al
+  carnicero, y al aprobar descuenta stock y confirma al cliente.
+- `src/app/api/cron/recordatorios/route.ts` — Paso 7 y 8: manda el
+  recordatorio (30 min antes del retiro, por defecto) y marca no-shows
+  automáticamente (60 min después de la hora de retiro sin marcar
+  `retirado_at`, por defecto) — ver el comentario del archivo para el
+  porqué de esta simplificación.
+
+### Estados de un pedido (`pedidos.estado`)
+
+`pendiente_aclaracion` (armando el pedido con el cliente) → `pendiente_aprobacion` (esperando al carnicero) → (`aprobar` → `aprobado`, stock ya descontado y cliente ya avisado) | (`rechazar` → `rechazado`) | (`cancelado`, el cliente se queda sin nada disponible) | (vence sin responder → `vencido`). Desde `aprobado`, el cron lo puede pasar a `no_show` si pasa la hora de retiro + margen sin marcarse como retirado.
+
+### Simplificaciones de esta primera versión (a revisar con uso real)
+
+- **Un pedido pendiente de aprobación por vez, por carnicería**: si el
+  carnicero llega a tener dos pedidos esperando aprobación al mismo
+  tiempo, "aprobar"/"rechazar" actúa sobre el más reciente. Para el
+  volumen de un piloto alcanza; si genera confusión, la solución es incluir
+  un código corto de pedido en el aviso y pedir que lo repita al responder.
+- **El stock se consulta pero no se reserva** hasta que el carnicero
+  aprueba — dos pedidos casi simultáneos por lo último que queda de un
+  producto podrían pasar la verificación los dos (ver comentario en
+  `flujoPedidos.ts`).
+- **No-show automático por tiempo**, no hay forma de confirmar que el
+  cliente SÍ retiró (no hay integración con caja) — es una aproximación
+  para tener el historial de ausencias funcionando ya, no una decisión de
+  negocio cerrada.
+- **Sin "modificar" en la aprobación del carnicero** (a diferencia de
+  stock): si quiere cambiar algo de un pedido, por ahora lo rechaza y
+  habla directo con el cliente fuera del bot.

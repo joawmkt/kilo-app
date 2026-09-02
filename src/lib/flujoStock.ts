@@ -1,10 +1,11 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { cargarCatalogo, CatalogoCarniceria } from "./catalogo";
-import { descargarAudioTwilio } from "./twilioMedia";
+import { descargarAudio, type ReferenciaMedia } from "./whatsapp";
 import { transcribirAudio } from "./whisper";
 import { interpretarMensajeStock, ItemOperacion, ItemParcial, ResultadoInterpretacion } from "./interpretarStock";
 import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
+import { revisarStockDeProducto } from "./notificaciones";
 
 // Máquina de estados "INTERPRETAR → VALIDAR → CONFIRMAR → EJECUTAR" de la
 // especificación "Botonera de confirmación por WhatsApp" (22/08/2026).
@@ -204,7 +205,7 @@ async function confirmarYEjecutar(operacionId: string): Promise<string> {
     .update({ estado: "ejecutado", confirmed_at: ahora, executed_at: ahora, updated_at: ahora })
     .eq("id", operacionId)
     .eq("estado", "pendiente_confirmacion")
-    .select("items")
+    .select("items, carniceria_id")
     .maybeSingle();
 
   if (error) {
@@ -217,6 +218,7 @@ async function confirmarYEjecutar(operacionId: string): Promise<string> {
   }
 
   const items = (data.items ?? []) as ItemGuardado[];
+  const carniceriaId = data.carniceria_id as string;
   const resumen: string[] = [];
 
   // Nota: cada item se aplica con una lectura + escritura separada (no en
@@ -245,8 +247,18 @@ async function confirmarYEjecutar(operacionId: string): Promise<string> {
 
     await supabaseAdmin
       .from("productos")
-      .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora })
+      .update({
+        stock_actual: nuevoStock,
+        stock_actualizado_at: ahora,
+        // Deja registrado en el panel que este cambio vino de un audio y no de
+        // una edición manual.
+        stock_origen: "audio",
+      })
       .eq("id", item.producto_id);
+
+    // Si la carga dejó el producto en cero o por debajo del umbral, se genera
+    // el aviso; si volvió a estar bien, se cierran los avisos viejos.
+    await revisarStockDeProducto({ carniceriaId, productoId: item.producto_id });
 
     resumen.push(`${item.nombre_display} = ${nuevoStock}${producto.unidad}`);
   }
@@ -279,13 +291,15 @@ export async function procesarAudioDeStock(params: {
   carniceriaId: string;
   telefono: string;
   mensajeWhatsappId: string;
-  mediaUrl: string;
+  // Referencia al archivo, no una URL: Twilio manda una URL descargable y Meta
+  // manda un ID con el que hay que pedir la URL primero. Ver src/lib/whatsapp.
+  media: ReferenciaMedia;
 }): Promise<string> {
-  const { carniceriaId, telefono, mensajeWhatsappId, mediaUrl } = params;
+  const { carniceriaId, telefono, mensajeWhatsappId, media } = params;
 
   let transcripcion: string;
   try {
-    const audio = await descargarAudioTwilio(mediaUrl);
+    const audio = await descargarAudio(media);
     transcripcion = await transcribirAudio(audio);
   } catch (err) {
     console.error("Error descargando/transcribiendo audio", err);

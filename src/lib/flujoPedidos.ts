@@ -1,6 +1,7 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { cargarCatalogo, CatalogoCarniceria, Producto } from "./catalogo";
-import { descargarAudioTwilio } from "./twilioMedia";
+import { descargarAudio, enviarWhatsapp, type ReferenciaMedia } from "./whatsapp";
+import { avisarPedidoPendiente, revisarStockDeProducto } from "./notificaciones";
 import { transcribirAudio } from "./whisper";
 import {
   interpretarMensajePedido,
@@ -16,7 +17,6 @@ import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarAlternativa } from "./alternativas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
-import { enviarWhatsapp } from "./twilioEnviar";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -32,7 +32,7 @@ import { normalizarTexto } from "./texto";
 // tocar la lógica de estados.
 // ============================================================
 
-type ItemGuardadoPedido = {
+export type ItemGuardadoPedido = {
   producto_id: string;
   producto_codigo: string;
   nombre_display: string;
@@ -40,6 +40,10 @@ type ItemGuardadoPedido = {
   unidad: string;
   disponible: boolean;
   sustituye_a_producto_id?: string;
+  // Precio de lista congelado al aprobar. Se guarda acá y no se recalcula
+  // después: si mañana sube el precio del asado, el pedido de ayer no cambia
+  // de valor retroactivamente. ESTIMATIVO — el total real se define al pesar.
+  precio_unitario?: number | null;
 };
 
 type Sustitucion = {
@@ -483,7 +487,34 @@ async function pasarAPendienteAprobacion(params: {
     horaRetiro: new Date(horaRetiroIso),
   });
 
+  // Además del WhatsApp al carnicero, el pedido aparece en la campanita del
+  // panel: puede estar mirando el panel en la tablet y no el celular.
+  const idPedido = await idDelPedidoPendiente(carniceriaId, telefono);
+  if (idPedido) {
+    await avisarPedidoPendiente({
+      carniceriaId,
+      pedidoId: idPedido,
+      clienteNombre,
+      cantidadItems: items.length,
+    });
+  }
+
   return `${avisoDescartados}¡Listo! Tu pedido quedó a confirmar por la carnicería, te aviso apenas lo revisen 🙌`;
+}
+
+/** Id del pedido de esa conversación que quedó esperando aprobación. */
+async function idDelPedidoPendiente(carniceriaId: string, telefono: string): Promise<string | null> {
+  const { data } = await getSupabaseAdmin()
+    .from("pedidos")
+    .select("id")
+    .eq("carniceria_id", carniceriaId)
+    .eq("telefono", telefono)
+    .eq("estado", "pendiente_aprobacion")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return (data?.id as string | undefined) ?? null;
 }
 
 async function avisarCarnicero(params: {
@@ -519,9 +550,10 @@ async function avisarCarnicero(params: {
     try {
       await enviarWhatsapp({
         carniceriaId,
-        desde: carniceria.telefono_whatsapp as string,
         hacia: numero,
         cuerpo: mensaje,
+        origen: "bot",
+        esCarnicero: true,
       });
     } catch (err) {
       console.error("Error avisando al carnicero de un pedido nuevo", { numero, err });
@@ -857,14 +889,14 @@ export async function procesarAudioDePedido(params: {
   carniceriaId: string;
   telefono: string;
   mensajeWhatsappId: string;
-  mediaUrl: string;
+  media: ReferenciaMedia;
   nombreWhatsapp?: string | null;
 }): Promise<string> {
-  const { carniceriaId, telefono, mensajeWhatsappId, mediaUrl, nombreWhatsapp } = params;
+  const { carniceriaId, telefono, mensajeWhatsappId, media, nombreWhatsapp } = params;
 
   let transcripcion: string;
   try {
-    const audio = await descargarAudioTwilio(mediaUrl);
+    const audio = await descargarAudio(media);
     transcripcion = await transcribirAudio(audio);
   } catch (err) {
     console.error("Error descargando/transcribiendo audio de pedido", err);
@@ -987,7 +1019,7 @@ export async function procesarDecisionCarnicero(params: {
   const supabaseAdmin = getSupabaseAdmin();
   const { data: pedido, error } = await supabaseAdmin
     .from("pedidos")
-    .select("id, telefono, items, hora_retiro")
+    .select("id")
     .eq("carniceria_id", carniceriaId)
     .eq("estado", "pendiente_aprobacion")
     .order("created_at", { ascending: false })
@@ -1000,63 +1032,225 @@ export async function procesarDecisionCarnicero(params: {
   }
   if (!pedido) return "No hay ningún pedido esperando aprobación ahora mismo.";
 
+  const resultado =
+    decision === "aprobar"
+      ? await aprobarPedido({ carniceriaId, pedidoId: pedido.id as string, carniceroTelefono })
+      : await rechazarPedido({ carniceriaId, pedidoId: pedido.id as string, carniceroTelefono });
+
+  return resultado.mensaje;
+}
+
+// ============================================================
+// Aprobar / rechazar — una sola implementación para el bot y para el panel
+// ============================================================
+//
+// El carnicero puede decidir desde WhatsApp (contestando "aprobar") o desde el
+// panel (tocando el botón). Las dos vías tienen que hacer exactamente lo mismo:
+// cambiar el estado, descontar el stock, congelar el total y avisarle al
+// cliente. Por eso viven acá y no duplicadas en la pantalla del panel.
+//
+// El `.eq("estado", "pendiente_aprobacion")` en el UPDATE no es decorativo: es
+// lo que evita que un pedido se apruebe dos veces si el carnicero toca el botón
+// del panel justo cuando ya contestó por WhatsApp. El que llega segundo no
+// encuentra la fila y recibe "ya fue procesado" en vez de descontar el stock
+// por duplicado.
+
+export type ResultadoDecision = { ok: boolean; mensaje: string };
+
+export async function aprobarPedido(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  /** Si vino por WhatsApp: el número que decidió. */
+  carniceroTelefono?: string | null;
+  /** Si vino por el panel: el usuario que decidió. */
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor } = params;
+  const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
 
-  if (decision === "rechazar") {
-    const { data: actualizado } = await supabaseAdmin
-      .from("pedidos")
-      .update({ estado: "rechazado", rechazado_at: ahora, carnicero_telefono: carniceroTelefono })
-      .eq("id", pedido.id)
-      .eq("estado", "pendiente_aprobacion")
-      .select("id")
-      .maybeSingle();
-
-    if (!actualizado) return "Ese pedido ya fue procesado.";
-
-    await avisarClienteDecision({ carniceriaId, clienteTelefono: pedido.telefono as string, aprobado: false });
-    return "Rechazado. Ya le avisé al cliente.";
-  }
-
-  // decision === "aprobar"
-  const { data: actualizado, error: errAprobar } = await supabaseAdmin
+  const { data: actualizado, error } = await supabaseAdmin
     .from("pedidos")
-    .update({ estado: "aprobado", aprobado_at: ahora, carnicero_telefono: carniceroTelefono })
-    .eq("id", pedido.id)
+    .update({
+      estado: "aprobado",
+      aprobado_at: ahora,
+      updated_at: ahora,
+      carnicero_telefono: carniceroTelefono ?? null,
+      decidido_por: decididoPor ?? null,
+    })
+    .eq("id", pedidoId)
+    .eq("carniceria_id", carniceriaId)
     .eq("estado", "pendiente_aprobacion")
-    .select("items, hora_retiro")
+    .select("id, telefono, items, hora_retiro")
     .maybeSingle();
 
-  if (errAprobar) {
-    console.error("Error aprobando pedido", errAprobar);
-    return "Tuve un problema técnico aprobando el pedido.";
+  if (error) {
+    console.error("Error aprobando pedido", error);
+    return { ok: false, mensaje: "Tuve un problema técnico aprobando el pedido." };
   }
-  if (!actualizado) return "Ese pedido ya fue procesado.";
+  if (!actualizado) return { ok: false, mensaje: "Ese pedido ya fue procesado." };
 
   const items = (actualizado.items ?? []) as ItemGuardadoPedido[];
+  const itemsConPrecio: ItemGuardadoPedido[] = [];
+  let total = 0;
+  let faltaAlgunPrecio = false;
+
   for (const item of items) {
     const { data: producto } = await supabaseAdmin
       .from("productos")
-      .select("stock_actual")
+      .select("stock_actual, precio")
       .eq("id", item.producto_id)
       .single();
-    if (!producto) continue;
+
+    if (!producto) {
+      itemsConPrecio.push(item);
+      faltaAlgunPrecio = true;
+      continue;
+    }
+
     const nuevoStock = Math.max(0, Number(producto.stock_actual) - item.cantidad);
     await supabaseAdmin
       .from("productos")
-      .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora })
+      .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora, stock_origen: "pedido" })
       .eq("id", item.producto_id);
+
+    const precio = producto.precio === null || producto.precio === undefined ? null : Number(producto.precio);
+    if (precio === null) faltaAlgunPrecio = true;
+    else total += precio * item.cantidad;
+
+    itemsConPrecio.push({ ...item, precio_unitario: precio });
+
+    // Descontar puede haber dejado el producto en cero: es justo el momento de
+    // avisarlo, porque a partir de ahora el bot ya no lo va a poder ofrecer.
+    await revisarStockDeProducto({ carniceriaId, productoId: item.producto_id });
   }
 
-  await supabaseAdmin.from("pedidos").update({ confirmado_at: ahora }).eq("id", pedido.id);
+  await supabaseAdmin
+    .from("pedidos")
+    .update({
+      confirmado_at: ahora,
+      items: itemsConPrecio,
+      // Si a algún producto le falta el precio, el total sería mentira: mejor
+      // dejarlo vacío y que la caja lo cuente como "sin precio cargado".
+      total_estimado: faltaAlgunPrecio ? null : Number(total.toFixed(2)),
+    })
+    .eq("id", pedidoId);
 
   await avisarClienteDecision({
     carniceriaId,
-    clienteTelefono: pedido.telefono as string,
+    clienteTelefono: actualizado.telefono as string,
     aprobado: true,
     horaRetiro: actualizado.hora_retiro ? new Date(actualizado.hora_retiro as string) : undefined,
+    pedidoId,
   });
 
-  return "Aprobado. Ya le avisé al cliente.";
+  return { ok: true, mensaje: "Aprobado. Ya le avisé al cliente." };
+}
+
+export async function rechazarPedido(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  carniceroTelefono?: string | null;
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date().toISOString();
+
+  const { data: actualizado } = await supabaseAdmin
+    .from("pedidos")
+    .update({
+      estado: "rechazado",
+      rechazado_at: ahora,
+      updated_at: ahora,
+      carnicero_telefono: carniceroTelefono ?? null,
+      decidido_por: decididoPor ?? null,
+    })
+    .eq("id", pedidoId)
+    .eq("carniceria_id", carniceriaId)
+    .eq("estado", "pendiente_aprobacion")
+    .select("id, telefono")
+    .maybeSingle();
+
+  if (!actualizado) return { ok: false, mensaje: "Ese pedido ya fue procesado." };
+
+  await avisarClienteDecision({
+    carniceriaId,
+    clienteTelefono: actualizado.telefono as string,
+    aprobado: false,
+    pedidoId,
+  });
+
+  return { ok: true, mensaje: "Rechazado. Ya le avisé al cliente." };
+}
+
+/**
+ * Marca un pedido como retirado. Solo desde el panel: no hay forma de detectar
+ * automáticamente que alguien pasó a buscar su pedido (no hay integración con
+ * la caja), así que alguien lo tiene que marcar a mano.
+ */
+export async function marcarPedidoRetirado(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date().toISOString();
+
+  const { data } = await supabaseAdmin
+    .from("pedidos")
+    .update({ estado: "retirado", retirado_at: ahora, updated_at: ahora, decidido_por: params.decididoPor ?? null })
+    .eq("id", params.pedidoId)
+    .eq("carniceria_id", params.carniceriaId)
+    .in("estado", ["aprobado", "no_show"])
+    .select("id, cliente_id, estado")
+    .maybeSingle();
+
+  if (!data) return { ok: false, mensaje: "Ese pedido no se puede marcar como retirado." };
+
+  return { ok: true, mensaje: "Marcado como retirado." };
+}
+
+/**
+ * Marca un pedido como no retirado y suma una ausencia al cliente.
+ *
+ * El cron ya marca ausencias solas pasado el margen de gracia, pero es una
+ * aproximación: si el cliente retiró y nadie lo marcó, queda contado como
+ * ausente. Esta acción es la corrección manual, en los dos sentidos.
+ */
+export async function marcarPedidoNoRetirado(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date().toISOString();
+
+  const { data } = await supabaseAdmin
+    .from("pedidos")
+    .update({ estado: "no_show", retirado_at: null, updated_at: ahora, decidido_por: params.decididoPor ?? null })
+    .eq("id", params.pedidoId)
+    .eq("carniceria_id", params.carniceriaId)
+    .in("estado", ["aprobado", "retirado"])
+    .select("id, cliente_id")
+    .maybeSingle();
+
+  if (!data) return { ok: false, mensaje: "Ese pedido no se puede marcar como no retirado." };
+
+  const { data: cliente } = await supabaseAdmin
+    .from("clientes")
+    .select("no_shows")
+    .eq("id", data.cliente_id as string)
+    .single();
+
+  if (cliente) {
+    await supabaseAdmin
+      .from("clientes")
+      .update({ no_shows: Number(cliente.no_shows) + 1 })
+      .eq("id", data.cliente_id as string);
+  }
+
+  return { ok: true, mensaje: "Marcado como no retirado." };
 }
 
 async function avisarClienteDecision(params: {
@@ -1064,8 +1258,9 @@ async function avisarClienteDecision(params: {
   clienteTelefono: string;
   aprobado: boolean;
   horaRetiro?: Date;
+  pedidoId?: string;
 }): Promise<void> {
-  const { carniceriaId, clienteTelefono, aprobado, horaRetiro } = params;
+  const { carniceriaId, clienteTelefono, aprobado, horaRetiro, pedidoId } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const { data: carniceria } = await supabaseAdmin
     .from("carnicerias")
@@ -1083,7 +1278,7 @@ async function avisarClienteDecision(params: {
     : "Uy, no pudimos tomar tu pedido en este momento. Cualquier cosa, escribinos de nuevo.";
 
   try {
-    await enviarWhatsapp({ carniceriaId, desde: carniceria.telefono_whatsapp as string, hacia: clienteTelefono, cuerpo });
+    await enviarWhatsapp({ carniceriaId, hacia: clienteTelefono, cuerpo, origen: "bot", pedidoId });
   } catch (err) {
     console.error("Error avisando al cliente de la decisión del carnicero", err);
   }

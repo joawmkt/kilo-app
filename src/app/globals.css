@@ -1,24 +1,239 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ============================================================
+   SISTEMA DE DISEÑO DEL PANEL
+   ============================================================
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+   Paleta de carnicería: rojo profundo de carne madurada, blancos cálidos de
+   azulejo y papel, cobre de las balanzas viejas.
+
+   ⚠️ La regla que más importa: el BORGOÑA de marca (`brand`) es para navegación
+   y acciones principales; el BERMELLÓN de alerta (`danger`) es solo para
+   problemas. Son hues distintos a propósito — uno tira a vino, el otro a
+   naranja. Nunca usar el de marca para una alerta ni el de alerta para un botón
+   de "Guardar": el carnicero tiene que poder distinguir de un vistazo un botón
+   principal de algo que salió mal.
+
+   Ningún componente escribe un color a mano. Todo sale de estos tokens.
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* Superficies */
+  --bg: #faf7f5;         /* fondo general, blanco cálido tipo papel */
+  --surface: #ffffff;    /* tarjetas */
+  --surface-2: #f3eeeb;  /* fondos secundarios, filas alternas */
+
+  /* Texto */
+  --ink: #1c1715;        /* principal, negro cálido */
+  --ink-2: #5a504c;      /* secundario */
+  --ink-3: #8b807a;      /* terciario, etiquetas */
+
+  --border: #e5dcd7;
+
+  /* Marca — navegación y acciones principales. NO para alertas. */
+  --brand: #7d1f35;
+  --brand-hover: #641828;
+  --brand-soft: #f6e8ea;
+  --brand-contraste: #ffffff;
+
+  /* Cobre — series secundarias en gráficos, acentos discretos */
+  --accent: #b87333;
+  --accent-soft: #f7ede2;
+
+  /* Semánticos — SOLO significan estado */
+  --success: #2e6a4f;
+  --success-soft: #e6f0ea;
+  --warning: #b0741c;
+  --warning-soft: #fbf0dd;
+  --danger: #d14432;
+  --danger-soft: #fbe9e6;
+
+  /* ------------------------------------------------------------
+     Gráficos — marca para la serie principal, cobre para la secundaria.
+     Los colores semánticos (verde, ámbar, rojo) NO se usan como colores de
+     serie: están reservados para significar estado.
+
+     Estos NO son exactamente `--brand` y `--accent`. La serie principal es un
+     paso más claro del borgoña, porque el de marca (#7d1f35) queda por debajo
+     de la banda de luminosidad que necesita una marca de gráfico para leerse
+     sobre fondo claro. Verificado con el validador de paletas: banda de
+     luminosidad, piso de croma, separación para daltonismo (ΔE 16.5 deutan,
+     18.9 en visión normal) y contraste contra la superficie, todo en verde.
+     ------------------------------------------------------------ */
+  --grafico-1: #9a2a44;
+  --grafico-2: #b87333;
+  --grafico-grilla: #e5dcd7;
+
+  --sombra-tarjeta: 0 1px 2px rgb(28 23 21 / 0.04), 0 1px 3px rgb(28 23 21 / 0.06);
+  --sombra-elevada: 0 4px 12px rgb(28 23 21 / 0.08);
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-tema="claro"]) {
+    color-scheme: dark;
+
+    --bg: #171312;
+    --surface: #1f1a18;
+    --surface-2: #292220;
+
+    --ink: #f0eae7;
+    --ink-2: #b5a8a2;
+    --ink-3: #857873;
+
+    --border: #362d2a;
+
+    --brand: #e0798c;
+    --brand-hover: #eb92a2;
+    --brand-soft: #33191f;
+    --brand-contraste: #1f1013;
+
+    --accent: #d89a5c;
+    --accent-soft: #33261a;
+
+    --success: #5fb98f;
+    --success-soft: #163025;
+    --warning: #e0a855;
+    --warning-soft: #33280f;
+    --danger: #f0755f;
+    --danger-soft: #3a1c17;
+
+    --grafico-grilla: #362d2a;
+    /* En oscuro, el rosa de marca (#e0798c) y el cobre (#d89a5c) quedan a
+       ΔE 11.8 en visión normal: dos series pintadas así son indistinguibles
+       incluso para alguien sin daltonismo. Se re-escalonan las dos hasta pasar
+       las seis verificaciones (ΔE 10.1 deutan, 17.9 normal). Por eso los
+       colores de gráfico son tokens propios y no `--brand` / `--accent`. */
+    --grafico-1: #cc5c86;
+    --grafico-2: #ae8c3e;
+
+    --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+    --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
   }
 }
 
+/* El carnicero puede forzar un modo desde el panel: bajo el sol de la vereda
+   el modo claro se lee mejor, y de noche en la cámara pasa lo contrario. */
+:root[data-tema="oscuro"] {
+  color-scheme: dark;
+
+  --bg: #171312;
+  --surface: #1f1a18;
+  --surface-2: #292220;
+
+  --ink: #f0eae7;
+  --ink-2: #b5a8a2;
+  --ink-3: #857873;
+
+  --border: #362d2a;
+
+  --brand: #e0798c;
+  --brand-hover: #eb92a2;
+  --brand-soft: #33191f;
+  --brand-contraste: #1f1013;
+
+  --accent: #d89a5c;
+  --accent-soft: #33261a;
+
+  --success: #5fb98f;
+  --success-soft: #163025;
+  --warning: #e0a855;
+  --warning-soft: #33280f;
+  --danger: #f0755f;
+  --danger-soft: #3a1c17;
+
+  --grafico-grilla: #362d2a;
+  --grafico-1: #cc5c86;
+  --grafico-2: #ae8c3e;
+
+  --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
+  --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
+}
+
+/* ============================================================
+   Mapeo a utilidades de Tailwind
+   Genera bg-surface, text-ink-2, border-border, text-brand, etc.
+   ============================================================ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+
+  --color-border: var(--border);
+
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-soft: var(--brand-soft);
+  --color-brand-contraste: var(--brand-contraste);
+
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+
+  --color-grafico-1: var(--grafico-1);
+  --color-grafico-2: var(--grafico-2);
+  --color-grafico-grilla: var(--grafico-grilla);
+
+  /* Tres familias:
+     - titulo (Archivo): títulos, encabezados de sección, etiquetas.
+     - sans (Public Sans): texto corrido y formularios.
+     - mono (IBM Plex Mono): números — precios, kilos, totales, ejes.
+     Los archivos los trae Fontsource desde el layout del panel (auto-alojados,
+     sin llamadas a Google). El fallback cubre el resto de la app y el instante
+     previo a que la fuente termine de cargar. */
+  --font-titulo: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --shadow-tarjeta: var(--sombra-tarjeta);
+  --shadow-elevada: var(--sombra-elevada);
+}
+
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+/* Los números siempre con cifras tabulares: es lo que hace que una columna de
+   kilos o de precios quede alineada y se pueda leer de reojo. */
+.numero {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Foco visible y consistente: el carnicero puede estar usando una tablet con
+   teclado, o navegando con el teclado sin querer. */
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Tablas anchas scrollean dentro de su contenedor. La página nunca scrollea
+   horizontalmente. */
+html,
+body {
+  overflow-x: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

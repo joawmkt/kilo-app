@@ -226,3 +226,176 @@ en el repo de GitHub → Settings → Secrets and variables → Actions, cargar:
 - **Sin "modificar" en la aprobación del carnicero** (a diferencia de
   stock): si quiere cambiar algo de un pedido, por ahora lo rechaza y
   habla directo con el cliente fuera del bot.
+
+---
+
+# Etapa 4 — Panel del carnicero y migración a la API de Meta
+
+## Qué hay ahora
+
+Un panel web en `/panel` donde el carnicero administra su negocio, y el
+reemplazo de Twilio por la **WhatsApp Cloud API de Meta** como intermediario.
+
+Las dos cosas conviven con lo que ya existía: el bot sigue funcionando igual, y
+Twilio sigue andando para las carnicerías que todavía no migraron.
+
+## Migración a Meta
+
+### Cómo conviven los dos proveedores
+
+`carnicerias.whatsapp_proveedor` decide, **por carnicería**, si va por `twilio` o
+por `meta`. Así el corte se hace de a una y no como un apagón global: la
+carnicería piloto puede seguir sobre Twilio mientras se completan los trámites
+de Meta (verificación de negocio, revisión de la app, registro como Tech
+Provider).
+
+| | Twilio | Meta |
+|---|---|---|
+| Webhook | `/api/webhook/whatsapp` | `/api/webhook/meta` |
+| Validación | firma de Twilio | HMAC-SHA256 del cuerpo crudo con el App Secret |
+| Alta del webhook | pegar la URL | además, un GET con `hub.challenge` |
+| Cómo se contesta | TwiML en la misma respuesta | una llamada aparte a la API |
+| Audios | una URL descargable | un media ID → pedir URL → bajar (3 pasos) |
+| Identificador del número | el número telefónico | el **Phone Number ID** |
+
+La decisión de **qué hacer** con cada mensaje entrante no está duplicada: vive en
+`src/lib/whatsapp/entrante.ts`, que usan los dos webhooks. Así los dos caminos no
+se van separando con el tiempo.
+
+### Estructura de `src/lib/whatsapp/`
+
+| Archivo | Qué resuelve |
+|---|---|
+| `index.ts` | `enviarWhatsapp()` — punto único de salida, elige proveedor y deja el mensaje registrado |
+| `meta.ts` | Cliente de la Cloud API: envío, plantillas, media, firma del webhook |
+| `twilio.ts` | El proveedor viejo, ahora detrás de la misma interfaz |
+| `entrante.ts` | Enrutamiento de un mensaje entrante, común a los dos |
+| `conversaciones.ts` | Agrupa `mensajes_whatsapp` en hilos y lleva la ventana de 24 h |
+| `telefonos.ts` | Formato canónico y el problema del "9" argentino |
+| `tipos.ts` | Tipos compartidos |
+
+### Tres cosas que rompen en producción si se ignoran
+
+1. **El Phone Number ID no es el número telefónico.** Las llamadas a la API usan
+   el ID. Un ID viejo apuntado en `carnicerias.whatsapp_phone_number_id` es la
+   causa más común de "dejó de andar sin que nadie lo tocara".
+2. **La ventana de 24 horas.** Fuera de ella solo se puede mandar una plantilla
+   aprobada; un texto libre falla en el envío. `enviarWhatsapp` lo chequea antes
+   y acepta una `plantillaDeRespaldo` — así el recordatorio de retiro de un
+   pedido de ayer sale igual. El panel deshabilita el campo de escribir cuando la
+   ventana está cerrada, en vez de dejar mandar algo que va a fallar.
+3. **El token permanente.** El que ofrece la consola de desarrolladores vence en
+   horas. Hace falta uno de System User.
+
+### Coexistencia
+
+Los mensajes que el carnicero manda **desde su celular** llegan al webhook como
+`message_echoes`. Se guardan (si no, el hilo del panel tendría agujeros) pero
+**nunca se contestan**: del otro lado ya contestó una persona.
+
+La otra cara: la sincronización se corta si nadie abre la app de WhatsApp en el
+celular al menos una vez cada 14 días. Cada evento del webhook actualiza
+`carnicerias.whatsapp_ultima_actividad_at`, y el panel avisa a los 11 días —
+antes de que se corte, no después. Es la falla más probable en producción y la
+más silenciosa.
+
+## El panel
+
+Ocho módulos bajo `/panel`, con login de Supabase Auth (una cuenta por
+carnicería).
+
+| Ruta | Qué hace |
+|---|---|
+| `/panel` | Inicio: pedidos a aprobar, pedidos de hoy por hora, stock que falta, resumen |
+| `/panel/pedidos` | Historial filtrable + detalle con acciones |
+| `/panel/stock` | Catálogo con búsqueda, filtros y edición in situ de stock y precio |
+| `/panel/mensajes` | Conversaciones y envío desde la computadora |
+| `/panel/clientes` | Agenda con historial y ausencias |
+| `/panel/caja` | Ingresos por pedidos de WhatsApp (gestión interna, **sin valor fiscal**) |
+| `/panel/metricas` | Pedidos por día, cortes más pedidos, horarios, ausencias |
+| `/panel/configuracion` | Datos del negocio, horarios con dos turnos, días especiales, estado de WhatsApp |
+| `/panel/plantillas` | Plantillas del sistema con su estado de aprobación |
+| `/panel/avisos` | La campanita |
+| `/panel/vista-previa` | **Ruta de desarrollo**: el sistema de diseño con datos inventados, para revisar sin base de datos. Borrable. |
+
+### Seguridad
+
+- **Lecturas** con la clave anónima + la sesión del usuario, o sea con Row Level
+  Security puesto: aunque una consulta se olvide de filtrar por carnicería, la
+  base no devuelve filas de otra.
+- **Escrituras** con la service_role, siempre después de `requerirSesion()`, que
+  resuelve la carnicería del usuario leyendo `carnicerias` con RLS. Una Server
+  Action es un endpoint POST alcanzable desde afuera: si no se verifica ahí, no
+  se verifica en ningún lado.
+- La service_role **nunca** llega al navegador: el panel se renderiza en el
+  servidor.
+- `src/proxy.ts` (lo que antes se llamaba middleware) refresca la sesión y manda
+  al login. Es una comodidad, no la seguridad del sistema.
+
+### Aprobar un pedido: una sola implementación
+
+El carnicero puede aprobar desde WhatsApp (contestando "aprobar") o desde el
+panel. Las dos vías llaman a `aprobarPedido()` / `rechazarPedido()` en
+`flujoPedidos.ts`: mismo cambio de estado, mismo descuento de stock, mismo aviso
+al cliente. El `.eq("estado", "pendiente_aprobacion")` del UPDATE es lo que evita
+que un pedido se apruebe dos veces si toca el botón justo cuando ya contestó por
+WhatsApp.
+
+## Decisiones tomadas en esta etapa (30/08/2026)
+
+| Tema | Decisión |
+|---|---|
+| Proveedor de WhatsApp | Directo a Meta; Carnicom se hace Tech Provider |
+| Mensajería en el panel | Historial completo **más** envío desde la computadora |
+| Precio | El bot lo dice como estimativo, aclarando que el total se define al pesar |
+| Horarios | Híbrido: el bot toma el pedido fuera de hora pero avisa y ofrece los horarios |
+| Plantillas de Meta | Centralizadas: las mantiene la plataforma, el panel solo las muestra |
+
+### Lo que sigue abierto
+
+- **Ventas del mostrador.** No están registradas en ningún lado. Por eso la caja
+  dice "Pedidos por WhatsApp" y nunca "ventas totales", y aclara en pantalla qué
+  no incluye. Cuando se decida cómo registrarlas, el único lugar a tocar es
+  `obtenerIngresos()` en `src/lib/panel/caja.ts`.
+- **Plantillas por carnicería.** Si se habilita, hace falta validar la categoría
+  antes de mandarla a aprobar: una plantilla promocional enviada como "utility"
+  la recategoriza Meta como marketing y cuesta cinco veces más.
+- **El nombre de la marca.** El token `{{MARCA}}` sigue sin resolver, y vive en
+  un solo archivo: `src/lib/panel/marca.tsx`. Completarlo es editar esa constante.
+
+## Sistema de diseño
+
+Tokens de color en `src/app/globals.css`, para modo claro y oscuro. Ningún
+componente escribe un color a mano.
+
+La regla que más importa: **el borgoña de marca es para navegación y acciones
+principales; el bermellón de alerta es solo para problemas.** Son hues distintos
+a propósito.
+
+Los colores de gráfico (`--grafico-1`, `--grafico-2`) son tokens propios y no
+`--brand` / `--accent`: el borgoña de marca queda por debajo de la banda de
+luminosidad que necesita una marca de gráfico, y en modo oscuro el rosa y el
+cobre del sistema quedan a ΔE 11.8 en visión normal — dos series pintadas así
+son indistinguibles incluso para alguien sin daltonismo. Los pasos que se usan
+pasan las seis verificaciones (banda de luminosidad, piso de croma, separación
+para daltonismo, piso de visión normal y contraste).
+
+Las tres tipografías (Archivo, Public Sans, IBM Plex Mono) se sirven desde
+paquetes de Fontsource y no desde `next/font/google`: este último las descarga
+**de Google en cada build**, y si esa llamada falla el build entero se cae.
+Fontsource trae los `.woff2` dentro del paquete de npm.
+
+## Para levantarlo
+
+```bash
+npm install          # trae @supabase/ssr y los tres paquetes de fuentes
+npm run dev
+```
+
+Correr en Supabase la migración `supabase/migrations/0013_panel_carnicero.sql`, y
+cargar en Vercel las variables nuevas de `.env.local.example`.
+
+Para crear la primera cuenta: dar de alta el usuario en Supabase Auth y enlazarlo
+con `update carnicerias set owner_user_id = '<uuid del usuario>' where id = '<uuid de la carnicería>';`.
+Sin ese enlace el panel muestra la pantalla "tu cuenta todavía no tiene
+carnicería" en vez de romperse.

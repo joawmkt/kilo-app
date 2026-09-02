@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { enviarWhatsapp } from "@/lib/twilioEnviar";
+import { enviarWhatsapp } from "@/lib/whatsapp";
 import { formatearHoraArgentina } from "@/lib/tiempo";
+import { avisarClienteNoRetiro } from "@/lib/notificaciones";
 
 // Etapa 3, Paso 7-8 — recordatorio antes de la hora de retiro + marcado
 // automático de ausencias ("no-show"). No hay nada corriendo en background
@@ -55,7 +56,7 @@ export async function GET(request: NextRequest) {
   // ------------------------------------------------------------
   const { data: paraRecordar, error: errRecordar } = await supabaseAdmin
     .from("pedidos")
-    .select("id, carniceria_id, telefono, hora_retiro")
+    .select("id, carniceria_id, cliente_id, telefono, hora_retiro")
     .eq("estado", "aprobado")
     .is("recordatorio_enviado_at", null)
     .lte("hora_retiro", limiteRecordatorio.toISOString())
@@ -68,19 +69,34 @@ export async function GET(request: NextRequest) {
 
   for (const pedido of paraRecordar ?? []) {
     try {
-      const { data: carniceria } = await supabaseAdmin
-        .from("carnicerias")
-        .select("telefono_whatsapp")
-        .eq("id", pedido.carniceria_id)
-        .single();
+      const hora = formatearHoraArgentina(new Date(pedido.hora_retiro as string));
 
-      if (!carniceria?.telefono_whatsapp) continue;
+      // Meta rechaza una plantilla con un parámetro vacío, así que si no
+      // tenemos el nombre del cliente usamos un saludo genérico.
+      const { data: clienteDelPedido } = await supabaseAdmin
+        .from("clientes")
+        .select("nombre")
+        .eq("id", pedido.cliente_id as string)
+        .maybeSingle();
+      const nombreCliente = (clienteDelPedido?.nombre as string | null)?.trim() || "vecino/a";
 
+      // El recordatorio sale 1 hora antes del retiro, pero el pedido puede
+      // haberse hecho ayer: si el cliente no escribió en las últimas 24 horas,
+      // la ventana de Meta está cerrada y el texto libre no sale. Por eso se
+      // pasa una plantilla de respaldo — es exactamente el caso de uso para el
+      // que existen las plantillas. `enviarWhatsapp` usa el texto si la ventana
+      // está abierta (más barato y más natural) y la plantilla si no.
       await enviarWhatsapp({
         carniceriaId: pedido.carniceria_id as string,
-        desde: carniceria.telefono_whatsapp as string,
         hacia: pedido.telefono as string,
-        cuerpo: `🔔 Recordatorio: tu pedido te espera a las ${formatearHoraArgentina(new Date(pedido.hora_retiro as string))}hs. ¡Te esperamos!`,
+        cuerpo: `🔔 Recordatorio: tu pedido te espera a las ${hora}hs. ¡Te esperamos!`,
+        origen: "bot",
+        pedidoId: pedido.id as string,
+        plantillaDeRespaldo: {
+          nombre: "recordatorio_retiro",
+          idioma: "es_AR",
+          variables: [nombreCliente, hora],
+        },
       });
 
       await supabaseAdmin
@@ -100,7 +116,7 @@ export async function GET(request: NextRequest) {
   // ------------------------------------------------------------
   const { data: paraNoShow, error: errNoShow } = await supabaseAdmin
     .from("pedidos")
-    .select("id, cliente_id")
+    .select("id, carniceria_id, cliente_id")
     .eq("estado", "aprobado")
     .is("retirado_at", null)
     .lt("hora_retiro", limiteNoShow.toISOString());
@@ -116,7 +132,7 @@ export async function GET(request: NextRequest) {
 
       const { data: cliente } = await supabaseAdmin
         .from("clientes")
-        .select("no_shows")
+        .select("no_shows, nombre")
         .eq("id", pedido.cliente_id)
         .single();
 
@@ -126,6 +142,14 @@ export async function GET(request: NextRequest) {
           .update({ no_shows: Number(cliente.no_shows) + 1 })
           .eq("id", pedido.cliente_id);
       }
+
+      // Que quede en la campanita del panel: el carnicero puede querer
+      // corregirlo si en realidad el cliente sí pasó a buscarlo.
+      await avisarClienteNoRetiro({
+        carniceriaId: pedido.carniceria_id as string,
+        pedidoId: pedido.id as string,
+        clienteNombre: (cliente?.nombre as string | null) ?? null,
+      });
 
       noShowsMarcados++;
     } catch (err) {

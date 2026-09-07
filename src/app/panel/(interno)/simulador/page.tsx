@@ -11,7 +11,14 @@ import { PRODUCTO } from "@/lib/marca";
 // real la pantalla no se muestra: un mensaje de prueba le llegaría a un cliente
 // de verdad.
 
-const TELEFONO_DE_PRUEBA = "+5493400000001";
+// Dos números de prueba, uno por lado. Son distintos a propósito: el motor
+// guarda una conversación por teléfono, así que compartir número mezclaría el
+// hilo del cliente con el de la carga de stock y ninguno de los dos se
+// entendería. Ninguno de los dos está en `numeros_carnicero` — el simulador
+// arma el recorrido del carnicero a mano justamente para no dejar un permiso
+// de verdad abierto (ver acciones.ts).
+const TELEFONO_CLIENTE = "+5493400000001";
+const TELEFONO_CARNICERO = "+5493400000002";
 
 export default async function SimuladorPage() {
   const sesion = await requerirSesion();
@@ -38,20 +45,35 @@ export default async function SimuladorPage() {
 
   const supabase = await getSupabaseServidor();
 
-  const { data: conversacion } = await supabase
-    .from("conversaciones")
-    .select("id")
-    .eq("telefono", `whatsapp:${TELEFONO_DE_PRUEBA}`)
-    .maybeSingle();
+  async function hiloDe(telefono: string): Promise<MensajeDelPanel[]> {
+    const { data: conversacion } = await supabase
+      .from("conversaciones")
+      .select("id")
+      .eq("telefono", `whatsapp:${telefono}`)
+      .maybeSingle();
 
-  const { data: mensajes } = conversacion
-    ? await supabase
-        .from("mensajes_whatsapp")
-        .select("id, direccion, tipo, cuerpo, origen, created_at")
-        .eq("conversacion_id", conversacion.id)
-        .order("created_at", { ascending: true })
-        .limit(200)
-    : { data: [] };
+    if (!conversacion) return [];
+
+    const { data } = await supabase
+      .from("mensajes_whatsapp")
+      .select("id, direccion, tipo, cuerpo, origen, created_at")
+      .eq("conversacion_id", conversacion.id)
+      .order("created_at", { ascending: true })
+      .limit(200);
+
+    return ((data ?? []) as unknown as FilaMensaje[]).map((fila) => ({
+      id: fila.id,
+      direccion: fila.direccion as "entrante" | "saliente",
+      cuerpo: fila.cuerpo,
+      origen: fila.origen,
+      creadoAt: fila.created_at,
+    }));
+  }
+
+  const [mensajesCliente, mensajesCarnicero] = await Promise.all([
+    hiloDe(TELEFONO_CLIENTE),
+    hiloDe(TELEFONO_CARNICERO),
+  ]);
 
   const { count: productosConStock } = await supabase
     .from("productos")
@@ -64,7 +86,8 @@ export default async function SimuladorPage() {
       <header>
         <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Simulador</h1>
         <p className="mt-0.5 text-sm text-ink-2">
-          Escribile al bot como si fueras un cliente, sin que salga nada a WhatsApp.
+          Probá las dos puntas del sistema sin que salga nada a WhatsApp: el cliente que hace un
+          pedido y la carnicería que carga stock.
         </p>
       </header>
 
@@ -77,63 +100,30 @@ export default async function SimuladorPage() {
         </p>
       </div>
 
-      {productosConStock === 0 ? (
-        <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
-          No hay ningún producto con stock cargado, así que el bot va a rechazar todo lo que pidas.{" "}
-          <Link href="/panel/stock" className="font-semibold text-brand">
-            Cargá stock primero
-          </Link>
-          .
-        </div>
-      ) : null}
-
       <Simulador
-        telefonoDePrueba={TELEFONO_DE_PRUEBA}
-        mensajes={((mensajes ?? []) as unknown as FilaMensaje[]).map((fila) => ({
-          id: fila.id,
-          direccion: fila.direccion as "entrante" | "saliente",
-          cuerpo: fila.cuerpo,
-          origen: fila.origen,
-          creadoAt: fila.created_at,
-        }))}
+        telefonoCliente={TELEFONO_CLIENTE}
+        telefonoCarnicero={TELEFONO_CARNICERO}
+        mensajesCliente={mensajesCliente}
+        mensajesCarnicero={mensajesCarnicero}
+        sinStock={productosConStock === 0}
       />
 
-      <Tarjeta className="p-4 sm:p-5">
-        <h2 className="font-titulo text-base font-semibold text-ink">Qué probar</h2>
-        <ul className="mt-2 flex flex-col gap-1.5 text-sm text-ink-2">
-          <li>
-            <strong className="text-ink">Un pedido normal:</strong> &ldquo;hola, quiero 2 kilos de
-            asado para las 7 de la tarde&rdquo;.
-          </li>
-          <li>
-            <strong className="text-ink">Un corte que no tenés:</strong> pedí algo que esté en cero y
-            fijate si ofrece una alternativa parecida.
-          </li>
-          <li>
-            <strong className="text-ink">Sin decir cantidades:</strong> &ldquo;quiero asado y
-            chorizo&rdquo; — tiene que preguntarte para cuántos son y calcular los kilos.
-          </li>
-          <li>
-            <strong className="text-ink">Una palabra ambigua:</strong> &ldquo;quiero tapa&rdquo; —
-            tiene que preguntar cuál.
-          </li>
-          <li>
-            <strong className="text-ink">Después de armar el pedido:</strong> andá a{" "}
-            <Link href="/panel" className="font-semibold text-brand">
-              Inicio
-            </Link>{" "}
-            y aprobalo. El cliente simulado recibe la confirmación y se descuenta el stock.
-          </li>
-        </ul>
-      </Tarjeta>
-
       <p className="text-xs text-ink-3">
-        Lo que el simulador no prueba: que el webhook de Meta esté bien configurado, los audios (no
-        hay archivo que descargar) y las plantillas, que acá se dan por aprobadas.
+        Lo que el simulador no prueba: que el webhook de Meta esté bien configurado, la transcripción
+        de los audios (no hay archivo que descargar, así que la carga de stock se escribe) y las
+        plantillas, que acá se dan por aprobadas.
       </p>
     </div>
   );
 }
+
+type MensajeDelPanel = {
+  id: string;
+  direccion: "entrante" | "saliente";
+  cuerpo: string | null;
+  origen: string | null;
+  creadoAt: string;
+};
 
 type FilaMensaje = {
   id: string;

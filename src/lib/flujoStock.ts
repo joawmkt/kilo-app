@@ -310,6 +310,31 @@ export async function procesarAudioDeStock(params: {
     return "El audio me llegó vacío o no se entendió nada. ¿Podés repetirlo?";
   }
 
+  return await procesarTextoDeStock({ carniceriaId, telefono, mensajeWhatsappId, texto: transcripcion });
+}
+
+/**
+ * Abre (o amplía) una carga de stock a partir de TEXTO ya legible.
+ *
+ * Es el cuerpo de `procesarAudioDeStock` de la transcripción en adelante. Se
+ * separó para que el simulador del panel pueda ejercitar exactamente el mismo
+ * camino sin un archivo de audio: en WhatsApp el carnicero manda un audio y
+ * Whisper lo convierte en esta misma cadena de texto. De la transcripción para
+ * acá no hay dos versiones del motor, hay una sola.
+ *
+ * Ojo con la diferencia que sí existe: en WhatsApp una carga de stock EMPIEZA
+ * con un audio, y el texto suelto solo sirve para contestar sobre una operación
+ * ya abierta (ver `procesarTextoEntrante`). Quien llame a esta función está
+ * salteando esa regla a propósito.
+ */
+export async function procesarTextoDeStock(params: {
+  carniceriaId: string;
+  telefono: string;
+  mensajeWhatsappId?: string;
+  texto: string;
+}): Promise<string> {
+  const { carniceriaId, telefono, mensajeWhatsappId, texto } = params;
+
   let catalogo: CatalogoCarniceria;
   try {
     catalogo = await cargarCatalogo(carniceriaId);
@@ -318,14 +343,14 @@ export async function procesarAudioDeStock(params: {
     return "Tuve un problema técnico cargando el catálogo. Probá de nuevo en un rato.";
   }
 
-  // Si ya hay una operación en curso para este número, un audio nuevo se
+  // Si ya hay una operación en curso para este número, un mensaje nuevo se
   // trata como información adicional de ESA misma operación (no se abre
   // una segunda operación en paralelo ni se pisa silenciosamente).
   const opExistente = await obtenerOperacionPendienteActiva(carniceriaId, telefono);
   const opActiva = opExistente && !opExistente.vencida ? opExistente : null;
 
   const resultado = await interpretarMensajeStock(
-    transcripcion,
+    texto,
     catalogo.promptCatalogo,
     opActiva
       ? {
@@ -343,7 +368,7 @@ export async function procesarAudioDeStock(params: {
     operacionId: opActiva?.id,
     resultado,
     catalogo,
-    texto: transcripcion,
+    texto,
   });
 }
 

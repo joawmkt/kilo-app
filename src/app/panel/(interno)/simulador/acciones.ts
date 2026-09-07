@@ -8,6 +8,7 @@ import { enviarWhatsapp, aFormatoCanonico } from "@/lib/whatsapp";
 import { registrarMensaje } from "@/lib/whatsapp/conversaciones";
 import { procesarTextoEntrante, procesarTextoDeStock } from "@/lib/flujoStock";
 import { procesarDecisionCarnicero } from "@/lib/flujoPedidos";
+import { transcribirAudio } from "@/lib/whisper";
 import { sumarUso } from "@/lib/uso";
 import type { MensajeEntranteNormalizado } from "@/lib/whatsapp/tipos";
 
@@ -25,6 +26,65 @@ import type { MensajeEntranteNormalizado } from "@/lib/whatsapp/tipos";
 
 export type ResultadoSimulacion = { ok: boolean; mensaje: string };
 
+// Ocho megas alcanzan de sobra para un audio de un par de minutos en opus, que
+// es lo que graba el navegador. Además está el tope de Next para los Server
+// Actions (ver next.config.ts): si este número sube, ese tiene que subir también.
+const LIMITE_AUDIO_BYTES = 8 * 1024 * 1024;
+
+type MensajeDelFormulario =
+  | { ok: true; texto: string; esAudio: boolean }
+  | { ok: false; mensaje: string };
+
+/**
+ * Un mensaje del simulador puede llegar escrito o grabado.
+ *
+ * Si llega grabado, se transcribe con Whisper —el mismo modelo, la misma
+ * función y el mismo idioma que usa el webhook de verdad— y de ahí en adelante
+ * el recorrido es idéntico al de un texto. Eso hace que el simulador sí
+ * ejercite la transcripción, que era el agujero más grande que tenía: la voz de
+ * un carnicero en su cámara, con ruido y modismos, es exactamente donde esto se
+ * rompe o funciona.
+ *
+ * Lo único que sigue sin probarse es la descarga del archivo desde los
+ * servidores de Meta, porque acá el audio ya llega en la mano.
+ */
+async function mensajeDelFormulario(datos: FormData): Promise<MensajeDelFormulario> {
+  const audio = datos.get("audio");
+
+  if (audio instanceof File && audio.size > 0) {
+    if (audio.size > LIMITE_AUDIO_BYTES) {
+      return { ok: false, mensaje: "Ese audio pesa demasiado. Probá con uno más corto." };
+    }
+
+    let transcripcion: string;
+    try {
+      const buffer = Buffer.from(await audio.arrayBuffer());
+      transcripcion = await transcribirAudio(buffer, audio.name || "audio.webm");
+    } catch (err) {
+      console.error("Error transcribiendo un audio del simulador", err);
+      return {
+        ok: false,
+        mensaje:
+          "No pude transcribir ese audio. Revisá que OPENAI_API_KEY esté cargada y probá de nuevo.",
+      };
+    }
+
+    if (!transcripcion) {
+      return {
+        ok: false,
+        mensaje: "El audio llegó vacío o no se entendió nada. Probá de nuevo, más cerca del micrófono.",
+      };
+    }
+
+    return { ok: true, texto: transcripcion, esAudio: true };
+  }
+
+  const texto = String(datos.get("texto") ?? "").trim();
+  if (!texto) return { ok: false, mensaje: "Escribí un mensaje o grabá un audio." };
+  if (texto.length > 2000) return { ok: false, mensaje: "El mensaje es demasiado largo." };
+  return { ok: true, texto, esAudio: false };
+}
+
 export async function enviarComoCliente(
   _previo: ResultadoSimulacion | null,
   datos: FormData
@@ -39,12 +99,13 @@ export async function enviarComoCliente(
     };
   }
 
-  const texto = String(datos.get("texto") ?? "").trim();
   const telefonoCrudo = String(datos.get("telefono") ?? "").trim();
   const nombre = String(datos.get("nombre") ?? "").trim();
 
-  if (!texto) return { ok: false, mensaje: "Escribí un mensaje." };
-  if (texto.length > 2000) return { ok: false, mensaje: "El mensaje es demasiado largo." };
+  const entrada = await mensajeDelFormulario(datos);
+  if (!entrada.ok) return entrada;
+  const { texto, esAudio } = entrada;
+
   if (telefonoCrudo.replace(/\D/g, "").length < 8) {
     return { ok: false, mensaje: "Poné un teléfono de al menos 8 dígitos." };
   }
@@ -56,7 +117,11 @@ export async function enviarComoCliente(
   const mensaje: MensajeEntranteNormalizado = {
     telefono,
     nombrePerfil: nombre || null,
-    tipo: "texto",
+    // Se marca como audio para que el hilo del panel lo muestre como lo que
+    // fue. `media` va en null porque no hay archivo que descargar: el audio ya
+    // se transcribió acá arriba, que es justo lo que hace el webhook real antes
+    // de llegar a este punto.
+    tipo: esAudio ? "audio" : "texto",
     texto,
     media: null,
     proveedorMensajeId: null,
@@ -73,6 +138,7 @@ export async function enviarComoCliente(
     });
 
     await sumarUso(carniceriaId, "mensajes_recibidos");
+    if (esAudio) await sumarUso(carniceriaId, "audios_transcriptos");
 
     // El webhook de Meta contesta con una llamada aparte a la API; acá pasa lo
     // mismo, solo que el "envío" no sale a internet.
@@ -129,11 +195,12 @@ export async function enviarComoCarnicero(
     };
   }
 
-  const texto = String(datos.get("texto") ?? "").trim();
   const telefonoCrudo = String(datos.get("telefono") ?? "").trim();
 
-  if (!texto) return { ok: false, mensaje: "Escribí un mensaje." };
-  if (texto.length > 2000) return { ok: false, mensaje: "El mensaje es demasiado largo." };
+  const entrada = await mensajeDelFormulario(datos);
+  if (!entrada.ok) return entrada;
+  const { texto, esAudio } = entrada;
+
   if (telefonoCrudo.replace(/\D/g, "").length < 8) {
     return { ok: false, mensaje: "Poné un teléfono de al menos 8 dígitos." };
   }
@@ -151,11 +218,13 @@ export async function enviarComoCarnicero(
       telefonoInterlocutor: telefono,
       telefonoCarniceria,
       direccion: "entrante",
-      tipo: "texto",
+      tipo: esAudio ? "audio" : "texto",
+      // El cuerpo guardado es la transcripción, igual que en el flujo real: el
+      // panel muestra lo que se entendió, no un adjunto que nadie puede abrir.
       cuerpo: texto,
       origen: "app_whatsapp",
       esCarnicero: true,
-      rawPayload: { simulado: true, comoCarnicero: true },
+      rawPayload: { simulado: true, comoCarnicero: true, audio: esAudio },
       reiniciaVentana: true,
     });
 
@@ -189,6 +258,7 @@ export async function enviarComoCarnicero(
     }
 
     await sumarUso(carniceriaId, "mensajes_recibidos");
+    if (esAudio) await sumarUso(carniceriaId, "audios_transcriptos");
 
     if (respuesta) {
       await enviarWhatsapp({

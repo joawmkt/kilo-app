@@ -109,9 +109,10 @@ export default async function SimuladorPage() {
       />
 
       <p className="text-xs text-ink-3">
-        Lo que el simulador no prueba: que el webhook de Meta esté bien configurado, la transcripción
-        de los audios (no hay archivo que descargar, así que la carga de stock se escribe) y las
-        plantillas, que acá se dan por aprobadas.
+        Los audios que grabás acá se transcriben con el mismo modelo que va a usar el sistema en
+        producción. Lo que el simulador todavía no prueba: que el webhook de Meta esté bien
+        configurado, la descarga del archivo desde los servidores de Meta (acá el audio ya llega en
+        la mano) y las plantillas, que se dan por aprobadas.
       </p>
     </div>
   );

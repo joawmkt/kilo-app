@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useRef, useState, useTransition } from "react";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { Tarjeta, TarjetaEncabezado, EstadoVacio, clasesBoton } from "./ui";
@@ -102,13 +102,13 @@ export function Simulador({
         <div role="tabpanel" aria-labelledby="solapa-carnicero" className="flex flex-col gap-4">
           <div className="rounded-xl border border-accent/40 bg-accent-soft px-4 py-3">
             <p className="font-titulo text-sm font-semibold text-ink">
-              En WhatsApp esto se hace hablando
+              Probalo hablando, que es como se usa
             </p>
             <p className="mt-1 text-sm text-ink-2">
-              El carnicero manda un audio mientras acomoda la mercadería —&nbsp;no escribe nada.
-              Acá lo escribís porque el simulador no puede recibir archivos de voz. De ahí en
-              adelante es exactamente el mismo motor: lo que hace el audio es convertirse en este
-              mismo texto antes de entrar.
+              El carnicero manda un audio mientras acomoda la mercadería, con las manos frías y la
+              cámara de fondo. Grabá uno acá con el micrófono y vas a ver el recorrido completo:
+              se transcribe, se entiende y se te muestra el resumen para confirmar. Escribir también
+              sirve, pero es la versión fácil.
             </p>
           </div>
 
@@ -280,6 +280,16 @@ function Conversacion({
           <BotonEnviar />
         </div>
 
+        <Grabador
+          onEnviar={(archivo) => {
+            const datos = new FormData();
+            datos.set("telefono", telefono);
+            if (campoNombre) datos.set("nombre", campoNombre);
+            datos.set("audio", archivo, archivo.name);
+            accion(datos);
+          }}
+        />
+
         {estado && !estado.ok ? (
           <p role="alert" className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
             {estado.mensaje}
@@ -294,6 +304,186 @@ function Conversacion({
       </form>
     </Tarjeta>
   );
+}
+
+// Grabar un audio, que es como se usa esto de verdad.
+//
+// El carnicero tiene las manos ocupadas y frío: no va a escribir "entraron
+// veinte kilos de asado", va a apretar el micrófono y hablar. Poder grabar acá
+// hace que el simulador ejercite la parte que más se rompe —entender a alguien
+// hablando con ruido de fondo y modismos del oficio— en vez de darla por buena.
+//
+// El archivo se manda al servidor y se transcribe ahí con la misma función que
+// usa el webhook real. Nunca queda guardado: lo que se guarda es el texto.
+
+type FormatoGrabacion = { mime: string; extension: string };
+
+function formatoSoportado(): FormatoGrabacion | null {
+  if (typeof MediaRecorder === "undefined") return null;
+  const candidatos: FormatoGrabacion[] = [
+    { mime: "audio/webm;codecs=opus", extension: "webm" },
+    { mime: "audio/webm", extension: "webm" },
+    { mime: "audio/ogg;codecs=opus", extension: "ogg" },
+    { mime: "audio/mp4", extension: "m4a" },
+  ];
+  return candidatos.find((c) => MediaRecorder.isTypeSupported(c.mime)) ?? null;
+}
+
+function Grabador({ onEnviar }: { onEnviar: (archivo: File) => void }) {
+  const [estado, setEstado] = useState<"inactivo" | "grabando" | "listo">("inactivo");
+  const [segundos, setSegundos] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [grabado, setGrabado] = useState<{ archivo: File; url: string } | null>(null);
+
+  const grabadora = useRef<MediaRecorder | null>(null);
+  const pedazos = useRef<Blob[]>([]);
+
+  // El cronómetro mientras se graba. Se limpia solo al salir del estado.
+  useEffect(() => {
+    if (estado !== "grabando") return;
+    const id = setInterval(() => setSegundos((s) => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [estado]);
+
+  // Soltar la URL del preview y el micrófono si el componente desaparece.
+  useEffect(() => {
+    return () => {
+      grabadora.current?.stream.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function descartar() {
+    if (grabado) URL.revokeObjectURL(grabado.url);
+    setGrabado(null);
+    setSegundos(0);
+    setEstado("inactivo");
+  }
+
+  async function empezar() {
+    setError(null);
+
+    const formato = formatoSoportado();
+    if (!formato || !navigator.mediaDevices?.getUserMedia) {
+      setError("Este navegador no deja grabar audio acá. Podés subir un archivo con el botón de al lado.");
+      return;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError("No pude usar el micrófono. Permitilo en el candado de la barra de direcciones y probá de nuevo.");
+      return;
+    }
+
+    pedazos.current = [];
+    const rec = new MediaRecorder(stream, { mimeType: formato.mime });
+
+    rec.ondataavailable = (evento) => {
+      if (evento.data.size > 0) pedazos.current.push(evento.data);
+    };
+
+    rec.onstop = () => {
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(pedazos.current, { type: formato.mime });
+      if (blob.size === 0) {
+        setError("La grabación salió vacía. Probá de nuevo.");
+        setEstado("inactivo");
+        return;
+      }
+      const archivo = new File([blob], `audio.${formato.extension}`, { type: formato.mime });
+      setGrabado({ archivo, url: URL.createObjectURL(blob) });
+      setEstado("listo");
+    };
+
+    grabadora.current = rec;
+    setSegundos(0);
+    rec.start();
+    setEstado("grabando");
+  }
+
+  function detener() {
+    grabadora.current?.stop();
+  }
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      {estado === "grabando" ? (
+        <div className="flex items-center justify-between gap-3">
+          <span className="flex items-center gap-2 text-sm text-danger">
+            <span aria-hidden className="h-2.5 w-2.5 animate-pulse rounded-full bg-danger" />
+            Grabando <span className="numero">{formatearSegundos(segundos)}</span>
+          </span>
+          <button type="button" onClick={detener} className={clasesBoton("principal")}>
+            Detener
+          </button>
+        </div>
+      ) : estado === "listo" && grabado ? (
+        <div className="flex flex-col gap-2">
+          <audio controls src={grabado.url} className="w-full" />
+          <div className="flex items-center justify-end gap-2">
+            <button type="button" onClick={descartar} className={clasesBoton("fantasma")}>
+              Descartar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onEnviar(grabado.archivo);
+                descartar();
+              }}
+              className={clasesBoton("principal")}
+            >
+              Enviar audio
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={empezar} className={clasesBoton("secundario")}>
+            🎙️ Grabar un audio
+          </button>
+
+          {/* El input real queda oculto y el label hace de botón. `focus-within`
+              es lo que devuelve el anillo de foco: sin eso, quien navega con
+              teclado llega al control y no ve dónde está parado. */}
+          <label
+            className={clasesBoton(
+              "fantasma",
+              "cursor-pointer focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-brand"
+            )}
+          >
+            Subir un audio
+            <input
+              type="file"
+              accept="audio/*"
+              className="sr-only"
+              onChange={(evento) => {
+                const archivo = evento.target.files?.[0];
+                evento.target.value = "";
+                if (archivo) onEnviar(archivo);
+              }}
+            />
+          </label>
+
+          <span className="text-xs text-ink-3">
+            Como en WhatsApp. Se transcribe en el servidor; el audio no se guarda.
+          </span>
+        </div>
+      )}
+
+      {error ? (
+        <p role="alert" className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function formatearSegundos(total: number): string {
+  const minutos = Math.floor(total / 60);
+  const resto = total % 60;
+  return `${minutos}:${String(resto).padStart(2, "0")}`;
 }
 
 function QueProbarCliente() {
@@ -339,9 +529,15 @@ function QueProbarCarnicero() {
       <h2 className="font-titulo text-base font-semibold text-ink">Qué probar como carnicero</h2>
       <ul className="mt-2 flex flex-col gap-1.5 text-sm text-ink-2">
         <li>
-          <strong className="text-ink">Una entrada de mercadería:</strong> &ldquo;entraron 20 kilos
-          de asado y 8 de vacío&rdquo;. Mostrá el resumen y contestá{" "}
+          <strong className="text-ink">Una entrada de mercadería, hablada:</strong> apretá{" "}
+          <strong className="text-ink">Grabar un audio</strong> y decí &ldquo;entraron 20 kilos de
+          asado y 8 de vacío&rdquo;. Mirá el resumen y contestá{" "}
           <strong className="text-ink">confirmar</strong>.
+        </li>
+        <li>
+          <strong className="text-ink">Con ruido de verdad:</strong> grabá en el local, con la
+          sierra o la radio de fondo. Es donde la transcripción se pone difícil, y es mejor saberlo
+          ahora que delante de un cliente.
         </li>
         <li>
           <strong className="text-ink">Corregir antes de confirmar:</strong> cuando te muestre el

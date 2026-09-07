@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ============================================================
-   SISTEMA DE DISEÑO DEL PANEL
+   SISTEMA DE DISEÑO DE KILO
    ============================================================
 
    Paleta de carnicería: rojo profundo de carne madurada, blancos cálidos de
@@ -14,7 +14,14 @@
    de "Guardar": el carnicero tiene que poder distinguir de un vistazo un botón
    principal de algo que salió mal.
 
-   Ningún componente escribe un color a mano. Todo sale de estos tokens.
+   Ningún componente del panel escribe un color a mano. Todo sale de acá.
+
+   La identidad de Ainnova (navy, ámbar, Sora, Inter) NO está en este archivo:
+   vive en el repositorio del sitio institucional, que es un proyecto aparte.
+   Ainnova es la empresa; KILO es el producto, y esta es su herramienta.
+
+   Las reglas siguen acotadas a `.panel` porque `/conectar` es pública y no
+   tiene el armazón del panel, pero comparte el sistema.
    ============================================================ */
 
 :root {
@@ -72,8 +79,6 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-tema="claro"]) {
-    color-scheme: dark;
-
     --bg: #171312;
     --surface: #1f1a18;
     --surface-2: #292220;
@@ -111,13 +116,18 @@
     --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
     --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
   }
+
+  /* `color-scheme` se declara en `.panel` y no en `:root` para que solo cambien
+     los controles de formulario de las pantallas que realmente tienen modo
+     oscuro. */
+  .panel:not([data-tema="claro"] .panel) {
+    color-scheme: dark;
+  }
 }
 
 /* El carnicero puede forzar un modo desde el panel: bajo el sol de la vereda
    el modo claro se lee mejor, y de noche en la cámara pasa lo contrario. */
 :root[data-tema="oscuro"] {
-  color-scheme: dark;
-
   --bg: #171312;
   --surface: #1f1a18;
   --surface-2: #292220;
@@ -149,6 +159,10 @@
 
   --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
   --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
+}
+
+:root[data-tema="oscuro"] .panel {
+  color-scheme: dark;
 }
 
 /* ============================================================
@@ -185,25 +199,61 @@
   --color-grafico-2: var(--grafico-2);
   --color-grafico-grilla: var(--grafico-grilla);
 
-  /* Tres familias:
+  /* Las tres familias del panel:
      - titulo (Archivo): títulos, encabezados de sección, etiquetas.
-     - sans (Public Sans): texto corrido y formularios.
+     - panel (Public Sans): texto corrido y formularios.
      - mono (IBM Plex Mono): números — precios, kilos, totales, ejes.
      Los archivos los trae Fontsource desde el layout del panel (auto-alojados,
-     sin llamadas a Google). El fallback cubre el resto de la app y el instante
-     previo a que la fuente termine de cargar. */
+     sin llamadas a Google).
+
+     `--font-panel` en vez de pisar `--font-sans`: así queda explícito qué
+     fuente usa el panel, y nada la hereda por accidente. */
   --font-titulo: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
-  --font-sans: "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-panel: "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
 
   --shadow-tarjeta: var(--sombra-tarjeta);
   --shadow-elevada: var(--sombra-elevada);
 }
 
+/* ============================================================
+   Base
+   ============================================================ */
+
 body {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--ink);
+  -webkit-text-size-adjust: 100%;
 }
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Tablas anchas scrollean dentro de su contenedor. La página nunca scrollea
+   horizontalmente. */
+html,
+body {
+  overflow-x: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Reglas del panel
+   ============================================================ */
 
 /* Los números siempre con cifras tabulares: es lo que hace que una columna de
    kilos o de precios quede alineada y se pueda leer de reojo. */
@@ -215,25 +265,8 @@ body {
 
 /* Foco visible y consistente: el carnicero puede estar usando una tablet con
    teclado, o navegando con el teclado sin querer. */
-:focus-visible {
+.panel :focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
   border-radius: 4px;
-}
-
-/* Tablas anchas scrollean dentro de su contenedor. La página nunca scrollea
-   horizontalmente. */
-html,
-body {
-  overflow-x: hidden;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
 }

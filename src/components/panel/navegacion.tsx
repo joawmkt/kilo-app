@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, useSyncExternalStore } from "react";
-import { MARCA, LogoMarca } from "@/lib/panel/marca";
+import { PRODUCTO } from "@/lib/marca";
+import { LogoMarca } from "@/lib/panel/marca";
 import {
   IconoCaja,
   IconoClientes,
@@ -15,6 +16,8 @@ import {
   IconoPedidos,
   IconoPlantillas,
   IconoStock,
+  IconoSimulador,
+  IconoAdmin,
 } from "./iconos";
 
 // Navegación del panel.
@@ -44,6 +47,31 @@ export const DESTINOS: Destino[] = [
   { href: "/panel/configuracion", etiqueta: "Ajustes", Icono: IconoConfiguracion },
 ];
 
+// El simulador no es parte del producto: es la forma de probar el bot mientras
+// se espera la conexión con Meta. Aparece solo si la carnicería está en modo
+// simulado, y desaparece solo el día que se conecta de verdad.
+const DESTINO_SIMULADOR: Destino = {
+  href: "/panel/simulador",
+  etiqueta: "Simulador",
+  Icono: IconoSimulador,
+};
+
+// Solo para el fundador: todas las carnicerías y el estado de la plataforma.
+// Un carnicero nunca ve este destino, y aunque escribiera la URL a mano,
+// `requerirAdmin()` lo devuelve a su panel.
+const DESTINO_ADMIN: Destino = {
+  href: "/panel/admin",
+  etiqueta: "Admin",
+  Icono: IconoAdmin,
+};
+
+function destinos(mostrarSimulador: boolean, mostrarAdmin: boolean): Destino[] {
+  const lista = [...DESTINOS];
+  if (mostrarSimulador) lista.push(DESTINO_SIMULADOR);
+  if (mostrarAdmin) lista.push(DESTINO_ADMIN);
+  return lista;
+}
+
 function estaActivo(pathname: string, href: string): boolean {
   if (href === "/panel") return pathname === "/panel";
   return pathname === href || pathname.startsWith(`${href}/`);
@@ -53,26 +81,35 @@ function estaActivo(pathname: string, href: string): boolean {
 // Escritorio — barra lateral
 // ============================================================
 
-export function BarraLateral({ pendientes }: { pendientes: number }) {
+export function BarraLateral({
+  pendientes,
+  mostrarSimulador = false,
+  mostrarAdmin = false,
+}: {
+  pendientes: number;
+  mostrarSimulador?: boolean;
+  mostrarAdmin?: boolean;
+}) {
   const pathname = usePathname();
+  const lista = destinos(mostrarSimulador, mostrarAdmin);
 
   return (
     <nav
       aria-label="Secciones del panel"
       className="hidden w-20 shrink-0 flex-col items-center gap-1 border-r border-border bg-surface py-4 md:flex"
     >
-      {/* El nombre de la marca todavía no está definido: el logo es una marca
-          abstracta y el token `{{MARCA}}` vive en src/lib/panel/marca.tsx. */}
+      {/* Ainnova es la empresa; KILO es el producto que el carnicero contrató y
+          adentro del cual trabaja. Los nombres salen de src/lib/marca.ts. */}
       <Link
         href="/panel"
         className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-brand text-brand-contraste"
-        aria-label={`Inicio del panel de ${MARCA}`}
-        title={MARCA}
+        aria-label={`Inicio del panel de ${PRODUCTO}`}
+        title={PRODUCTO}
       >
         <LogoMarca />
       </Link>
 
-      {DESTINOS.map(({ href, etiqueta, Icono }) => {
+      {lista.map(({ href, etiqueta, Icono }) => {
         const activo = estaActivo(pathname, href);
         const mostrarPendientes = href === "/panel/pedidos" && pendientes > 0;
 
@@ -101,11 +138,20 @@ export function BarraLateral({ pendientes }: { pendientes: number }) {
 // Teléfono — navegación inferior
 // ============================================================
 
-export function NavegacionInferior({ pendientes }: { pendientes: number }) {
+export function NavegacionInferior({
+  pendientes,
+  mostrarSimulador = false,
+  mostrarAdmin = false,
+}: {
+  pendientes: number;
+  mostrarSimulador?: boolean;
+  mostrarAdmin?: boolean;
+}) {
   const pathname = usePathname();
   const [abierto, setAbierto] = useState(false);
-  const principales = DESTINOS.filter((destino) => destino.principal);
-  const secundarios = DESTINOS.filter((destino) => !destino.principal);
+  const lista = destinos(mostrarSimulador, mostrarAdmin);
+  const principales = lista.filter((destino) => destino.principal);
+  const secundarios = lista.filter((destino) => !destino.principal);
   const hayActivoSecundario = secundarios.some((destino) => estaActivo(pathname, destino.href));
 
   return (

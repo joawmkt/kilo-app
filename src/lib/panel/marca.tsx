@@ -1,27 +1,17 @@
-// ============================================================
-// Token de marca — SIN RESOLVER A PROPÓSITO
-// ============================================================
+// Marca gráfica del panel de KILO.
 //
-// El nombre de la marca todavía no está definido (ver claude/brief_crm_panel.md,
-// sección 1). Hasta que se defina, en toda la interfaz aparece el token literal
-// `{{MARCA}}`, y este archivo es el único lugar donde hay que tocarlo.
+// Los NOMBRES (Ainnova como empresa, KILO como producto) y todos los datos
+// legales viven en `src/lib/marca.ts`, que es la fuente de verdad única y
+// compartida con el sitio institucional. Acá vive solo el dibujo.
 //
-// Mismo criterio que el sitio institucional, que centraliza sus siete tokens en
-// `src/lib/marca.ts` de ese proyecto.
-//
-// PARA COMPLETARLO: reemplazar el valor de abajo por el nombre real. No hace
-// falta buscar y reemplazar en ninguna otra parte.
-//
-// CHEQUEO: `grep -rn "{{MARCA}}" src` debería devolver solo este archivo cuando
-// el nombre esté puesto — cualquier otro resultado es un lugar donde alguien
-// escribió el token a mano en vez de importarlo.
-
-export const MARCA = "{{MARCA}}";
+// Es un logotipo propio y no el de Ainnova a propósito: el carnicero trabaja
+// adentro de KILO, que es el producto que contrató. Ainnova aparece en el pie
+// del sitio y en los documentos legales, no en la herramienta de todos los días.
 
 /**
- * Marca gráfica del panel. Abstracta a propósito: un logo de verdad se diseña
- * cuando exista el nombre. Sugiere un gancho de carnicería sin comprometerse
- * con ninguna identidad.
+ * Marca gráfica del panel. Sugiere un gancho de carnicería sin comprometerse
+ * con una identidad cerrada: cuando KILO tenga logo propio en el manual de
+ * marca, se reemplaza este archivo y nada más.
  */
 export function LogoMarca({ className = "h-6 w-6" }: { className?: string }) {
   return (

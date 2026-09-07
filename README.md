@@ -399,3 +399,136 @@ Para crear la primera cuenta: dar de alta el usuario en Supabase Auth y enlazarl
 con `update carnicerias set owner_user_id = '<uuid del usuario>' where id = '<uuid de la carnicería>';`.
 Sin ese enlace el panel muestra la pantalla "tu cuenta todavía no tiene
 carnicería" en vez de romperse.
+
+
+---
+
+# Etapa 4b — Un solo repositorio: sitio, panel y alta (05/09/2026)
+
+## Qué cambió
+
+El sitio institucional de **Ainnova** y el panel de **KILO** viven ahora en el
+mismo proyecto. Antes eran dos repos (`ainnova-sitio` y `carnicom-app`), que es
+lo que recomendaba `docs/integracion-con-la-app.md` para arrancar rápido; ahora
+se hizo la Opción B de ese documento, que era el destino.
+
+**Se fusionó ANTES de iniciar el trámite de Meta a propósito.** Las URLs de las
+tres páginas legales se cargan en la ficha de la app; si se hubiera fusionado
+después, habría que actualizarlas en Meta. Ahora ya están en su lugar
+definitivo.
+
+### Cómo quedó dividido
+
+```
+src/app/(sitio)/     → /, /servicios, /kilo, /conectar y las tres legales
+src/app/panel/       → el panel del carnicero y el de administración
+src/app/api/         → webhooks y cron
+```
+
+Los paréntesis de `(sitio)` hacen que el grupo no aparezca en la URL: las
+direcciones son exactamente las mismas que antes.
+
+### Dos identidades en un mismo `globals.css`
+
+| | Sitio | Panel |
+|---|---|---|
+| Marca | Ainnova (la empresa) | KILO (el producto) |
+| Paleta | navy, ámbar, crema | borgoña, cobre, blancos cálidos |
+| Tipografías | Sora, Inter | Archivo, Public Sans, IBM Plex Mono |
+| Modo oscuro | no, solo claro | sí, sigue al sistema o forzado |
+
+No se pisan porque cada bloque de reglas está acotado a su subárbol: `.sitio`
+envuelve al sitio y `.panel` al panel. En particular, `color-scheme: dark` se
+declara en `.panel` y no en `:root` — si estuviera arriba, los controles de
+formulario del sitio se pondrían oscuros cuando el sistema del visitante está en
+oscuro. Y el panel usa `--font-panel` en vez de apropiarse de `--font-sans`, que
+el sitio hereda.
+
+## Modo simulado — trabajar sin Meta
+
+Tercer proveedor, además de `twilio` y `meta`: `simulado`. No sale nada a
+internet, pero **todo lo demás es real** — se consulta el stock de verdad, el
+pedido queda en la base, y aprobarlo descuenta el stock.
+
+`/panel/simulador` es una pantalla de chat donde se escribe **como si fueras un
+cliente**. Llama a `procesarMensajeEntrante`, exactamente la misma función que
+usan los dos webhooks reales: no hay un camino paralelo que pueda divergir.
+
+Aparece solo si la carnicería está en modo simulado, y desaparece sola el día que
+se conecta de verdad.
+
+**Lo que el simulador no prueba,** y conviene tenerlo presente: que el webhook de
+Meta esté bien configurado, la firma del webhook, los audios (no hay archivo que
+descargar) y las plantillas, que acá se dan por aprobadas.
+
+## `/conectar` — el alta, construida y apagada
+
+La ruta que estaba reservada desde el sitio ahora existe:
+
+- `/conectar` — pública, explica el flujo y sus cuatro decisiones irreversibles.
+- `/panel/conectar` — el flujo real, detrás del login, con el chequeo previo de
+  elegibilidad de la Etapa D listado antes del botón.
+
+**Está apagada a propósito.** Sin `META_APP_ID` y `META_CONFIG_ID` la pantalla
+muestra qué falta en vez de un botón que no hace nada. Cuando esas variables
+existan, se enciende sola.
+
+El canje del código está en `src/lib/whatsapp/alta.ts` y es el punto más frágil
+de toda la integración: el código de un solo uso **vive unos 30 segundos** y se
+canjea del lado del servidor, en el mismo request. El navegador solo lo
+transporta.
+
+Y la suscripción de webhooks es parte de la misma función, no un paso aparte: si
+no se suscribe, el alta figura exitosa y **los mensajes de esa carnicería no
+llegan nunca**. Es el fallo más silencioso del proceso de Meta. Si esa parte
+falla, se puede reintentar sola desde el panel de administración, sin volver al
+mostrador con el carnicero.
+
+## Panel de administración
+
+`/panel/admin`, solo para quien esté en la tabla `administradores`.
+
+Row Level Security protege al panel del carnicero, pero no a este: acá se ven
+**todas** las carnicerías, así que la autorización es explícita (`requerirAdmin`).
+Un carnicero que escriba la URL a mano vuelve a su panel.
+
+Muestra:
+
+- **Qué falta para estar en producción**, chequeado contra el estado real —
+  variables cargadas, plantillas aprobadas, webhooks suscritos — y no contra una
+  lista escrita a mano que se desactualiza sola. Lo marcado como *trámite* no
+  depende de programar.
+- **Todas las carnicerías** con su proveedor, estado de alta y uso del mes.
+- Una alerta fuerte para la carnicería que tiene token pero no webhooks, con el
+  botón para reintentar.
+
+## Conteo de uso
+
+Tabla `uso_mensual` y función `sumar_uso` (migración 0014). Es el punto F3 del
+plan de producción: *"instrumentar el conteo desde el primer día; sin eso el
+precio del tier es una adivinanza"*. Los mensajes se podrían derivar de
+`mensajes_whatsapp`, pero los audios transcriptos y las interpretaciones no
+quedaban registrados en ningún lado — y son los otros dos costos variables.
+
+La suma la hace Postgres en una sentencia atómica: dos mensajes simultáneos no se
+pisan el contador.
+
+## Para levantarlo
+
+```bash
+npm install     # @fontsource/sora e inter, además de lo de la etapa anterior
+npm run dev
+```
+
+1. Correr `supabase/migrations/0014_modo_simulado_y_alta.sql`.
+2. Poner la carnicería piloto en modo simulado:
+   `update carnicerias set whatsapp_proveedor = 'simulado';`
+3. Darse de alta como administrador:
+   `insert into administradores (user_id, email) values ('<uuid>', 'consultas@ainnova.com.ar');`
+4. Entrar a `/panel/simulador` y probar el bot de punta a punta.
+
+## Sobre el dominio
+
+El sitio estaba desplegado como proyecto aparte. Al fusionarse, **hay que
+apuntar `ainnova.com.ar` a este proyecto** en Vercel y dar de baja el otro, o el
+dominio va a seguir sirviendo la versión vieja sin el panel ni `/conectar`.

@@ -1,8 +1,15 @@
 // Tipos compartidos de la capa de WhatsApp — lo que el resto del sistema usa
 // sin tener que saber si atrás hay Twilio o la API de Meta.
 
-/** Proveedor de WhatsApp de una carnicería. */
-export type ProveedorWhatsapp = "twilio" | "meta";
+/**
+ * Proveedor de WhatsApp de una carnicería.
+ *
+ *   twilio    — el BSP con el que arrancó el proyecto.
+ *   meta      — la Cloud API, el destino.
+ *   simulado  — nada sale a internet; sirve para probar el flujo completo
+ *               mientras se espera la verificación de negocio de Meta.
+ */
+export type ProveedorWhatsapp = "twilio" | "meta" | "simulado";
 
 /**
  * Referencia a un archivo de media recibido. Twilio manda una URL descargable

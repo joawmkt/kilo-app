@@ -1,6 +1,6 @@
 import { cerrarSesion } from "../login/acciones";
 import { Tarjeta, clasesBoton } from "@/components/panel/ui";
-import { MARCA } from "@/lib/panel/marca";
+import { PRODUCTO } from "@/lib/marca";
 
 // Pantalla para una cuenta que existe pero todavía no tiene carnicería
 // asociada (`carnicerias.owner_user_id`). Pasa durante el alta: se crea el
@@ -24,7 +24,7 @@ export default function SinCarniceriaPage() {
 
         <form action={cerrarSesion} className="mt-5">
           <button type="submit" className={clasesBoton("secundario", "w-full")}>
-            Salir de {MARCA}
+            Salir de {PRODUCTO}
           </button>
         </form>
       </Tarjeta>

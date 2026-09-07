@@ -45,7 +45,7 @@ export function HiloConversacion({
   mensajes: MensajeDelHilo[];
   ventanaAbierta: boolean;
   minutosRestantes: number | null;
-  proveedor: "twilio" | "meta";
+  proveedor: "twilio" | "meta" | "simulado";
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -167,15 +167,15 @@ function Redactor({
   conversacionId: string;
   ventanaAbierta: boolean;
   minutosRestantes: number | null;
-  proveedor: "twilio" | "meta";
+  proveedor: "twilio" | "meta" | "simulado";
 }) {
   const [texto, setTexto] = useState("");
   const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
   const [enviando, iniciarTransicion] = useTransition();
 
-  // Con Twilio no hay control de ventana del lado nuestro: el proveedor la
-  // aplica igual, pero no la exponemos. Se permite escribir siempre y, si
-  // falla, el error se muestra en el hilo.
+  // Solo Meta corta por ventana. Con Twilio el proveedor la aplica del otro
+  // lado pero no la exponemos; en simulado no sale nada a internet. En los dos
+  // casos se deja escribir y, si falla, el error queda visible en el hilo.
   const bloqueado = proveedor === "meta" && !ventanaAbierta;
 
   function enviar() {

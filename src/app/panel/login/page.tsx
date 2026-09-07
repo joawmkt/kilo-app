@@ -1,5 +1,6 @@
 import { FormularioLogin } from "./formulario";
-import { MARCA, LogoMarca } from "@/lib/panel/marca";
+import { PRODUCTO } from "@/lib/marca";
+import { LogoMarca } from "@/lib/panel/marca";
 
 export default async function LoginPage(props: PageProps<"/panel/login">) {
   const parametros = await props.searchParams;
@@ -14,7 +15,7 @@ export default async function LoginPage(props: PageProps<"/panel/login">) {
             <LogoMarca className="h-8 w-8" />
           </span>
           <div>
-            <h1 className="font-titulo text-xl font-bold text-ink">{MARCA}</h1>
+            <h1 className="font-titulo text-xl font-bold text-ink">{PRODUCTO}</h1>
             <p className="mt-1 text-sm text-ink-2">Entrá al panel de tu carnicería</p>
           </div>
         </div>

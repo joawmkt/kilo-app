@@ -1,6 +1,8 @@
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { sumarUso } from "@/lib/uso";
 import { descargarMediaMeta, enviarPlantillaMeta, enviarTextoMeta } from "./meta";
 import { descargarMediaTwilio, enviarTextoTwilio } from "./twilio";
+import { enviarTextoSimulado } from "./simulado";
 import { obtenerOCrearConversacion, registrarMensaje, ventanaAbierta } from "./conversaciones";
 import { aFormatoCanonico } from "./telefonos";
 import type {
@@ -160,6 +162,10 @@ export async function enviarWhatsapp(params: {
         cuerpo: params.cuerpo,
       });
     }
+  } else if (config.proveedor === "simulado") {
+    // No sale nada a internet: el mensaje se registra igual y el panel lo
+    // muestra en el hilo. Ver src/lib/whatsapp/simulado.ts.
+    resultado = await enviarTextoSimulado({ para: hacia, cuerpo: params.cuerpo });
   } else {
     resultado = await enviarTextoTwilio({
       desde: config.telefonoWhatsapp,
@@ -188,6 +194,10 @@ export async function enviarWhatsapp(params: {
   if (!resultado.ok) {
     throw new ErrorEnvioWhatsapp(resultado.error ?? "No se pudo enviar el mensaje.");
   }
+
+  // Desde el 1/10/2026 Meta cobra por mensaje. Sin contarlos por carnicería, el
+  // precio de la suscripción es una adivinanza (punto F3 del plan de producción).
+  await sumarUso(params.carniceriaId, tipo === "plantilla" ? "plantillas_enviadas" : "mensajes_enviados");
 
   return resultado;
 }

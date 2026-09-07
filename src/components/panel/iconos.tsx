@@ -193,3 +193,22 @@ export function IconoEnviar(props: Props) {
     </Svg>
   );
 }
+
+export function IconoSimulador(props: Props) {
+  return (
+    <Svg {...props}>
+      <rect x="3" y="5" width="18" height="13" rx="2" />
+      <path d="M7.5 10.5h4M7.5 13.5h6" />
+      <path d="M17 9.5v.01" />
+    </Svg>
+  );
+}
+
+export function IconoAdmin(props: Props) {
+  return (
+    <Svg {...props}>
+      <path d="M12 3.5 4.5 6.5v5c0 4.3 3 8.2 7.5 9.5 4.5-1.3 7.5-5.2 7.5-9.5v-5L12 3.5Z" />
+      <path d="m9.5 12 1.8 1.8 3.4-3.4" />
+    </Svg>
+  );
+}

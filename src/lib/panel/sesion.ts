@@ -23,7 +23,7 @@ export type CarniceriaDelPanel = {
   emailContacto: string | null;
   umbralStockBajoDefault: number;
   horariosModo: "hibrido" | "bloquea" | "informativo";
-  whatsappProveedor: "twilio" | "meta";
+  whatsappProveedor: "twilio" | "meta" | "simulado";
   telefonoWhatsapp: string | null;
   whatsappPhoneNumberId: string | null;
   whatsappUltimaActividadAt: string | null;

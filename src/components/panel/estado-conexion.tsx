@@ -1,4 +1,5 @@
-import { Tarjeta, TarjetaEncabezado, Etiqueta } from "./ui";
+import Link from "next/link";
+import { Tarjeta, TarjetaEncabezado, Etiqueta, clasesBoton } from "./ui";
 import { evaluarConexion } from "./aviso-conexion";
 import type { CarniceriaDelPanel } from "@/lib/panel/sesion";
 import { formatearFechaYHora, formatearRelativo } from "@/lib/panel/formatos";
@@ -50,7 +51,13 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
           />
           <Dato
             etiqueta="Vía"
-            valor={carniceria.whatsappProveedor === "meta" ? "API de Meta" : "Twilio"}
+            valor={
+              carniceria.whatsappProveedor === "meta"
+                ? "API de Meta"
+                : carniceria.whatsappProveedor === "simulado"
+                  ? "Simulado (no sale a WhatsApp)"
+                  : "Twilio"
+            }
           />
         </div>
 
@@ -77,6 +84,22 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
             }
           />
         </div>
+
+        {carniceria.whatsappProveedor !== "meta" || !carniceria.whatsappPhoneNumberId ? (
+          <div className="rounded-lg border border-border bg-surface-2 px-3 py-3">
+            <p className="font-titulo text-sm font-semibold text-ink">
+              Todavía no está conectado a WhatsApp
+            </p>
+            <p className="mt-1 text-sm text-ink-2">
+              {carniceria.whatsappProveedor === "simulado"
+                ? "Estás en modo simulado: podés probar todo, pero los mensajes no salen a WhatsApp de verdad."
+                : "Este número anda por el proveedor viejo. Conectarlo con Meta es un trámite de unos minutos."}
+            </p>
+            <Link href="/panel/conectar" className={clasesBoton("principal", "mt-3")}>
+              Conectar WhatsApp
+            </Link>
+          </div>
+        ) : null}
 
         {estado.nivel !== "ok" ? (
           <p

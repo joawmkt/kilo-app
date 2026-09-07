@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { MARCA } from "@/lib/panel/marca";
+import { MARCA, PRODUCTO } from "@/lib/marca";
 
 // Las tres familias del sistema de diseño, auto-alojadas.
 //
@@ -23,8 +23,8 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 
 export const metadata: Metadata = {
-  title: `Panel — ${MARCA}`,
-  description: "Panel de gestión para carnicerías",
+  title: `Panel de ${PRODUCTO} — ${MARCA}`,
+  description: `Panel de gestión de ${PRODUCTO}, el sistema de pedidos por WhatsApp de ${MARCA} para carnicerías.`,
 };
 
 // Evita el parpadeo de tema: si el carnicero forzó claro u oscuro, se aplica
@@ -38,7 +38,7 @@ try {
 
 export default function PanelLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen w-full bg-bg font-sans text-ink">
+    <div className="panel min-h-screen w-full bg-bg font-panel text-ink">
       <script dangerouslySetInnerHTML={{ __html: SCRIPT_TEMA }} />
       {children}
     </div>

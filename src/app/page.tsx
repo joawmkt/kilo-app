@@ -1,13 +1,14 @@
-export default function Home() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 bg-zinc-50 px-6 text-center dark:bg-black">
-      <h1 className="text-2xl font-semibold text-black dark:text-zinc-50">
-        Carnicom
-      </h1>
-      <p className="max-w-md text-zinc-600 dark:text-zinc-400">
-        Etapa 1 — infraestructura base. El panel del carnicero se arma en los
-        próximos pasos.
-      </p>
-    </div>
-  );
+import { redirect } from "next/navigation";
+
+// La raíz del SaaS.
+//
+// Acá NO va una página de presentación: la presentación del producto vive en
+// ainnova.com.ar/kilo, que es el sitio de la empresa. Este dominio es la
+// aplicación, y quien entra por la raíz quiere entrar a trabajar.
+//
+// `/panel` a su vez manda al login si no hay sesión, así que este redirect
+// resuelve los dos casos con una sola línea: el carnicero que ya entró va a su
+// panel, y el que no, al login.
+export default function Raiz() {
+  redirect("/panel");
 }

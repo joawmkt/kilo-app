@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
+import { esAdmin } from "@/lib/panel/admin";
 import { BarraLateral, NavegacionInferior, SelectorDeTema } from "@/components/panel/navegacion";
 import { IconoCampana } from "@/components/panel/iconos";
-import { MARCA } from "@/lib/panel/marca";
+import { PRODUCTO } from "@/lib/marca";
 
 // Armazón del panel: barra lateral en escritorio, navegación inferior en
 // teléfono, y el encabezado con la campanita.
@@ -17,11 +18,19 @@ import { MARCA } from "@/lib/panel/marca";
 export const dynamic = "force-dynamic";
 
 export default async function LayoutInterno({ children }: { children: React.ReactNode }) {
-  const pendientes = await contarPendientes();
+  const [pendientes, enSimulacion, administra] = await Promise.all([
+    contarPendientes(),
+    estaEnSimulacion(),
+    esAdmin(),
+  ]);
 
   return (
     <div className="flex min-h-screen w-full">
-      <BarraLateral pendientes={pendientes.pedidos} />
+      <BarraLateral
+          pendientes={pendientes.pedidos}
+          mostrarSimulador={enSimulacion}
+          mostrarAdmin={administra}
+        />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <Encabezado noLeidos={pendientes.avisos} />
@@ -30,7 +39,11 @@ export default async function LayoutInterno({ children }: { children: React.Reac
         <main className="min-w-0 flex-1 px-3 pb-28 pt-4 sm:px-5 md:pb-8">{children}</main>
       </div>
 
-      <NavegacionInferior pendientes={pendientes.pedidos} />
+      <NavegacionInferior
+        pendientes={pendientes.pedidos}
+        mostrarSimulador={enSimulacion}
+        mostrarAdmin={administra}
+      />
     </div>
   );
 }
@@ -39,7 +52,7 @@ function Encabezado({ noLeidos }: { noLeidos: number }) {
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface/95 px-3 py-2 backdrop-blur sm:px-5">
       <Link href="/panel" className="font-titulo text-sm font-bold text-ink md:hidden">
-        {MARCA}
+        {PRODUCTO}
       </Link>
       <span className="hidden font-titulo text-sm font-semibold text-ink-2 md:block">
         Panel de gestión
@@ -88,5 +101,20 @@ async function contarPendientes(): Promise<{ pedidos: number; avisos: number }> 
   } catch (err) {
     console.error("No se pudieron contar los pendientes del encabezado", err);
     return { pedidos: 0, avisos: 0 };
+  }
+}
+
+/**
+ * ¿Esta carnicería todavía está en modo simulado? Decide si la navegación
+ * muestra el simulador. Igual que los contadores: si falla, el panel tiene que
+ * seguir andando.
+ */
+async function estaEnSimulacion(): Promise<boolean> {
+  try {
+    const supabase = await getSupabaseServidor();
+    const { data } = await supabase.from("carnicerias").select("whatsapp_proveedor").maybeSingle();
+    return data?.whatsapp_proveedor === "simulado";
+  } catch {
+    return false;
   }
 }

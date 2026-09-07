@@ -75,7 +75,10 @@ type FaseInterna =
       asadoKgObjetivo?: number;
       recomendacionMostrada?: boolean;
     }
-  | { fase: "esperando_hora_retiro" }
+  // `intentos` cuenta cuántas veces seguidas preguntamos la hora sin obtenerla.
+  // Sirve para no repetir la misma frase indefinidamente: a la tercera el bot
+  // cambia el pedido de dato en vez de sonar como un disco rayado.
+  | { fase: "esperando_hora_retiro"; intentos?: number }
   | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] };
 
 type PedidoPendiente = {
@@ -252,6 +255,10 @@ function recomendacionMostradaDeFase(fase: FaseInterna | null | undefined): bool
   return fase?.fase === "esperando_dato_item" ? Boolean(fase.recomendacionMostrada) : false;
 }
 
+function intentosHoraDeFase(fase: FaseInterna | null | undefined): number {
+  return fase?.fase === "esperando_hora_retiro" ? (fase.intentos ?? 0) : 0;
+}
+
 function mensajeBienvenida(nombre: string | null): string {
   const saludo = nombre ? `¡Hola ${nombre}!` : "¡Hola!";
   return `${saludo} 👋 Bienvenido/a, acá podés hacer tu pedido para retirar después por el local. Contame qué necesitás (por texto o audio).`;
@@ -285,6 +292,8 @@ async function armarYGuardarPedido(params: {
   catalogo: CatalogoCarniceria;
   itemsPedidos: ItemPedido[];
   horaRetiroIso?: string;
+  horaRetiroYaPasoIso?: string;
+  intentosHoraPrevios?: number;
   texto: string;
 }): Promise<string> {
   const {
@@ -297,6 +306,8 @@ async function armarYGuardarPedido(params: {
     catalogo,
     itemsPedidos,
     horaRetiroIso,
+    horaRetiroYaPasoIso,
+    intentosHoraPrevios = 0,
     texto,
   } = params;
 
@@ -432,14 +443,15 @@ async function armarYGuardarPedido(params: {
   // Items resueltos y sin nada pendiente de confirmar — falta la hora de
   // retiro, o ya la tenemos.
   if (!horaRetiroIso) {
-    const pregunta = `${avisoDescartados}¿A qué hora pasás a retirarlo?`;
+    const intentos = intentosHoraPrevios + 1;
+    const pregunta = `${avisoDescartados}${preguntaPorLaHora({ intentos, horaRetiroYaPasoIso })}`;
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
       items: itemsResueltos,
       pregunta_pendiente: pregunta,
       item_parcial: null,
-      interpretacion: { fase: "esperando_hora_retiro" },
+      interpretacion: { fase: "esperando_hora_retiro", intentos },
       updated_at: ahora,
     });
     return pregunta;
@@ -454,6 +466,35 @@ async function armarYGuardarPedido(params: {
     horaRetiroIso,
     avisoDescartados,
   });
+}
+
+/**
+ * Qué preguntar cuando todavía no tenemos la hora de retiro.
+ *
+ * Antes esto era una constante y ahí estaba el bug: si el cliente contestaba
+ * una hora que ya había pasado hoy ("11am" a las 12:32), el sistema la
+ * descartaba en silencio y volvía a mandar la misma pregunta, palabra por
+ * palabra, para siempre. El cliente no tenía forma de saber qué estaba mal.
+ *
+ * Ahora hay tres respuestas distintas:
+ *  - Entendimos la hora pero ya pasó -> se lo decimos y le ofrecemos mañana.
+ *  - Primera vez que preguntamos -> la pregunta normal.
+ *  - Ya preguntamos varias veces sin éxito -> pedimos el dato de otra forma,
+ *    con un ejemplo concreto del formato.
+ */
+function preguntaPorLaHora(params: { intentos: number; horaRetiroYaPasoIso?: string }): string {
+  const { intentos, horaRetiroYaPasoIso } = params;
+
+  if (horaRetiroYaPasoIso) {
+    const hora = formatearHoraArgentina(new Date(horaRetiroYaPasoIso));
+    return `Las ${hora} de hoy ya pasaron. ¿Te lo dejo para mañana a las ${hora}, o preferís otra hora de hoy?`;
+  }
+
+  if (intentos >= 3) {
+    return "Perdón, sigo sin agarrar el horario. Mandame solo la hora, así: *18:30*. Si es para mañana, escribime *mañana 11:00*.";
+  }
+
+  return "¿A qué hora pasás a retirarlo?";
 }
 
 async function pasarAPendienteAprobacion(params: {
@@ -578,6 +619,7 @@ async function procesarResultado(params: {
   // se fusionan con items_parciales, para el bug real que motivó esto.
   itemsActualesPrevios?: ItemGuardadoPedido[];
   horaRetiroPrevia?: string;
+  intentosHoraPrevios?: number;
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
   recomendacionMostrada?: boolean;
@@ -595,6 +637,7 @@ async function procesarResultado(params: {
     itemsParcialesPrevios,
     itemsActualesPrevios,
     horaRetiroPrevia,
+    intentosHoraPrevios,
     personasPrevias,
     asadoKgObjetivoPrevio,
     recomendacionMostrada,
@@ -642,6 +685,13 @@ async function procesarResultado(params: {
   // (23/08/2026, a pedido del fundador).
   const personas = combinarPersonas(personasPrevias, "personas" in resultado ? resultado.personas : undefined);
   const horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
+  // La hora que el cliente dijo y ya pasó: no sirve para agendar, pero sí para
+  // contestarle algo que tenga sentido en vez de repetir la pregunta.
+  const horaRetiroYaPasoIso = horaRetiroIso
+    ? undefined
+    : "horaRetiroYaPasoIso" in resultado
+      ? resultado.horaRetiroYaPasoIso
+      : undefined;
   let itemsParciales =
     (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante" ? resultado.itemsParciales : undefined) ??
     itemsParcialesPrevios ??
@@ -684,6 +734,8 @@ async function procesarResultado(params: {
       catalogo,
       itemsPedidos: [...resultado.items, ...itemsFaltantes],
       horaRetiroIso,
+      horaRetiroYaPasoIso,
+      intentosHoraPrevios,
       texto,
     });
   }
@@ -779,6 +831,8 @@ async function procesarResultado(params: {
       catalogo,
       itemsPedidos: itemsCompletos,
       horaRetiroIso,
+      horaRetiroYaPasoIso,
+      intentosHoraPrevios,
       texto,
     });
   }
@@ -992,6 +1046,7 @@ async function procesarMensajeDeCliente(params: {
     itemsParcialesPrevios: pedidoActivo?.itemsParciales,
     itemsActualesPrevios: pedidoActivo?.items,
     horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
+    intentosHoraPrevios: intentosHoraDeFase(pedidoActivo?.fase),
   });
 }
 

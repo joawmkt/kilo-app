@@ -58,12 +58,18 @@ export type InfoPersonas = {
   sinGenero?: number;
 };
 
+// `horaRetiroYaPasoIso` es la hora que el cliente dijo cuando esa hora ya pasó
+// hoy ("11am" contestado a las 12:32). No sirve como hora de retiro, pero
+// tampoco es "no dijo nada": el flujo la necesita para poder repreguntar algo
+// distinto —"las 11 ya pasaron, ¿te lo dejo para mañana?"— en vez de repetir la
+// misma pregunta para siempre. Descartarla en silencio era un bucle infinito
+// (bug del 07/09/2026, encontrado probando con el simulador).
 export type ResultadoInterpretacionPedido =
   | { tipo: "saludo" }
-  | { tipo: "pedido"; items: ItemPedido[]; horaRetiroIso?: string; personas?: InfoPersonas }
-  | { tipo: "aclaracion"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; personas?: InfoPersonas }
-  | { tipo: "info_faltante"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; personas?: InfoPersonas }
-  | { tipo: "no_entendido"; personas?: InfoPersonas };
+  | { tipo: "pedido"; items: ItemPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
+  | { tipo: "aclaracion"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
+  | { tipo: "info_faltante"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
+  | { tipo: "no_entendido"; horaRetiroYaPasoIso?: string; personas?: InfoPersonas };
 
 // Contexto de un pedido que se está armando de a poco entre varios mensajes
 // del cliente. `itemsParciales` es la lista COMPLETA de productos
@@ -257,6 +263,10 @@ Reglas:
   tal cual lo dijo: 13-23 es formato 24hs aunque además diga "pm" (es redundante, no un error — "15 pm" son las
   15:00). Para un número de 1 a 12 sin más aclaración, usá el criterio más razonable según la hora actual (ej.
   si ya es de tarde y dice "a las 8", probablemente sea las 20:00, no las 8:00 que ya pasaron).
+- Si aun así la hora que entendiste ya pasó hoy (ej. son las 12:30 y dice "11 de la mañana"), devolvela IGUAL
+  con la fecha de HOY. No la pases a mañana por tu cuenta ni la dejes vacía: el sistema se encarga de
+  preguntarle al cliente si la quiere para mañana. Pasarla a mañana solo si el cliente lo dijo él ("mañana a
+  las 11", "sí, mañana").
 - Extraé "personas" si el cliente mencionó para cuánta gente es el pedido (ver descripción del campo) — esto
   puede venir junto con productos ("asado para 4, quiero vacío y costilla") o solo. Nunca inventes un número
   de personas que no se mencionó.
@@ -347,14 +357,22 @@ function validarItemsParciales(valor: unknown): ItemParcialPedido[] | undefined 
   return parciales.length > 0 ? parciales : undefined;
 }
 
-function validarHoraRetiroIso(valor: unknown): string | undefined {
-  if (typeof valor !== "string" || !valor.trim()) return undefined;
+type HoraRetiroInterpretada =
+  | { estado: "ausente" }
+  | { estado: "valida"; iso: string }
+  | { estado: "ya_paso"; iso: string };
+
+function interpretarHoraRetiro(valor: unknown): HoraRetiroInterpretada {
+  if (typeof valor !== "string" || !valor.trim()) return { estado: "ausente" };
   const fecha = new Date(valor);
-  if (Number.isNaN(fecha.getTime())) return undefined;
+  if (Number.isNaN(fecha.getTime())) return { estado: "ausente" };
   // Un margen chico hacia atrás (5 min) tolera pequeños desfasajes de reloj;
-  // cualquier cosa más vieja que eso no tiene sentido como hora de retiro.
-  if (fecha.getTime() < Date.now() - 5 * 60 * 1000) return undefined;
-  return fecha.toISOString();
+  // cualquier cosa más vieja que eso no sirve como hora de retiro — pero se
+  // devuelve igual, marcada, para poder repreguntar con sentido.
+  if (fecha.getTime() < Date.now() - 5 * 60 * 1000) {
+    return { estado: "ya_paso", iso: fecha.toISOString() };
+  }
+  return { estado: "valida", iso: fecha.toISOString() };
 }
 
 function validarPersonas(valor: unknown): InfoPersonas | undefined {
@@ -397,12 +415,13 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
     datos.pregunta.trim()
   ) {
     const itemsParciales = validarItemsParciales(datos.items_parciales);
-    const horaRetiroIso = validarHoraRetiroIso(datos.hora_retiro_iso);
+    const hora = interpretarHoraRetiro(datos.hora_retiro_iso);
     return {
       tipo: datos.tipo,
       pregunta: datos.pregunta.trim(),
       ...(itemsParciales ? { itemsParciales } : {}),
-      ...(horaRetiroIso ? { horaRetiroIso } : {}),
+      ...(hora.estado === "valida" ? { horaRetiroIso: hora.iso } : {}),
+      ...(hora.estado === "ya_paso" ? { horaRetiroYaPasoIso: hora.iso } : {}),
       ...(personas ? { personas } : {}),
     };
   }
@@ -410,13 +429,24 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
   if (datos.tipo === "pedido" && Array.isArray(datos.items) && datos.items.length > 0) {
     const items = datos.items.map(validarItem).filter((item): item is ItemPedido => item !== null);
     if (items.length === datos.items.length && items.length > 0) {
-      const horaRetiroIso = validarHoraRetiroIso(datos.hora_retiro_iso);
-      return { tipo: "pedido", items, ...(horaRetiroIso ? { horaRetiroIso } : {}), ...(personas ? { personas } : {}) };
+      const hora = interpretarHoraRetiro(datos.hora_retiro_iso);
+      return {
+        tipo: "pedido",
+        items,
+        ...(hora.estado === "valida" ? { horaRetiroIso: hora.iso } : {}),
+        ...(hora.estado === "ya_paso" ? { horaRetiroYaPasoIso: hora.iso } : {}),
+        ...(personas ? { personas } : {}),
+      };
     }
   }
 
-  if (personas) {
-    return { tipo: "no_entendido", personas };
+  const horaSuelta = interpretarHoraRetiro(datos.hora_retiro_iso);
+  if (personas || horaSuelta.estado === "ya_paso") {
+    return {
+      tipo: "no_entendido",
+      ...(horaSuelta.estado === "ya_paso" ? { horaRetiroYaPasoIso: horaSuelta.iso } : {}),
+      ...(personas ? { personas } : {}),
+    };
   }
 
   return { tipo: "no_entendido" };

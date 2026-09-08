@@ -89,7 +89,10 @@ export async function GET(request: NextRequest) {
       await enviarWhatsapp({
         carniceriaId: pedido.carniceria_id as string,
         hacia: pedido.telefono as string,
-        cuerpo: `🔔 Recordatorio: tu pedido te espera a las ${hora}hs. ¡Te esperamos!`,
+        // Texto definitivo de la especificación (sección 54). "Alrededor de"
+        // es deliberado: la hora de retiro es una orientación, no un turno
+        // con horario exacto (sección 7.1).
+        cuerpo: `🔔 Te recuerdo que tu pedido está para retirar alrededor de las ${hora} hs. ¡Te esperamos!`,
         origen: "bot",
         pedidoId: pedido.id as string,
         plantillaDeRespaldo: {

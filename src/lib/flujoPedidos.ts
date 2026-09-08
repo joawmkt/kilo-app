@@ -259,9 +259,34 @@ function intentosHoraDeFase(fase: FaseInterna | null | undefined): number {
   return fase?.fase === "esperando_hora_retiro" ? (fase.intentos ?? 0) : 0;
 }
 
+// Saludo inicial — especificación, secciones 2.1 a 2.3 y 4.3.
+//
+// Tres decisiones que vienen de ahí y conviene no "corregir" sin leerlas:
+//   - No se usa "bienvenido/a" (2.3): suena robótico.
+//   - En el primer contacto NO se usa el nombre (2.2), porque puede no estar.
+//     Recién cuando ya lo tenemos guardado se saluda por nombre (4.3), y ahí
+//     se alterna entre variantes para que no suene a plantilla repetida.
+//
+// ⚠️ La sección 2.1 propone además una segunda línea enumerando de qué se
+// puede consultar ("stock, horarios, productos..."). Está deliberadamente
+// recortada hasta que esas consultas existan de verdad (Tanda 2 del estado de
+// implementación): la propia especificación aplica ese criterio con los
+// precios — no prometer una función que hoy está desactivada.
+const SALUDOS_CLIENTE_CONOCIDO = [
+  "¡Hola, {nombre}! 👋 Qué bueno tenerte de nuevo. ¿En qué te podemos ayudar hoy?",
+  "¡Buenas, {nombre}! 👋 ¿Cómo andás? Contame qué necesitás.",
+  "¡Hola, {nombre}! ¿Todo bien? 👋 Decime qué necesitás y te doy una mano.",
+];
+
 function mensajeBienvenida(nombre: string | null): string {
-  const saludo = nombre ? `¡Hola ${nombre}!` : "¡Hola!";
-  return `${saludo} 👋 Bienvenido/a, acá podés hacer tu pedido para retirar después por el local. Contame qué necesitás (por texto o audio).`;
+  const complemento = "Contame qué necesitás y te lo dejo preparado para que pases a retirarlo. También podés mandarme un audio.";
+
+  if (nombre) {
+    const variante = SALUDOS_CLIENTE_CONOCIDO[Math.floor(Math.random() * SALUDOS_CLIENTE_CONOCIDO.length)];
+    return `${variante.replace("{nombre}", nombre)}\n\n${complemento}`;
+  }
+
+  return `¡Hola! 👋 ¿Cómo andás? ¿En qué te podemos ayudar?\n\n${complemento}`;
 }
 
 function mensajeResumenPedidoParaCarnicero(params: {
@@ -540,7 +565,10 @@ async function pasarAPendienteAprobacion(params: {
     });
   }
 
-  return `${avisoDescartados}¡Listo! Tu pedido quedó a confirmar por la carnicería, te aviso apenas lo revisen 🙌`;
+  // Especificación, sección 54: "quedó a confirmar", sin decir "por la
+  // carnicería" — el bot habla EN NOMBRE de la carnicería, no como un tercero
+  // que le pasa el pedido a otro.
+  return `${avisoDescartados}¡Listo! Tu pedido quedó a confirmar. Apenas lo revisemos te aviso 🙌`;
 }
 
 /** Id del pedido de esa conversación que quedó esperando aprobación. */
@@ -1328,8 +1356,13 @@ async function avisarClienteDecision(params: {
     return;
   }
 
+  // Especificación, sección 54 (y paso 11 del flujo de la sección 48).
+  // "Alrededor de las X hs" en vez de "a las X hs": la hora de retiro es una
+  // orientación para preparar el pedido, no un turno exacto (sección 7.1).
   const cuerpo = aprobado
-    ? `¡Tu pedido está confirmado! 🥩 Te esperamos a las ${horaRetiro ? formatearHoraArgentina(horaRetiro) : "la hora acordada"}hs para que lo retires.`
+    ? `¡Listo! Tu pedido está confirmado 🙌 Te esperamos ${
+        horaRetiro ? `alrededor de las ${formatearHoraArgentina(horaRetiro)} hs` : "en el horario que acordamos"
+      } para retirarlo.`
     : "Uy, no pudimos tomar tu pedido en este momento. Cualquier cosa, escribinos de nuevo.";
 
   try {

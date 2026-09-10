@@ -1,12 +1,14 @@
 import { procesarAudioDeStock, procesarTextoEntrante } from "@/lib/flujoStock";
 import {
-  procesarAudioDePedido,
   procesarDecisionCarnicero,
   procesarTextoDePedido,
+  transcribirAudioDeCliente,
 } from "@/lib/flujoPedidos";
 import { esNumeroDeCarnicero } from "@/lib/numerosCarnicero";
 import { registrarMensaje } from "./conversaciones";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { aFormatoCanonico } from "./telefonos";
+import { esperarYAgrupar, marcarProcesado } from "./ventana";
 import type { MensajeEntranteNormalizado } from "./tipos";
 
 // ============================================================
@@ -81,7 +83,28 @@ export async function procesarMensajeEntrante(params: {
     reiniciaVentana: true,
   });
 
-  const respuesta = await enrutar({ carniceriaId, telefono, mensajeId, mensaje, esCarnicero });
+  // ------------------------------------------------------------
+  // ¿Esta conversación la está atendiendo una persona? (sección 43)
+  // ------------------------------------------------------------
+  //
+  // Es la ÚNICA excepción de la especificación a "el carnicero no habla con el
+  // cliente": cuando hubo un error técnico y el carnicero toma la conversación
+  // para no perder al cliente. Mientras dura, el bot registra los mensajes
+  // (para que el hilo del panel quede completo) pero NO contesta: hablarle por
+  // encima a una persona que está atendiendo sería peor que no responder.
+  if (!esCarnicero && (await botEnPausa(conversacionId))) {
+    await marcarProcesado(mensajeId);
+    return { respuesta: null, mensajeId, conversacionId };
+  }
+
+  const respuesta = await enrutar({
+    carniceriaId,
+    telefono,
+    mensajeId,
+    conversacionId,
+    mensaje,
+    esCarnicero,
+  });
 
   return { respuesta, mensajeId, conversacionId };
 }
@@ -90,12 +113,18 @@ async function enrutar(params: {
   carniceriaId: string;
   telefono: string;
   mensajeId: string;
+  conversacionId: string;
   mensaje: MensajeEntranteNormalizado;
   esCarnicero: boolean;
 }): Promise<string | null> {
-  const { carniceriaId, telefono, mensajeId, mensaje, esCarnicero } = params;
+  const { carniceriaId, telefono, mensajeId, conversacionId, mensaje, esCarnicero } = params;
 
   if (esCarnicero) {
+    // El carnicero NO pasa por la ventana de agrupación: sus respuestas son
+    // decisiones ("confirmar", "aprobar", "2 y 3") y esperar unos segundos para
+    // contestarle sería puro ruido en el mostrador. La sección 34 habla del
+    // cliente, que es quien escribe de a pedacitos.
+    await marcarProcesado(mensajeId);
     if (mensaje.tipo === "audio" && mensaje.media) {
       return await procesarAudioDeStock({
         carniceriaId,
@@ -127,25 +156,55 @@ async function enrutar(params: {
     return null;
   }
 
+  // ------------------------------------------------------------
+  // Cliente: pasa por la ventana de agrupación (sección 34)
+  // ------------------------------------------------------------
+  //
+  // Un audio se transcribe ANTES de entrar a la ventana, y su transcripción se
+  // guarda como cuerpo del mensaje. Así un audio y un texto mandados pegados se
+  // interpretan juntos, que es lo que pide expresamente la sección 34, y de
+  // paso la transcripción queda visible en el hilo del panel.
   if (mensaje.tipo === "audio" && mensaje.media) {
-    return await procesarAudioDePedido({
-      carniceriaId,
-      telefono,
-      mensajeWhatsappId: mensajeId,
-      media: mensaje.media,
-      nombreWhatsapp: mensaje.nombrePerfil,
-    });
+    const transcripcion = await transcribirAudioDeCliente(mensaje.media);
+    if (!transcripcion.ok) {
+      await marcarProcesado(mensajeId);
+      return transcripcion.mensaje;
+    }
+    await guardarTranscripcion(mensajeId, transcripcion.texto);
+  } else if (!mensaje.texto) {
+    await marcarProcesado(mensajeId);
+    return null;
   }
 
-  if (mensaje.texto) {
-    return await procesarTextoDePedido({
-      carniceriaId,
-      telefono,
-      mensajeWhatsappId: mensajeId,
-      texto: mensaje.texto,
-      nombreWhatsapp: mensaje.nombrePerfil,
-    });
-  }
+  const bloque = await esperarYAgrupar({ conversacionId, mensajeId });
 
-  return null;
+  // `null` = llegó otro mensaje después y ese se va a hacer cargo del bloque
+  // entero. Contestar acá sería hablarle dos veces al cliente por lo mismo.
+  if (!bloque) return null;
+
+  return await procesarTextoDePedido({
+    carniceriaId,
+    telefono,
+    mensajeWhatsappId: mensajeId,
+    texto: bloque.texto,
+    nombreWhatsapp: mensaje.nombrePerfil,
+  });
+}
+
+/** Deja la transcripción como cuerpo del mensaje, para que se agrupe como texto. */
+async function guardarTranscripcion(mensajeId: string, texto: string): Promise<void> {
+  await getSupabaseAdmin().from("mensajes_whatsapp").update({ cuerpo: texto }).eq("id", mensajeId);
+}
+
+
+/** ¿El bot está en pausa en esta conversación porque la atiende una persona? */
+async function botEnPausa(conversacionId: string): Promise<boolean> {
+  const { data } = await getSupabaseAdmin()
+    .from("conversaciones")
+    .select("bot_pausado_hasta")
+    .eq("id", conversacionId)
+    .maybeSingle();
+
+  const hasta = data?.bot_pausado_hasta as string | null | undefined;
+  return Boolean(hasta && new Date(hasta) > new Date());
 }

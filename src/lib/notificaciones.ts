@@ -19,6 +19,16 @@ import { getSupabaseAdmin } from "./supabaseAdmin";
 
 export type TipoAviso =
   | "pedido_pendiente"
+  // Tanda 4-5 (especificación, sección 53: "todo cambio de un pedido debe
+  // notificarse al carnicero"). No todos requieren que vuelva a aprobar, pero
+  // todos tienen que ser visibles.
+  | "pedido_modificado"
+  | "pedido_reprogramado"
+  | "pedido_cancelado"
+  | "pedidos_del_dia"
+  | "pedidos_sin_cerrar"
+  | "cierre_con_pedidos"
+  | "decision_requerida"
   | "stock_agotado"
   | "stock_bajo"
   | "cliente_no_retiro"

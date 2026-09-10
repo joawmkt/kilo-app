@@ -2,7 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
-import { ETIQUETA_ESTADO, TONO_ESTADO, obtenerPedido } from "@/lib/panel/pedidos";
+import {
+  ETIQUETA_ESTADO,
+  NOMBRE_ACTOR,
+  TONO_ESTADO,
+  obtenerHistorialDePedido,
+  obtenerPedido,
+} from "@/lib/panel/pedidos";
 import { AccionesPedido } from "@/components/panel/acciones-pedido";
 import { Etiqueta, Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
 import {
@@ -28,6 +34,10 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
     .select("id")
     .eq("telefono", pedido.telefono)
     .maybeSingle();
+
+  // Historial de eventos (especificación, sección 27): por qué el pedido está
+  // como está, sin tener que leer toda la conversación.
+  const historial = await obtenerHistorialDePedido(supabase, id);
 
   const total = pedido.totalEstimado;
   const faltaAlgunPrecio = pedido.items.some(
@@ -124,7 +134,12 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
         </div>
 
         <div className="border-t border-border px-4 py-3 sm:px-5">
-          <AccionesPedido pedidoId={pedido.id} estado={pedido.estado} />
+          <AccionesPedido
+            pedidoId={pedido.id}
+            estado={pedido.estado}
+            version={pedido.version}
+            consulta={pedido.consultaCarnicero}
+          />
         </div>
       </Tarjeta>
 
@@ -140,6 +155,28 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
           </Link>
         ) : null}
       </div>
+
+      {historial.length > 0 ? (
+        <Tarjeta>
+          <TarjetaEncabezado
+            titulo="Qué pasó con este pedido"
+            descripcion={pedido.version > 1 ? `Va por la versión ${pedido.version}` : undefined}
+          />
+          <ul className="divide-y divide-border">
+            {historial.map((evento) => (
+              <li key={evento.id} className="px-4 py-3 sm:px-5">
+                <p className="text-sm text-ink">
+                  {evento.descripcion ?? evento.tipo.replace(/_/g, " ")}
+                </p>
+                <p className="numero mt-0.5 text-xs text-ink-3">
+                  {NOMBRE_ACTOR[evento.actor] ?? evento.actor} · {formatearFechaYHora(evento.creadoAt)}
+                  {evento.version ? ` · versión ${evento.version}` : ""}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Tarjeta>
+      ) : null}
     </div>
   );
 }

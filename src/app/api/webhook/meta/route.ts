@@ -16,6 +16,12 @@ import {
 } from "@/lib/whatsapp";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
+// La ventana de agrupación (especificación, sección 34) hace que el trabajo en
+// `after` dure unos segundos más de lo que duraba antes. El default de Vercel
+// es corto; sin esto, un bloque con audio + interpretación puede cortarse por
+// la mitad y el cliente se queda sin respuesta.
+export const maxDuration = 60;
+
 // ============================================================
 // Webhook de la WhatsApp Cloud API de Meta
 // ============================================================

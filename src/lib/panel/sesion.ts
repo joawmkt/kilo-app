@@ -22,6 +22,8 @@ export type CarniceriaDelPanel = {
   telefonoContacto: string | null;
   emailContacto: string | null;
   umbralStockBajoDefault: number;
+  /** Códigos de medios de pago habilitados — ver src/lib/mediosPago.ts (especificación, sección 19). */
+  mediosPago: string[];
   horariosModo: "hibrido" | "bloquea" | "informativo";
   whatsappProveedor: "twilio" | "meta" | "simulado";
   telefonoWhatsapp: string | null;
@@ -31,7 +33,7 @@ export type CarniceriaDelPanel = {
 };
 
 const CAMPOS_CARNICERIA =
-  "id, nombre, nombre_visible, direccion, telefono_contacto, email_contacto, umbral_stock_bajo_default, horarios_modo, whatsapp_proveedor, telefono_whatsapp, whatsapp_phone_number_id, whatsapp_ultima_actividad_at, whatsapp_conectado_at";
+  "id, nombre, nombre_visible, direccion, telefono_contacto, email_contacto, umbral_stock_bajo_default, medios_pago, horarios_modo, whatsapp_proveedor, telefono_whatsapp, whatsapp_phone_number_id, whatsapp_ultima_actividad_at, whatsapp_conectado_at";
 
 type FilaCarniceria = {
   id: string;
@@ -41,6 +43,7 @@ type FilaCarniceria = {
   telefono_contacto: string | null;
   email_contacto: string | null;
   umbral_stock_bajo_default: number | string;
+  medios_pago: string[] | null;
   horarios_modo: string;
   whatsapp_proveedor: string;
   telefono_whatsapp: string | null;
@@ -58,6 +61,7 @@ function mapear(fila: FilaCarniceria): CarniceriaDelPanel {
     telefonoContacto: fila.telefono_contacto,
     emailContacto: fila.email_contacto,
     umbralStockBajoDefault: Number(fila.umbral_stock_bajo_default ?? 3),
+    mediosPago: fila.medios_pago ?? [],
     horariosModo: (fila.horarios_modo as CarniceriaDelPanel["horariosModo"]) ?? "hibrido",
     whatsappProveedor: (fila.whatsapp_proveedor as CarniceriaDelPanel["whatsappProveedor"]) ?? "twilio",
     telefonoWhatsapp: fila.telefono_whatsapp,

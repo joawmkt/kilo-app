@@ -5,6 +5,12 @@ import {
   FormularioDatosDelNegocio,
   FormularioHorarios,
   DiasEspeciales,
+  MediosPago,
+  Promociones,
+  SustitutosAutorizados,
+  type FilaPromocion,
+  type FilaSustituto,
+  type OpcionProducto,
 } from "@/components/panel/configuracion-formularios";
 import { EstadoConexionWhatsapp } from "@/components/panel/estado-conexion";
 import { Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
@@ -14,7 +20,14 @@ export default async function ConfiguracionPage() {
   const sesion = await requerirSesion();
   const supabase = await getSupabaseServidor();
 
-  const [{ data: horarios }, { data: diasEspeciales }, { data: numeros }] = await Promise.all([
+  const [
+    { data: horarios },
+    { data: diasEspeciales },
+    { data: numeros },
+    { data: promociones },
+    { data: sustitutos },
+    { data: productos },
+  ] = await Promise.all([
     supabase
       .from("horarios_atencion")
       .select("dia_semana, cerrado, turno1_desde, turno1_hasta, turno2_desde, turno2_hasta")
@@ -25,7 +38,21 @@ export default async function ConfiguracionPage() {
       .gte("fecha", new Date().toISOString().slice(0, 10))
       .order("fecha"),
     supabase.from("numeros_carnicero").select("telefono, nombre, activo").eq("activo", true),
-  ]);
+      supabase
+        .from("promociones")
+        .select("id, titulo, detalle, activa, desde, hasta")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("sustitutos_autorizados")
+        .select("id, requiere_preguntar_uso, producto:producto_id(nombre_display), sustituto:sustituto_id(nombre_display)")
+        .order("prioridad", { ascending: true }),
+      supabase
+        .from("productos")
+        .select("id, nombre_display")
+        .eq("activo", true)
+        .eq("es_complementario", false)
+        .order("nombre_display"),
+    ]);
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
@@ -46,6 +73,37 @@ export default async function ConfiguracionPage() {
       />
 
       <DiasEspeciales dias={(diasEspeciales ?? []) as FilaDiaEspecial[]} />
+
+      {/* Medios de pago y promociones: los dos existen para que el bot pueda
+          contestar sin inventar (especificación, secciones 17 y 19). Van acá y
+          no en una sección propia porque son configuración del negocio, igual
+          que los horarios y la dirección. */}
+      <MediosPago habilitados={sesion.carniceria.mediosPago} />
+
+      <Promociones promociones={(promociones ?? []) as FilaPromocion[]} />
+
+      <SustitutosAutorizados
+        sustitutos={((sustitutos ?? []) as unknown[]).map((fila) => {
+          const f = fila as {
+            id: string;
+            requiere_preguntar_uso: boolean;
+            producto: { nombre_display: string } | { nombre_display: string }[] | null;
+            sustituto: { nombre_display: string } | { nombre_display: string }[] | null;
+          };
+          const nombreDe = (v: typeof f.producto) =>
+            (Array.isArray(v) ? v[0]?.nombre_display : v?.nombre_display) ?? "—";
+          return {
+            id: f.id,
+            productoNombre: nombreDe(f.producto),
+            sustitutoNombre: nombreDe(f.sustituto),
+            preguntarUso: Boolean(f.requiere_preguntar_uso),
+          } satisfies FilaSustituto;
+        })}
+        productos={((productos ?? []) as { id: string; nombre_display: string }[]).map((p) => ({
+          id: p.id,
+          nombre: p.nombre_display,
+        })) satisfies OpcionProducto[]}
+      />
 
       {/* Quién puede cargar stock por audio. Es solo lectura por ahora: dar de
           alta un número nuevo implica que ese teléfono pase a poder modificar

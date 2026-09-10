@@ -2,11 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { requerirSesion } from "@/lib/panel/sesion";
+import { iniciarRechazo, responderConsultaCarnicero } from "@/lib/decisionCarnicero";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   aprobarPedido,
   marcarPedidoNoRetirado,
   marcarPedidoRetirado,
+  marcarPedidoEnEspera,
   rechazarPedido,
 } from "@/lib/flujoPedidos";
 import { enviarWhatsapp, marcarConversacionLeida } from "@/lib/whatsapp";
@@ -24,10 +26,97 @@ export type ResultadoAccion = { ok: boolean; mensaje: string };
 // Pedidos — la acción más frecuente y más urgente del panel
 // ============================================================
 
-export async function accionAprobarPedido(pedidoId: string): Promise<ResultadoAccion> {
+export async function accionAprobarPedido(pedidoId: string, version?: number): Promise<ResultadoAccion> {
   const sesion = await requerirSesion();
 
+  // `version` es la que el carnicero tenía en pantalla. Si el cliente modificó
+  // el pedido mientras tanto, la aprobación se rechaza en vez de aprobar algo
+  // que ya no existe (especificación, sección 51).
   const resultado = await aprobarPedido({
+    carniceriaId: sesion.carniceria.id,
+    pedidoId,
+    decididoPor: sesion.usuarioId,
+    version,
+  });
+
+  await marcarAvisoResuelto(sesion.carniceria.id, `pedido_pendiente:${pedidoId}`);
+  revalidarPedidos();
+  return resultado;
+}
+
+/**
+ * Rechazar ya no cierra el pedido de una (especificación, sección 36): abre la
+ * pregunta de por qué no podés, con opciones. La misma conversación que el bot
+ * le hace por WhatsApp, pero con botones.
+ */
+export async function accionRechazarPedido(pedidoId: string): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+
+  const mensaje = await iniciarRechazo(pedidoId);
+
+  await marcarAvisoResuelto(sesion.carniceria.id, `pedido_pendiente:${pedidoId}`);
+  revalidarPedidos();
+  return { ok: true, mensaje };
+}
+
+/** Responde una de esas preguntas desde el panel, con los números elegidos. */
+export async function accionResponderConsulta(numeros: number[]): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+
+  const mensaje = await responderConsultaCarnicero({
+    carniceriaId: sesion.carniceria.id,
+    texto: numeros.join(" y "),
+  });
+
+  revalidarPedidos();
+  return mensaje ? { ok: true, mensaje } : { ok: false, mensaje: "No pude registrar esa respuesta." };
+}
+
+// ============================================================
+// Tomar la conversación — especificación, sección 43
+// ============================================================
+//
+// La única excepción a "el carnicero no habla con el cliente": si hubo un error
+// técnico y hay que salvar la conversación, el carnicero la toma y el bot se
+// calla. La pausa se levanta sola a las 2 horas para que una conversación no
+// quede muda para siempre porque alguien se olvidó de devolverla.
+
+export async function accionTomarConversacion(conversacionId: string): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+  const hasta = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+
+  const { error } = await getSupabaseAdmin()
+    .from("conversaciones")
+    .update({ bot_pausado_hasta: hasta })
+    .eq("id", conversacionId)
+    .eq("carniceria_id", sesion.carniceria.id);
+
+  if (error) return { ok: false, mensaje: "No se pudo pausar el bot." };
+
+  revalidatePath("/panel/mensajes", "layout");
+  return { ok: true, mensaje: "El bot no va a contestar acá por 2 horas. Atendés vos." };
+}
+
+export async function accionDevolverConversacion(conversacionId: string): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+
+  const { error } = await getSupabaseAdmin()
+    .from("conversaciones")
+    .update({ bot_pausado_hasta: null })
+    .eq("id", conversacionId)
+    .eq("carniceria_id", sesion.carniceria.id);
+
+  if (error) return { ok: false, mensaje: "No se pudo reactivar el bot." };
+
+  revalidatePath("/panel/mensajes", "layout");
+  return { ok: true, mensaje: "Listo, el bot vuelve a contestar." };
+}
+
+/** Rechazo directo, sin conversación — queda disponible por si hace falta. */
+export async function accionRechazarSinVuelta(pedidoId: string): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+
+  const resultado = await rechazarPedido({
     carniceriaId: sesion.carniceria.id,
     pedidoId,
     decididoPor: sesion.usuarioId,
@@ -38,16 +127,13 @@ export async function accionAprobarPedido(pedidoId: string): Promise<ResultadoAc
   return resultado;
 }
 
-export async function accionRechazarPedido(pedidoId: string): Promise<ResultadoAccion> {
+export async function accionDejarEnEspera(pedidoId: string): Promise<ResultadoAccion> {
   const sesion = await requerirSesion();
-
-  const resultado = await rechazarPedido({
+  const resultado = await marcarPedidoEnEspera({
     carniceriaId: sesion.carniceria.id,
     pedidoId,
     decididoPor: sesion.usuarioId,
   });
-
-  await marcarAvisoResuelto(sesion.carniceria.id, `pedido_pendiente:${pedidoId}`);
   revalidarPedidos();
   return resultado;
 }

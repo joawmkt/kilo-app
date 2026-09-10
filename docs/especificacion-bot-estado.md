@@ -3,107 +3,119 @@
 > Compañero de `docs/especificacion-bot.md`. Los números entre paréntesis son las secciones
 > de esa especificación. **Actualizar este archivo cada vez que se implemente una parte.**
 >
-> Última revisión contra el código: **08/09/2026**, sobre `main` (commit `a6ccad4`).
+> Última revisión contra el código: **10/09/2026**. Las seis tandas del plan están aplicadas.
 
 Leyenda: ✅ hecho · 🟡 parcial · ❌ falta
 
 ---
 
-## Lo que ya cumple hoy
+## Resumen
 
-| Sección | Qué pide | Nota |
+Las seis tandas se aplicaron entre el 08 y el 10/09/2026, con `npm run lint` y `npm run build`
+limpios en cada una. Migraciones nuevas: de la `0015` a la `0020`.
+
+| Tanda | Qué trajo | Estado |
 |---|---|---|
-| ✅ 13 | No informar precios | Estructural: el precio existe en la base para la caja, pero **nunca entra en el prompt del bot**, así que no puede inventarlo ni filtrarlo. |
-| ✅ 7.2 / 54 | Un solo recordatorio, 1 hora antes, con el texto definitivo | Cron cada 10 min vía GitHub Actions. |
-| ✅ 47 | Cálculo orientativo por personas (0,5 / 0,35 kg) | Incluye el "no repetir más de una vez por compra". |
-| ✅ 46.5 | "Tapa" sin especificar → preguntar | Vía `terminos_ambiguos`. |
-| ✅ 46.7 | "Picada" → preguntar variante | Ídem. |
-| ✅ 46.1-46.4, 46.6 | Reglas de catálogo (salame/salamín, patas vs patitas, pata-muslo vs cuarto trasero, rancho, bifes de pechuga/suprema) | Verificado contra el catálogo el 08/09/2026: **ya estaban todas cargadas** como productos y sinónimos distintos. No hizo falta tocar nada. |
-| ✅ 2.1-2.3 | Saludo inicial sin "bienvenido/a" y sin nombre en el primer contacto | Falta solo la línea que enumera las consultas posibles: se agrega cuando esas consultas existan (Tanda 2). |
-| ✅ 6 | Pesos aproximados por unidad | Milanesas 150 g, hamburguesa y medallón 120 g (migración `0015`). Rellenos y productos variables quedan sin valor a propósito. |
-| ✅ 5.3 | Nunca sustituir automáticamente | Siempre pide sí/no al cliente. |
-| ✅ 14 / 41 | Sin mínimos ni umbrales por tamaño de pedido | No existe ninguna regla de ese tipo en el código. |
-| ✅ 1.5 | El contexto manda | El intérprete recibe el pedido en construcción, la hora y las personas en cada turno. |
-| ✅ 33 | Audios: conservar lo entendido y preguntar solo lo que falta | Funciona por el mismo mecanismo de items parciales. |
-
-## Lo que está a medias
-
-| Sección | Qué pide | Qué falta |
-|---|---|---|
-| 🟡 4 | Cliente nuevo vs recurrente | Saludo genérico en el primer contacto y variantes con nombre para el conocido (4.1, 4.3) ✅. Falta **pedir el nombre a las ~2 h** (4.2). |
-| 🟡 5 | Sustituciones | Hoy es "misma familia, con stock, el que más tenga". Falta la **tabla de sustitutos autorizados** (5.5) y **preguntar el uso** (5.4). |
-| 🟡 7.4-7.6 | Cierre del día, "en espera", no-show | Hoy el no-show es **automático** 60 min después de la hora. La especificación pide preguntarle al carnicero y permitir "en espera" un día más. |
-| 🟡 36 | Rechazo del carnicero | Se puede rechazar, pero **sin motivo ni opciones numeradas**: el pedido muere ahí en vez de intentar resolverse. |
-| 🟡 53 | Notificaciones al carnicero | Existen tabla y panel de avisos. Falta la regla transversal "**todo** cambio de un pedido se notifica". |
-| 🟡 30 | Correcciones ("no, 1 kg") | Lo resuelve el intérprete por contexto, pero no está probado ni cubierto por la especificación de versionado. |
-
-## Lo que falta entero
-
-| Sección | Qué pide | Tamaño |
-|---|---|---|
-| ❌ 1.1 / 15-21 | **Atención general**: responder stock, horarios, dirección, medios de pago, promociones, delivery, consultas de producto | Grande. Hoy el bot solo entiende `saludo`, `pedido`, `aclaracion`, `info_faltante`, `no_entendido`: cualquier consulta que no sea un pedido cae en "no entendí". |
-| ❌ 17 | Promociones | No existen en la base ni en el panel. |
-| ❌ 19 | Medios de pago | No existen en la base ni en el panel. |
-| ❌ 21 | Dirección | El dato existe en `carnicerias.direccion`; el bot no lo usa. |
-| ❌ 31 | **Confirmación final obligatoria** antes de mandar al carnicero | Mediano. Hoy el pedido va directo al carnicero sin resumen previo al cliente. |
-| ❌ 34 | **Ventana de 20 segundos** para agrupar mensajes seguidos | Mediano. Además resuelve C6 (consolidar mensajes), con fecha límite dura el **1/10**. |
-| ❌ 3.1 | Aviso de demora a los 30 min | Chico. |
-| ❌ 3.2 | Vencimiento del pendiente a las 4 h | Chico. Hoy vence al fin del día. |
-| ❌ 51 | Estados nuevos (`borrador`, `pendiente_confirmacion_cliente`, `modificacion_pendiente`, `en_espera`) y **versionado** | Grande, y es la base de casi todo lo de abajo. |
-| ❌ 8 / 12 / 35 | Modificar un pedido (pendiente o confirmado), invalidando la versión vieja | Grande. |
-| ❌ 9 | Varios pedidos simultáneos para distintas fechas | Grande. Hoy hay un índice único que permite **uno solo** por cliente. |
-| ❌ 10 | Cancelaciones, incluido "sacame todo" | Mediano. |
-| ❌ 11 / 25 / 26 | Cambiar, adelantar o postergar la hora/fecha de retiro | Mediano. |
-| ❌ 22 / 22.1 | Pedidos anticipados para días futuros y su panel | Mediano. |
-| ❌ 23 | Resumen diario al carnicero en la apertura | Chico-mediano. |
-| ❌ 24 | Cierre excepcional con pedidos futuros → reprogramar | Mediano. |
-| ❌ 27 | Historial de eventos por pedido | Mediano. No existe la tabla. |
-| ❌ 32 | Borrador abandonado: "¿Te puedo ayudar con algo?" a la hora, y descarte al cierre | Chico-mediano. |
-| ❌ 39 | Stock parcial ("me quedan 1,8 de los 3 kg, ¿completamos?") | Mediano. |
-| ❌ 40 | Máximo una recomendación de complementario por pedido | Chico. El catálogo ya marca `es_complementario`. |
-| ❌ 42 | Atención 24/7 proponiendo horarios válidos | Mediano. Depende de leer `horarios_atencion`. |
-| ❌ 43 | Handoff excepcional por error técnico | Mediano. |
-| ❌ 44 | Cliente enojado | Chico (instrucción de prompt). |
+| 1 | Textos definitivos y pesos por unidad | ✅ |
+| 2 | El bot responde consultas (horarios, dirección, pagos, promos, delivery, stock) | ✅ |
+| 3 | Ventana de agrupación, confirmación final, avisos de demora y borradores | ✅ |
+| 4 | Pedido modificable, cancelable y reprogramable, con versionado e historial | ✅ |
+| 5 | Rechazo conversado, "en espera", resumen diario y cierres excepcionales | ✅ |
+| 6 | Sustitutos autorizados, stock parcial, complementarios y handoff | ✅ |
 
 ---
 
-## Orden de implementación propuesto
+## Sección por sección
 
-Pensado para que cada tanda sea desplegable sola y no rompa lo que ya funciona.
-
-**Tanda 1 — textos y datos de catálogo.** Riesgo casi nulo, mejora visible.
-Mensajes definitivos (2.1, 4.3, 54) y pesos por unidad (6). **Aplicada el 08/09/2026.**
-
-**Tanda 2 — el bot deja de ser solo un tomador de pedidos.**
-Tipos de consulta nuevos + horarios, dirección, delivery, medios de pago y promociones
-(1.1, 15-21, 42). Requiere agregar medios de pago y promociones a la base y al panel.
-
-**Tanda 3 — la conversación se vuelve segura.**
-Confirmación final obligatoria (31), ventana de 20 segundos (34, y con esto C6 antes del 1/10),
-aviso de demora (3.1), vencimiento a 4 h (3.2), borrador abandonado (32).
-
-**Tanda 4 — el pedido pasa a ser un objeto vivo.**
-Estados nuevos y versionado (51), modificaciones (8, 12, 35), cancelación (10),
-cambios de hora y fecha (11, 25, 26), varios pedidos simultáneos (9), historial (27).
-
-**Tanda 5 — el ciclo del carnicero.**
-Rechazo con motivo y opciones numeradas (36, 50), "en espera" y no-show al cierre (7.4-7.6),
-resumen diario (23), cierre excepcional (24), regla de notificar todo cambio (53).
-
-**Tanda 6 — refinamiento de la atención.**
-Sustitutos autorizados y pregunta de uso (5.4, 5.5), stock parcial (39), complementarios (40),
-cliente enojado (44), handoff por error técnico (43).
+| Sección | Qué pide | Estado |
+|---|---|---|
+| 1.1 | Atención al público, no solo tomar pedidos | ✅ Tanda 2 — `src/lib/consultas.ts` |
+| 1.2 | Tono argentino, natural, cercano | ✅ Textos revisados en las Tandas 1 y 5 |
+| 1.3 | Nunca inventar | ✅ Estructural: cada respuesta sale de un dato real o se reconoce que falta |
+| 1.4 | Nunca suponer ante ambigüedad | ✅ Términos ambiguos, y se pregunta cuál pedido cuando hay más de uno |
+| 1.5 | El contexto manda | ✅ |
+| 1.6 / 1.7 | El carnicero decide pero no conversa | ✅ Tanda 5 — opciones numeradas por WhatsApp y por panel |
+| 2.1-2.4 | Mensaje inicial y detección de intención | ✅ Tandas 1 y 2 |
+| 3.1 | Aviso de demora a los 30 min, una sola vez | ✅ Tanda 3 (cron) |
+| 3.2 | Vencimiento a las 4 h | ✅ Tanda 3 |
+| 3.3 | No duplicar pedidos mientras hay uno pendiente | ✅ |
+| 4.1 / 4.3 | Cliente nuevo vs recurrente | ✅ Tanda 1 |
+| 4.2 | Pedir el nombre a las ~2 h | ❌ Único pendiente de la sección 4 |
+| 5.1-5.5 | Sustitutos solo dentro de lo autorizado, preguntando el uso | ✅ Tanda 6 — tabla `sustitutos_autorizados` + panel |
+| 5.6 | Avisar si el sustituto es más caro | ❌ Depende de que se activen los precios (sección 13) |
+| 6 | Pesos aproximados por unidad | ✅ Tanda 1 (migración `0015`) |
+| 7.1-7.2 | Hora orientativa y un solo recordatorio 1 h antes | ✅ |
+| 7.3-7.6 | Cierre del día, "en espera", no-show recién al día siguiente | ✅ Tanda 5 |
+| 8 / 12 / 35 | Modificar un pedido, invalidando la versión anterior | ✅ Tanda 4 |
+| 9 | Varios pedidos simultáneos para fechas distintas | ✅ Tanda 4 — se pregunta cuál cuando hay más de uno |
+| 10 | Cancelaciones, incluido "sacame todo" | ✅ Tanda 4 — detectado por intención, no por la palabra |
+| 11 / 25 / 26 | Cambiar, adelantar o postergar el retiro | ✅ Tanda 4 — adelantar requiere que el carnicero confirme |
+| 13 | No informar precios | ✅ Estructural: el precio nunca entra al prompt del bot |
+| 14 / 41 | Sin mínimos ni reglas por tamaño | ✅ |
+| 15 | Reconocer cuando no sabe algo | ✅ Tanda 2 |
+| 16 | Consultar al carnicero, sin entregarle el chat | ✅ Tanda 5 |
+| 17 | Promociones solo si están cargadas y vigentes | ✅ Tanda 2 — tabla `promociones` + panel |
+| 18 | Horarios, con feriados y cierres | ✅ Tanda 2 |
+| 19 | Medios de pago | ✅ Tanda 2 — casillas en el panel |
+| 20 | Sin delivery | ✅ Tanda 2 |
+| 21 | Dirección | ✅ Tanda 2 |
+| 22 | Pedidos anticipados | ✅ Tanda 4 |
+| 22.1 | Panel de pedidos futuros | 🟡 Se ven en `/panel/pedidos`, sin una vista propia de agenda |
+| 23 | Resumen diario en la apertura | ✅ Tanda 5 |
+| 24 | Cierre excepcional con pedidos programados | ✅ Tanda 5 |
+| 27 | Historial de eventos del pedido | ✅ Tanda 4 — visible en el detalle del pedido |
+| 28 | Un pedido retirado queda cerrado | ✅ |
+| 29 / 32 | Ambigüedad y borradores abandonados | ✅ Tanda 3 |
+| 30 | Correcciones ("no, 1 kg") | ✅ |
+| 31 | Confirmación final obligatoria | ✅ Tanda 3 |
+| 33 | Audios parciales | ✅ Y desde la Tanda 3 el audio se agrupa con el texto |
+| 34 | Ventana de agrupación | ✅ Tanda 3 — **6 segundos**, no 20 (decisión del fundador, 10/09) |
+| 36 / 50 | Rechazo con motivo y opciones numeradas | ✅ Tanda 5 |
+| 37 / 38 | Stock agotado y reposición | ✅ |
+| 39 | Stock parcial | ✅ Tanda 6 |
+| 40 | Una sola recomendación de complementario | ✅ Tanda 6 |
+| 42 | Atención 24/7 | 🟡 El bot atiende siempre; falta que proponga horarios válidos al elegir el retiro |
+| 43 | Handoff por error técnico | ✅ Tanda 6 — "Atiendo yo" en la conversación, con pausa que se levanta sola |
+| 44 | Cliente enojado | ✅ Tanda 6 (instrucción de interpretación) |
+| 45 | Cierre natural de la conversación | 🟡 No hay un tipo de intención para "gracias/listo" |
+| 46 | Reglas de catálogo | ✅ Ya estaban todas cargadas |
+| 47 | Cálculo por personas | ✅ |
+| 51 | Estados y versionado | ✅ Tanda 4 |
+| 52 | Configuraciones del panel | ✅ Medios de pago, promociones y reemplazos autorizados agregados |
+| 53 | Notificar todo cambio al carnicero | ✅ Tandas 4 y 5 |
 
 ---
 
-## Registro de tandas aplicadas
+## Lo que quedó pendiente, y por qué
 
-- **08/09/2026 — Tanda 1.**
-  - Saludo inicial nuevo, sin "bienvenido/a" y sin nombre en el primer contacto (2.1-2.3), con
-    variantes rotativas para el cliente ya conocido (4.3).
-  - Textos definitivos de "pedido a confirmar", "pedido confirmado" y recordatorio (54).
-  - Migración `0015`: pesos por unidad según la especificación (6) — milanesas a 150 g, y se
-    incorporan hamburguesa y medallón a 120 g, que antes **no se podían pedir por unidad**.
-  - Verificado que las reglas de catálogo de la sección 46 ya estaban todas cargadas.
-  - Queda pendiente de la sección 2.1 la línea que enumera las consultas posibles ("stock,
-    horarios, productos"): se suma cuando la Tanda 2 las haga reales.
+Son cuatro cosas, todas chicas y ninguna bloqueante:
+
+1. **Pedir el nombre a las ~2 horas (4.2).** Hoy el nombre se toma del perfil de WhatsApp cuando
+   está disponible. Falta el mensaje que lo pide con naturalidad si no lo tenemos.
+2. **Avisar que un sustituto es más caro (5.6).** La propia especificación lo deja preparado para
+   cuando se activen los precios, que hoy están desactivados por decisión de la sección 13.
+3. **Proponer horarios válidos al pedir el retiro (42).** El bot ya conoce los horarios (se usan
+   para el resumen diario y el cierre); falta usarlos para no aceptar una hora en que el local
+   está cerrado.
+4. **Cierre natural de la conversación (45).** Un "gracias" hoy cae en el intérprete general.
+   Hace falta un tipo de intención propio para contestar corto y no reabrir la venta.
+
+Y una decisión que conviene revisar con uso real:
+
+- **La ventana de agrupación quedó en 6 segundos** en vez de los 20 de la especificación. Se puede
+  mover sin tocar código con la variable de entorno `VENTANA_AGRUPACION_SEGUNDOS`.
+
+---
+
+## Migraciones de estas tandas
+
+| Migración | Qué trae |
+|---|---|
+| `0015_pesos_por_unidad_especificacion.sql` | Pesos por unidad (6) |
+| `0016_atencion_general.sql` | Medios de pago y promociones (17, 19) |
+| `0017_ventana_y_confirmacion.sql` | Agrupación de mensajes y confirmación final (31, 34, 3.1, 32) |
+| `0018_pedido_vivo.sql` | Versionado, estados nuevos, historial y avisos (8-12, 27, 35, 51, 53) |
+| `0019_ciclo_carnicero.sql` | Rechazo conversado, "en espera", resumen diario, cierres (7.4-7.6, 23, 24, 36) |
+| `0020_sustitutos_y_atencion.sql` | Sustitutos autorizados, complementarios y handoff (5, 40, 43) |
+
+Correr en orden. La `0020` además carga los reemplazos que la sección 5.5 autoriza explícitamente.

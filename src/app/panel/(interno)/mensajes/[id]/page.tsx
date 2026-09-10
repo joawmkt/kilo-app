@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { HiloConversacion } from "@/components/panel/hilo-conversacion";
+import { TomarConversacion } from "@/components/panel/tomar-conversacion";
 import { accionMarcarLeida } from "../../acciones";
 import { clasesBoton } from "@/components/panel/ui";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
@@ -16,7 +17,7 @@ export default async function ConversacionPage(props: PageProps<"/panel/mensajes
   const { data: conversacion } = await supabase
     .from("conversaciones")
     .select(
-      "id, telefono, cliente_id, es_carnicero, ventana_24h_vence_at, no_leidos, clientes(nombre)"
+      "id, telefono, cliente_id, es_carnicero, ventana_24h_vence_at, no_leidos, bot_pausado_hasta, clientes(nombre)"
     )
     .eq("id", id)
     .maybeSingle();
@@ -67,6 +68,15 @@ export default async function ConversacionPage(props: PageProps<"/panel/mensajes
         </h1>
         <p className="text-sm text-ink-2">{formatearTelefono(conversacion.telefono as string)}</p>
       </header>
+
+      {/* Tomar la conversación (especificación, sección 43): la excepción para
+          cuando algo falló y hace falta que atienda una persona. */}
+      {conversacion.es_carnicero ? null : (
+        <TomarConversacion
+          conversacionId={id}
+          pausadoHasta={(conversacion.bot_pausado_hasta as string | null) ?? null}
+        />
+      )}
 
       <HiloConversacion
         conversacionId={id}

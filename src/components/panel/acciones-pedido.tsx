@@ -5,19 +5,37 @@ import { clasesBoton, IconoCheck, IconoCruz } from "./ui";
 import type { EstadoPedido } from "@/lib/panel/pedidos";
 import {
   accionAprobarPedido,
+  accionDejarEnEspera,
   accionMarcarNoRetirado,
   accionMarcarRetirado,
   accionRechazarPedido,
+  accionResponderConsulta,
 } from "@/app/panel/(interno)/acciones";
+
+export type ConsultaAbierta = {
+  paso: string;
+  opciones: { numero: number; etiqueta: string; valor: string }[];
+};
 
 // Las acciones disponibles dependen del estado del pedido. Mostrar un botón que
 // no va a funcionar es peor que no mostrarlo: el carnicero lo toca, no pasa
 // nada, y deja de confiar en el panel.
 
-export function AccionesPedido({ pedidoId, estado }: { pedidoId: string; estado: EstadoPedido }) {
+export function AccionesPedido({
+  pedidoId,
+  estado,
+  version,
+  consulta,
+}: {
+  pedidoId: string;
+  estado: EstadoPedido;
+  version?: number;
+  consulta?: ConsultaAbierta | null;
+}) {
   const [pendiente, iniciarTransicion] = useTransition();
   const [mensaje, setMensaje] = useState<{ ok: boolean; texto: string } | null>(null);
   const [confirmando, setConfirmando] = useState<null | "rechazar" | "no_retiro">(null);
+  const [elegidos, setElegidos] = useState<number[]>([]);
 
   function ejecutar(accion: () => Promise<{ ok: boolean; mensaje: string }>) {
     setMensaje(null);
@@ -28,6 +46,66 @@ export function AccionesPedido({ pedidoId, estado }: { pedidoId: string; estado:
     });
   }
 
+  // Hay una pregunta abierta del bot esperando respuesta (especificación,
+  // secciones 36 y 50). Mientras esté abierta, es lo único que se muestra: es
+  // exactamente la misma conversación que por WhatsApp, con botones.
+  if (consulta) {
+    const multiple = consulta.paso === "stock";
+    const titulo =
+      consulta.paso === "motivo"
+        ? "¿Por qué no podés aprobarlo?"
+        : consulta.paso === "demora"
+          ? "¿Qué le podemos ofrecer?"
+          : "¿De qué falta stock?";
+
+    return (
+      <div className="flex flex-col gap-3">
+        <p className="font-titulo text-sm font-semibold text-ink">{titulo}</p>
+        <div className="flex flex-wrap gap-2">
+          {consulta.opciones.map((opcion) => {
+            const activo = elegidos.includes(opcion.numero);
+            return (
+              <button
+                key={opcion.numero}
+                type="button"
+                disabled={pendiente}
+                onClick={() => {
+                  if (!multiple) {
+                    ejecutar(() => accionResponderConsulta([opcion.numero]));
+                    return;
+                  }
+                  setElegidos((previos) =>
+                    previos.includes(opcion.numero)
+                      ? previos.filter((n) => n !== opcion.numero)
+                      : [...previos, opcion.numero]
+                  );
+                }}
+                className={clasesBoton(activo ? "principal" : "secundario")}
+              >
+                {opcion.etiqueta}
+              </button>
+            );
+          })}
+        </div>
+
+        {multiple ? (
+          <button
+            type="button"
+            disabled={pendiente || elegidos.length === 0}
+            onClick={() => ejecutar(() => accionResponderConsulta(elegidos))}
+            className={clasesBoton("principal")}
+          >
+            Confirmar lo que falta
+          </button>
+        ) : null}
+
+        {mensaje ? (
+          <p className={`text-sm ${mensaje.ok ? "text-ink-2" : "text-danger"}`}>{mensaje.texto}</p>
+        ) : null}
+      </div>
+    );
+  }
+
   const botones: React.ReactNode[] = [];
 
   if (estado === "pendiente_aprobacion") {
@@ -36,7 +114,7 @@ export function AccionesPedido({ pedidoId, estado }: { pedidoId: string; estado:
         key="aprobar"
         type="button"
         disabled={pendiente}
-        onClick={() => ejecutar(() => accionAprobarPedido(pedidoId))}
+        onClick={() => ejecutar(() => accionAprobarPedido(pedidoId, version))}
         className={clasesBoton("principal", "flex-1")}
       >
         <IconoCheck className="h-5 w-5" />
@@ -74,7 +152,7 @@ export function AccionesPedido({ pedidoId, estado }: { pedidoId: string; estado:
     );
   }
 
-  if (estado === "aprobado" || estado === "no_show") {
+  if (estado === "aprobado" || estado === "en_espera" || estado === "no_show") {
     botones.push(
       <button
         key="retirado"
@@ -85,6 +163,23 @@ export function AccionesPedido({ pedidoId, estado }: { pedidoId: string; estado:
       >
         <IconoCheck className="h-5 w-5" />
         Marcar como retirado
+      </button>
+    );
+  }
+
+  // "En espera": el pedido no se retiró hoy pero sigue en pie para mañana
+  // (especificación, sección 7.5). Es la alternativa a marcarlo como ausente,
+  // que ya no pasa sola por tiempo.
+  if (estado === "aprobado") {
+    botones.push(
+      <button
+        key="en_espera"
+        type="button"
+        disabled={pendiente}
+        onClick={() => ejecutar(() => accionDejarEnEspera(pedidoId))}
+        className={clasesBoton("secundario", "flex-1")}
+      >
+        Dejar en espera
       </button>
     );
   }

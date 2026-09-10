@@ -30,6 +30,8 @@ const AHORA = new Date("2026-08-30T14:30:00-03:00").toISOString();
 const PEDIDO_PENDIENTE: PedidoDelPanel = {
   id: "ejemplo-1",
   estado: "pendiente_aprobacion",
+  version: 1,
+  consultaCarnicero: null,
   telefono: "whatsapp:+5491155667788",
   clienteId: "cliente-1",
   clienteNombre: "Marta Gutiérrez",

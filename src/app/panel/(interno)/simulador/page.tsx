@@ -5,6 +5,10 @@ import { Simulador } from "@/components/panel/simulador";
 import { EstadoVacio, Tarjeta, clasesBoton } from "@/components/panel/ui";
 import { PRODUCTO } from "@/lib/marca";
 
+// El simulador llama al mismo motor que los webhooks, así que también espera la
+// ventana de agrupación (especificación, sección 34) antes de contestar.
+export const maxDuration = 60;
+
 // Simulador — probar el bot antes de tener Meta.
 //
 // Solo existe mientras la carnicería está en modo simulado. Con un proveedor

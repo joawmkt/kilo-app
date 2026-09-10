@@ -1,7 +1,9 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { cargarCatalogo, CatalogoCarniceria, Producto } from "./catalogo";
 import { descargarAudio, enviarWhatsapp, type ReferenciaMedia } from "./whatsapp";
-import { avisarPedidoPendiente, revisarStockDeProducto } from "./notificaciones";
+import { avisarPedidoPendiente, crearAviso, revisarStockDeProducto } from "./notificaciones";
+import { nuevaVersion, registrarEvento } from "./pedidoEventos";
+import { iniciarRechazo, responderConsultaCarnicero } from "./decisionCarnicero";
 import { transcribirAudio } from "./whisper";
 import {
   interpretarMensajePedido,
@@ -14,7 +16,8 @@ import {
 } from "./interpretarPedido";
 import { clasificarRespuesta } from "./confirmacion";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
-import { buscarAlternativa } from "./alternativas";
+import { buscarSustitutoAutorizado } from "./alternativas";
+import { responderConsulta, respuestaSinDato } from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
@@ -54,7 +57,12 @@ type Sustitucion = {
   alternativa_nombre: string;
   cantidad: number;
   unidad: string;
+  /** El reemplazo depende del uso: hay que preguntarlo antes (sección 5.4). */
+  requierePreguntarUso?: boolean;
 };
+
+/** Un producto del que había menos de lo pedido (sección 39). */
+type StockParcial = { nombre: string; hay: number; faltan: number; unidad: string };
 
 type FaseInterna =
   | {
@@ -79,17 +87,30 @@ type FaseInterna =
   // Sirve para no repetir la misma frase indefinidamente: a la tercera el bot
   // cambia el pedido de dato en vez de sonar como un disco rayado.
   | { fase: "esperando_hora_retiro"; intentos?: number }
-  | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] };
+  | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] }
+  // Especificación, sección 31: el resumen completo ya se le mostró al cliente
+  // y estamos esperando que diga que sí. Recién ahí el pedido sale al
+  // carnicero. Es un paso más de conversación, a propósito: cuesta un mensaje
+  // y evita que el carnicero prepare un pedido mal entendido.
+  | { fase: "esperando_confirmacion_final" };
 
 type PedidoPendiente = {
   id: string;
-  estado: "pendiente_aclaracion" | "pendiente_aprobacion";
+  estado:
+    | "borrador"
+    | "pendiente_aclaracion"
+    | "pendiente_confirmacion_cliente"
+    | "pendiente_aprobacion"
+    | "modificacion_pendiente";
+  version: number;
   items: ItemGuardadoPedido[];
   pregunta_pendiente: string | null;
   itemsParciales?: ItemParcialPedido[];
   hora_retiro: string | null;
   fase: FaseInterna | null;
   vencido: boolean;
+  /** Si a este pedido ya se le ofreció un complementario (sección 40). */
+  recomendacionHecha: boolean;
 };
 
 async function obtenerPedidoPendienteCliente(
@@ -99,10 +120,18 @@ async function obtenerPedidoPendienteCliente(
   const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("pedidos")
-    .select("id, estado, items, pregunta_pendiente, item_parcial, hora_retiro, interpretacion, expires_at")
+    .select(
+      "id, estado, version, items, pregunta_pendiente, item_parcial, hora_retiro, interpretacion, expires_at, recomendacion_hecha"
+    )
     .eq("carniceria_id", carniceriaId)
     .eq("telefono", telefono)
-    .in("estado", ["pendiente_aclaracion", "pendiente_aprobacion"])
+    .in("estado", [
+      "borrador",
+      "pendiente_aclaracion",
+      "pendiente_confirmacion_cliente",
+      "pendiente_aprobacion",
+      "modificacion_pendiente",
+    ])
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -114,7 +143,7 @@ async function obtenerPedidoPendienteCliente(
   if (!data) return null;
 
   const estaVencido =
-    data.estado === "pendiente_aclaracion" &&
+    data.estado !== "pendiente_aprobacion" &&
     Boolean(data.expires_at) &&
     new Date(data.expires_at as string) < new Date();
 
@@ -130,12 +159,14 @@ async function obtenerPedidoPendienteCliente(
   return {
     id: data.id as string,
     estado: data.estado as PedidoPendiente["estado"],
+    version: Number(data.version ?? 1),
     items: (data.items ?? []) as ItemGuardadoPedido[],
     pregunta_pendiente: (data.pregunta_pendiente as string | null) ?? null,
     itemsParciales: (data.item_parcial as ItemParcialPedido[] | undefined) ?? undefined,
     hora_retiro: (data.hora_retiro as string | null) ?? null,
     fase: interpretacion ?? null,
     vencido: estaVencido,
+    recomendacionHecha: Boolean(data.recomendacion_hecha),
   };
 }
 
@@ -163,6 +194,12 @@ function convertirACantidadReal(producto: Producto, cantidad: number, unidadClie
 // ============================================================
 
 const FAMILIA_ASADO = "vacuno_parrilla";
+
+/** Especificación, sección 3.2 — un pedido esperando aprobación vence a las 4 horas. */
+export const HORAS_VENCIMIENTO_APROBACION = 4;
+
+/** Especificación, sección 3.1 — a los 30 minutos sin aprobación se le avisa al cliente. */
+export const MINUTOS_AVISO_DEMORA = 30;
 
 function esCategoriaAsado(catalogo: CatalogoCarniceria, codigo: string | undefined): boolean {
   if (!codigo) return false;
@@ -320,16 +357,18 @@ async function armarYGuardarPedido(params: {
   horaRetiroYaPasoIso?: string;
   intentosHoraPrevios?: number;
   texto: string;
+  /** Si a este pedido ya se le ofreció un complementario (sección 40). */
+  recomendacionYaHecha?: boolean;
 }): Promise<string> {
   const {
     carniceriaId,
     telefono,
     clienteId,
-    clienteNombre,
     mensajeWhatsappId,
     pedidoId,
     catalogo,
     itemsPedidos,
+    recomendacionYaHecha,
     horaRetiroIso,
     horaRetiroYaPasoIso,
     intentosHoraPrevios = 0,
@@ -379,6 +418,7 @@ async function armarYGuardarPedido(params: {
   // llega a pasar.
   const itemsResueltos: ItemGuardadoPedido[] = [];
   const sustituciones: Sustitucion[] = [];
+  const parciales: StockParcial[] = [];
   const descartadosSinAlternativa: string[] = [];
   const idsYaUsados = new Set<string>();
 
@@ -409,19 +449,57 @@ async function armarYGuardarPedido(params: {
       continue;
     }
 
-    const alternativa = buscarAlternativa(catalogo, producto, cantidadReal, idsYaUsados);
-    if (alternativa) {
-      idsYaUsados.add(alternativa.id);
+    // ------------------------------------------------------------
+    // Stock parcial (especificación, sección 39)
+    // ------------------------------------------------------------
+    //
+    // "De vacío me quedan 1,8 kg" es muchísimo mejor que "no tengo vacío". El
+    // objetivo de esa sección es resolver la necesidad del cliente, no
+    // limitarse a decir que no hay. Se le ofrece lo que hay, y si además existe
+    // un sustituto autorizado, se le ofrece completar con eso.
+    const hayAlgo = producto.stock_actual > 0;
+
+    const faltante = hayAlgo ? Number((cantidadReal - producto.stock_actual).toFixed(3)) : cantidadReal;
+
+    const sustituto = await buscarSustitutoAutorizado({
+      carniceriaId,
+      catalogo,
+      productoFaltante: producto,
+      cantidadNecesaria: faltante,
+      yaExcluidos: idsYaUsados,
+    });
+
+    if (hayAlgo) {
+      // Lo que sí hay entra al pedido; por el resto se pregunta.
+      itemsResueltos.push({
+        producto_id: producto.id,
+        producto_codigo: producto.codigo,
+        nombre_display: producto.nombre_display,
+        cantidad: producto.stock_actual,
+        unidad: producto.unidad,
+        disponible: true,
+      });
+      parciales.push({
+        nombre: producto.nombre_display,
+        hay: producto.stock_actual,
+        faltan: faltante,
+        unidad: producto.unidad,
+      });
+    }
+
+    if (sustituto) {
+      idsYaUsados.add(sustituto.producto.id);
       sustituciones.push({
         producto_faltante_id: producto.id,
         producto_faltante_nombre: producto.nombre_display,
-        alternativa_id: alternativa.id,
-        alternativa_codigo: alternativa.codigo,
-        alternativa_nombre: alternativa.nombre_display,
-        cantidad: cantidadReal,
+        alternativa_id: sustituto.producto.id,
+        alternativa_codigo: sustituto.producto.codigo,
+        alternativa_nombre: sustituto.producto.nombre_display,
+        cantidad: faltante,
         unidad: producto.unidad,
+        requierePreguntarUso: sustituto.requierePreguntarUso,
       });
-    } else {
+    } else if (!hayAlgo) {
       descartadosSinAlternativa.push(producto.nombre_display);
     }
   }
@@ -429,14 +507,28 @@ async function armarYGuardarPedido(params: {
   // Si hay sustituciones por confirmar, se lo preguntamos al cliente antes
   // de seguir — no se ofrece automáticamente sin que él la acepte.
   if (sustituciones.length > 0) {
+    // Sección 39: primero se cuenta qué hay, y recién después se ofrece
+    // completar. El orden importa: el cliente quiere saber si se lleva algo.
     const lineasSustitucion = sustituciones
-      .map((s) => `- No tengo "${s.producto_faltante_nombre}", pero sí "${s.alternativa_nombre}" (${s.cantidad}${s.unidad}). ¿Te sirve?`)
+      .map((s) => {
+        const parcial = parciales.find((p) => p.nombre === s.producto_faltante_nombre);
+        if (parcial) {
+          return `- De ${s.producto_faltante_nombre} me quedan ${parcial.hay}${parcial.unidad}. Si querés, completamos los ${s.cantidad}${s.unidad} que faltan con ${s.alternativa_nombre}. ¿Te sirve?`;
+        }
+        return `- No tengo "${s.producto_faltante_nombre}", pero sí "${s.alternativa_nombre}" (${s.cantidad}${s.unidad}). ¿Te sirve?`;
+      })
       .join("\n");
+
+    // Sección 5.4: cuando el reemplazo depende de para qué lo va a usar, se
+    // pregunta antes en vez de asumir.
+    const preguntaUso = sustituciones.some((s) => s.requierePreguntarUso)
+      ? "\n(Contame para qué lo ibas a usar y te digo si te sirve el cambio.)"
+      : "";
     const lineasDescartados =
       descartadosSinAlternativa.length > 0
         ? `\nPor ahora no tengo disponible: ${descartadosSinAlternativa.join(", ")} (ni un sustituto parecido) — lo saqué del pedido.`
         : "";
-    const pregunta = `${lineasSustitucion}${lineasDescartados}\n\nRespondé *sí* para aceptar los cambios, o *no* para sacarlos del pedido.`;
+    const pregunta = `${lineasSustitucion}${lineasDescartados}${preguntaUso}\n\nRespondé *sí* para aceptar los cambios, o *no* para sacarlos del pedido.`;
 
     await guardar({
       estado: "pendiente_aclaracion",
@@ -482,14 +574,16 @@ async function armarYGuardarPedido(params: {
     return pregunta;
   }
 
-  return await pasarAPendienteAprobacion({
+  // Especificación, sección 31: NUNCA se manda directo al carnicero. Primero
+  // el cliente ve el resumen completo y confirma.
+  return await pedirConfirmacionFinal({
     guardar,
-    carniceriaId,
-    telefono,
-    clienteNombre,
     items: itemsResueltos,
     horaRetiroIso,
     avisoDescartados,
+    texto,
+    catalogo,
+    recomendacionYaHecha,
   });
 }
 
@@ -522,6 +616,114 @@ function preguntaPorLaHora(params: { intentos: number; horaRetiroYaPasoIso?: str
   return "¿A qué hora pasás a retirarlo?";
 }
 
+// ============================================================
+// Confirmación final del cliente — especificación, sección 31
+// ============================================================
+//
+// Antes de que el pedido llegue al carnicero, el cliente ve el resumen entero
+// y tiene que decir que sí. La especificación asume el costo de esta
+// interacción extra a propósito: es mucho más barato corregir acá que hacer
+// que el carnicero prepare mal un pedido y se entere en el mostrador.
+//
+// El pedido queda en `pendiente_confirmacion_cliente`. Si el cliente corrige
+// algo en vez de confirmar, el mensaje sigue el camino normal de
+// interpretación y se vuelve a armar el resumen (sección 31, punto 3).
+function resumenParaConfirmar(params: {
+  items: ItemGuardadoPedido[];
+  horaRetiroIso: string;
+  avisoDescartados: string;
+}): string {
+  const { items, horaRetiroIso, avisoDescartados } = params;
+  const lineas = items.map((item) => `- ${item.nombre_display}: ${item.cantidad}${item.unidad}`);
+  return [
+    `${avisoDescartados}Entonces te preparo:`,
+    ...lineas,
+    `Retiro: ${formatearHoraArgentina(new Date(horaRetiroIso))} hs.`,
+    "",
+    "¿Está bien así?",
+  ].join("\n");
+}
+
+// ============================================================
+// Recomendación de complementario — especificación, sección 40
+// ============================================================
+//
+// "Máximo una recomendación contextual por pedido. Debe ser útil y relacionada
+// con la compra. No repetir recomendaciones. No vender por vender."
+//
+// Las tres reglas están implementadas literalmente: una sola vez por pedido
+// (`recomendacion_hecha`), solo si el complementario TIENE stock (si no, sería
+// ofrecer algo que no hay, prohibido por la sección 1.3), y solo cuando hay una
+// relación real entre lo que pidió y lo que se le ofrece.
+const COMPLEMENTOS_POR_CONTEXTO: { familiaPedido: string; codigosSugeridos: string[]; frase: string }[] = [
+  {
+    familiaPedido: FAMILIA_ASADO,
+    codigosSugeridos: ["carbon"],
+    frase: "¿Carbón tenés, o te sumo una bolsa?",
+  },
+  {
+    familiaPedido: "elaborados_vacunos",
+    codigosSugeridos: ["pan_rallado", "huevos"],
+    frase: "¿Te sumo pan rallado o huevos para empanarlas?",
+  },
+];
+
+function recomendacionComplementaria(
+  catalogo: CatalogoCarniceria,
+  items: ItemGuardadoPedido[]
+): string | null {
+  for (const regla of COMPLEMENTOS_POR_CONTEXTO) {
+    const aplica = items.some((item) => catalogo.porCodigo.get(item.producto_codigo)?.familia === regla.familiaPedido);
+    if (!aplica) continue;
+
+    // Si ya lo está llevando, no se le ofrece de nuevo.
+    const yaLoLleva = items.some((item) => regla.codigosSugeridos.includes(item.producto_codigo));
+    if (yaLoLleva) continue;
+
+    const hayStock = regla.codigosSugeridos.some((codigo) => {
+      const producto = catalogo.porCodigo.get(codigo);
+      return producto != null && producto.stock_actual > 0;
+    });
+    if (!hayStock) continue;
+
+    return regla.frase;
+  }
+
+  return null;
+}
+
+async function pedirConfirmacionFinal(params: {
+  guardar: (cambios: Record<string, unknown>) => Promise<string>;
+  items: ItemGuardadoPedido[];
+  horaRetiroIso: string;
+  avisoDescartados: string;
+  texto: string;
+  catalogo?: CatalogoCarniceria;
+  recomendacionYaHecha?: boolean;
+}): Promise<string> {
+  const { guardar, items, horaRetiroIso, avisoDescartados, texto, catalogo, recomendacionYaHecha } = params;
+  const resumen = resumenParaConfirmar({ items, horaRetiroIso, avisoDescartados });
+
+  // La recomendación va JUNTO con el resumen y no en un mensaje aparte: un
+  // mensaje extra solo para ofrecer carbón es exactamente "vender por vender".
+  const sugerencia = !recomendacionYaHecha && catalogo ? recomendacionComplementaria(catalogo, items) : null;
+
+  await guardar({
+    estado: "pendiente_confirmacion_cliente",
+    transcripcion: texto,
+    items,
+    hora_retiro: horaRetiroIso,
+    pregunta_pendiente: resumen,
+    item_parcial: null,
+    interpretacion: { fase: "esperando_confirmacion_final" },
+    expires_at: finDeHoyArgentina().toISOString(),
+    ...(sugerencia ? { recomendacion_hecha: true } : {}),
+    updated_at: new Date().toISOString(),
+  });
+
+  return sugerencia ? `${resumen}\n\n${sugerencia}` : resumen;
+}
+
 async function pasarAPendienteAprobacion(params: {
   guardar: (cambios: Record<string, unknown>) => Promise<string>;
   carniceriaId: string;
@@ -541,9 +743,33 @@ async function pasarAPendienteAprobacion(params: {
     pregunta_pendiente: null,
     item_parcial: null,
     interpretacion: null,
-    expires_at: null,
+    // Especificación, sección 3.2: un pedido que queda esperando al carnicero
+    // sin resolución vence a las 4 horas. Antes no vencía nunca, y eso dejaba
+    // al cliente trabado para siempre si el carnicero no lo miraba (pasó de
+    // verdad el 23/08/2026).
+    expires_at: new Date(Date.now() + HORAS_VENCIMIENTO_APROBACION * 60 * 60 * 1000).toISOString(),
+    aviso_demora_enviado_at: null,
     updated_at: ahora,
   });
+
+  const idParaEvento = await idDelPedidoPendiente(carniceriaId, telefono);
+  if (idParaEvento) {
+    await registrarEvento({
+      pedidoId: idParaEvento,
+      carniceriaId,
+      tipo: "cliente_confirmo",
+      actor: "cliente",
+      descripcion: "El cliente confirmó el resumen del pedido.",
+    });
+    await registrarEvento({
+      pedidoId: idParaEvento,
+      carniceriaId,
+      tipo: "enviado_a_aprobacion",
+      actor: "bot",
+      descripcion: `Se mandó a aprobación con ${items.length} producto(s).`,
+      detalle: { items },
+    });
+  }
 
   await avisarCarnicero({
     carniceriaId,
@@ -651,6 +877,10 @@ async function procesarResultado(params: {
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
   recomendacionMostrada?: boolean;
+  /** La pregunta que el bot tenía pendiente, para repetirla si el cliente la interrumpe con una consulta. */
+  preguntaPendientePrevia?: string | null;
+  /** Si a este pedido ya se le ofreció un complementario (sección 40). */
+  recomendacionYaHecha?: boolean;
 }): Promise<string> {
   const {
     carniceriaId,
@@ -666,6 +896,8 @@ async function procesarResultado(params: {
     itemsActualesPrevios,
     horaRetiroPrevia,
     intentosHoraPrevios,
+    preguntaPendientePrevia,
+    recomendacionYaHecha,
     personasPrevias,
     asadoKgObjetivoPrevio,
     recomendacionMostrada,
@@ -701,6 +933,34 @@ async function procesarResultado(params: {
   if (resultado.tipo === "saludo") {
     if (!pedidoId) return mensajeBienvenida(clienteNombre);
     return "Te escucho, contame qué necesitás.";
+  }
+
+  // Consulta (especificación, secciones 1.1 y 15-21).
+  //
+  // Se resuelve ANTES de tocar nada del pedido y **sin guardar nada**: si el
+  // cliente está a mitad de un pedido y pregunta "¿a qué hora cierran?",
+  // contestarle no puede costarle el pedido que venía armando. El estado queda
+  // intacto y la pregunta pendiente sigue en pie.
+  //
+  // Cuando el dato no está cargado se contesta reconociéndolo (sección 15),
+  // nunca completándolo — la sección 1.3 es explícita en que inventar un
+  // horario o una promoción es de las peores cosas que puede hacer el bot.
+  if (resultado.tipo === "consulta") {
+    const respuesta = await responderConsulta({
+      carniceriaId,
+      tema: resultado.tema,
+      catalogo,
+      productosConsultados: resultado.productosConsultados,
+    });
+
+    const texto = respuesta ?? respuestaSinDato(resultado.tema);
+
+    // Si había una pregunta pendiente del pedido, se la repite al final: si no,
+    // el cliente contesta la consulta y ya nadie se acuerda de dónde íbamos.
+    if (pedidoId && preguntaPendientePrevia) {
+      return `${texto}\n\n${preguntaPendientePrevia}`;
+    }
+    return texto;
   }
 
   // A partir de acá tratamos TODOS los tipos de forma unificada. El
@@ -761,6 +1021,7 @@ async function procesarResultado(params: {
       pedidoId,
       catalogo,
       itemsPedidos: [...resultado.items, ...itemsFaltantes],
+      recomendacionYaHecha,
       horaRetiroIso,
       horaRetiroYaPasoIso,
       intentosHoraPrevios,
@@ -858,6 +1119,7 @@ async function procesarResultado(params: {
       pedidoId,
       catalogo,
       itemsPedidos: itemsCompletos,
+      recomendacionYaHecha,
       horaRetiroIso,
       horaRetiroYaPasoIso,
       intentosHoraPrevios,
@@ -898,12 +1160,9 @@ async function procesarResultado(params: {
 
 async function manejarRespuestaSustitucion(params: {
   pedido: PedidoPendiente;
-  carniceriaId: string;
-  telefono: string;
-  clienteNombre: string | null;
   texto: string;
 }): Promise<string> {
-  const { pedido, carniceriaId, telefono, clienteNombre, texto } = params;
+  const { pedido, texto } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const fase = pedido.fase as Extract<FaseInterna, { fase: "esperando_confirmacion_sustitucion" }>;
   const decision = clasificarRespuesta(texto);
@@ -956,15 +1215,44 @@ async function manejarRespuestaSustitucion(params: {
     return pedido.id;
   };
 
-  return await pasarAPendienteAprobacion({
+  // También acá pasa por la confirmación final (sección 31): el cliente acaba
+  // de aceptar un sustituto, así que con más razón conviene que vea el pedido
+  // completo antes de que salga.
+  return await pedirConfirmacionFinal({
     guardar,
-    carniceriaId,
-    telefono,
-    clienteNombre,
     items,
     horaRetiroIso: pedido.hora_retiro,
     avisoDescartados: "",
+    texto,
   });
+}
+
+/**
+ * Transcribe un audio de un cliente. Se separó de `procesarAudioDePedido`
+ * cuando entró la ventana de agrupación (especificación, sección 34): el audio
+ * tiene que convertirse en texto ANTES de entrar al bloque, para que se pueda
+ * juntar con los mensajes escritos que vengan pegados ("te mando un audio" +
+ * "ah, y 2 kilos de chorizo").
+ *
+ * Devuelve el texto, o un mensaje de error listo para mandarle al cliente.
+ */
+export async function transcribirAudioDeCliente(
+  media: ReferenciaMedia
+): Promise<{ ok: true; texto: string } | { ok: false; mensaje: string }> {
+  let transcripcion: string;
+  try {
+    const audio = await descargarAudio(media);
+    transcripcion = await transcribirAudio(audio);
+  } catch (err) {
+    console.error("Error descargando/transcribiendo audio de pedido", err);
+    return { ok: false, mensaje: "No pude escuchar bien ese audio. ¿Podés grabarlo de nuevo?" };
+  }
+
+  if (!transcripcion) {
+    return { ok: false, mensaje: "El audio me llegó vacío o no se entendió nada. ¿Podés repetirlo?" };
+  }
+
+  return { ok: true, texto: transcripcion };
 }
 
 export async function procesarAudioDePedido(params: {
@@ -976,20 +1264,16 @@ export async function procesarAudioDePedido(params: {
 }): Promise<string> {
   const { carniceriaId, telefono, mensajeWhatsappId, media, nombreWhatsapp } = params;
 
-  let transcripcion: string;
-  try {
-    const audio = await descargarAudio(media);
-    transcripcion = await transcribirAudio(audio);
-  } catch (err) {
-    console.error("Error descargando/transcribiendo audio de pedido", err);
-    return "No pude escuchar bien ese audio. ¿Podés grabarlo de nuevo?";
-  }
+  const transcripcion = await transcribirAudioDeCliente(media);
+  if (!transcripcion.ok) return transcripcion.mensaje;
 
-  if (!transcripcion) {
-    return "El audio me llegó vacío o no se entendió nada. ¿Podés repetirlo?";
-  }
-
-  return await procesarMensajeDeCliente({ carniceriaId, telefono, mensajeWhatsappId, texto: transcripcion, nombreWhatsapp });
+  return await procesarMensajeDeCliente({
+    carniceriaId,
+    telefono,
+    mensajeWhatsappId,
+    texto: transcripcion.texto,
+    nombreWhatsapp,
+  });
 }
 
 export async function procesarTextoDePedido(params: {
@@ -1000,6 +1284,207 @@ export async function procesarTextoDePedido(params: {
   nombreWhatsapp?: string | null;
 }): Promise<string | null> {
   return await procesarMensajeDeCliente(params);
+}
+
+// ============================================================
+// Pedidos que ya están confirmados — modificar, cancelar, reprogramar
+// Especificación, secciones 8 a 12, 25, 26 y 35
+// ============================================================
+
+type PedidoConfirmado = {
+  id: string;
+  estado: string;
+  version: number;
+  items: ItemGuardadoPedido[];
+  hora_retiro: string | null;
+  hora_retiro_original: string | null;
+};
+
+/**
+ * Los pedidos del cliente que ya están confirmados y todavía no se retiraron.
+ *
+ * La sección 9 permite tener varios a la vez para fechas distintas, así que
+ * esto devuelve una lista y no uno solo: cuando hay más de uno y el cliente
+ * pide un cambio sin decir a cuál, hay que preguntarle (sección 1.4).
+ */
+async function obtenerPedidosConfirmados(
+  carniceriaId: string,
+  telefono: string
+): Promise<PedidoConfirmado[]> {
+  const { data } = await getSupabaseAdmin()
+    .from("pedidos")
+    .select("id, estado, version, items, hora_retiro, hora_retiro_original")
+    .eq("carniceria_id", carniceriaId)
+    .eq("telefono", telefono)
+    .in("estado", ["aprobado", "en_espera"])
+    .is("retirado_at", null)
+    .order("hora_retiro", { ascending: true });
+
+  return ((data ?? []) as unknown[]).map((fila) => {
+    const f = fila as Record<string, unknown>;
+    return {
+      id: f.id as string,
+      estado: f.estado as string,
+      version: Number(f.version ?? 1),
+      items: (f.items ?? []) as ItemGuardadoPedido[],
+      hora_retiro: (f.hora_retiro as string | null) ?? null,
+      hora_retiro_original: (f.hora_retiro_original as string | null) ?? null,
+    };
+  });
+}
+
+/** "el de hoy a las 20:00" — para que el cliente pueda elegir entre varios. */
+function describirPedidoBreve(pedido: PedidoConfirmado): string {
+  const cuando = pedido.hora_retiro
+    ? `${formatearFechaCortaArgentina(new Date(pedido.hora_retiro))} ${formatearHoraArgentina(new Date(pedido.hora_retiro))} hs`
+    : "sin hora";
+  const productos = pedido.items.map((i) => i.nombre_display).join(", ") || "sin productos";
+  return `${cuando} — ${productos}`;
+}
+
+function formatearFechaCortaArgentina(fecha: Date): string {
+  const enArgentina = new Date(fecha.getTime() - 3 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(enArgentina.getUTCDate())}/${pad(enArgentina.getUTCMonth() + 1)}`;
+}
+
+function preguntarCualPedido(pedidos: PedidoConfirmado[], accion: string): string {
+  const lineas = pedidos.map((p, i) => `${i + 1}. ${describirPedidoBreve(p)}`);
+  return `Tenés más de un pedido en pie. ¿Cuál querés ${accion}?\n${lineas.join("\n")}`;
+}
+
+/**
+ * Cancela un pedido (sección 10). Un pedido ya retirado no se puede cancelar
+ * (10.3); uno confirmado se cancela y se le avisa al carnicero, porque él ya
+ * lo tenía en la lista de lo que iba a preparar (10.2).
+ */
+async function cancelarPedido(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  clienteNombre: string | null;
+  avisarAlCarnicero: boolean;
+}): Promise<string> {
+  const { carniceriaId, pedidoId, clienteNombre, avisarAlCarnicero } = params;
+
+  const { data: actualizado } = await getSupabaseAdmin()
+    .from("pedidos")
+    .update({
+      estado: "cancelado",
+      pregunta_pendiente: null,
+      item_parcial: null,
+      interpretacion: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", pedidoId)
+    .not("estado", "in", "(retirado,no_show,cancelado)")
+    .select("id")
+    .maybeSingle();
+
+  if (!actualizado) {
+    return "Ese pedido ya no se puede cancelar. Si necesitás algo, contame y lo vemos 🙌";
+  }
+
+  await registrarEvento({
+    pedidoId,
+    carniceriaId,
+    tipo: "cancelado",
+    actor: "cliente",
+    descripcion: "El cliente canceló el pedido.",
+  });
+
+  if (avisarAlCarnicero) {
+    await crearAviso({
+      carniceriaId,
+      tipo: "pedido_cancelado",
+      titulo: "Un cliente canceló su pedido",
+      cuerpo: clienteNombre ? `${clienteNombre} dio de baja un pedido que ya estaba confirmado.` : undefined,
+      enlace: `/panel/pedidos/${pedidoId}`,
+      entidadTipo: "pedido",
+      entidadId: pedidoId,
+    });
+  }
+
+  return "Listo, lo doy de baja. Cuando quieras me escribís y lo armamos de nuevo 🙌";
+}
+
+/**
+ * Mueve la hora (o el día) de retiro de un pedido ya confirmado — secciones 11,
+ * 25 y 26.
+ *
+ * Adelantar y postergar NO son lo mismo, y la especificación lo dice claro:
+ * postergar se acepta (26), pero adelantar requiere que el carnicero diga que
+ * llega (25) — no se le puede prometer al cliente que va a estar listo antes.
+ * Por eso, si la hora nueva es ANTES de la original, se deja registrado como
+ * pedido y se le avisa al carnicero para que decida, en vez de confirmarlo.
+ */
+async function reprogramarPedido(params: {
+  carniceriaId: string;
+  pedido: PedidoConfirmado;
+  nuevaHoraIso: string;
+  clienteNombre: string | null;
+}): Promise<string> {
+  const { carniceriaId, pedido, nuevaHoraIso, clienteNombre } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const horaVieja = pedido.hora_retiro ? new Date(pedido.hora_retiro) : null;
+  const horaNueva = new Date(nuevaHoraIso);
+  const seAdelanta = horaVieja !== null && horaNueva.getTime() < horaVieja.getTime();
+
+  await supabaseAdmin
+    .from("pedidos")
+    .update({
+      hora_retiro: nuevaHoraIso,
+      hora_retiro_original: pedido.hora_retiro_original ?? pedido.hora_retiro,
+      // El recordatorio se recalcula para la hora nueva (sección 11): si no se
+      // limpia, el pedido ya quedó marcado como avisado y nunca se recuerda.
+      recordatorio_enviado_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", pedido.id);
+
+  await nuevaVersion({
+    pedidoId: pedido.id,
+    carniceriaId,
+    motivo: "hora_cambiada",
+    actor: "cliente",
+    descripcion: `Retiro movido${horaVieja ? ` de las ${formatearHoraArgentina(horaVieja)}` : ""} a las ${formatearHoraArgentina(horaNueva)} hs.`,
+    detalle: { anterior: pedido.hora_retiro, nueva: nuevaHoraIso },
+  });
+
+  // Sección 11: todo cambio se notifica al carnicero, aunque no requiera que
+  // vuelva a aprobar.
+  await crearAviso({
+    carniceriaId,
+    tipo: seAdelanta ? "decision_requerida" : "pedido_reprogramado",
+    titulo: seAdelanta ? "Un cliente quiere adelantar su pedido" : "Un cliente movió la hora de su pedido",
+    cuerpo: `${clienteNombre ?? "Un cliente"} pasó el retiro a las ${formatearHoraArgentina(horaNueva)} hs.${
+      seAdelanta ? " Confirmá si llegás; si no, escribile." : ""
+    }`,
+    enlace: `/panel/pedidos/${pedido.id}`,
+    entidadTipo: "pedido",
+    entidadId: pedido.id,
+  });
+
+  if (seAdelanta) {
+    // Sección 25: no se promete que vaya a estar listo antes.
+    return `Te anoto el cambio para las ${formatearHoraArgentina(horaNueva)} hs. Déjame confirmar que lleguemos con el tiempo y te aviso enseguida 🙌`;
+  }
+
+  return `Listo, te lo dejo para las ${formatearHoraArgentina(horaNueva)} hs. ¡Te esperamos!`;
+}
+
+/** La hora de retiro que trae este resultado, sea cual sea su tipo. */
+function horaRetiroDelResultado(resultado: ResultadoInterpretacionPedido): string | undefined {
+  return "horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined;
+}
+
+/** ¿El mensaje habla de algún producto, o es solo un dato suelto (una hora)? */
+function mencionaProductos(resultado: ResultadoInterpretacionPedido): boolean {
+  if (resultado.tipo === "pedido") return resultado.items.length > 0;
+  if (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante") {
+    return (resultado.itemsParciales ?? []).length > 0;
+  }
+  return false;
 }
 
 async function procesarMensajeDeCliente(params: {
@@ -1014,10 +1499,10 @@ async function procesarMensajeDeCliente(params: {
   const cliente = await obtenerOCrearCliente(carniceriaId, telefono, nombreWhatsapp);
   const pedido = await obtenerPedidoPendienteCliente(carniceriaId, telefono);
 
-  if (pedido && !pedido.vencido && pedido.estado === "pendiente_aprobacion") {
-    return "Tu pedido ya está esperando que lo revise la carnicería — te aviso apenas lo confirmen 🙏";
-  }
-
+  // Hasta la Tanda 4, si el pedido ya estaba esperando al carnicero el bot
+  // contestaba "tu pedido ya está esperando" y no dejaba hacer NADA más: ni
+  // agregar un producto, ni cambiar la hora, ni cancelar. La sección 35 pide lo
+  // contrario — que se pueda modificar, invalidando la versión anterior.
   const pedidoActivo = pedido && !pedido.vencido ? pedido : null;
 
   let catalogo: CatalogoCarniceria;
@@ -1030,13 +1515,55 @@ async function procesarMensajeDeCliente(params: {
 
   // Sub-flujo especial: esperando sí/no sobre una sustitución propuesta.
   if (pedidoActivo?.fase?.fase === "esperando_confirmacion_sustitucion") {
-    return await manejarRespuestaSustitucion({
-      pedido: pedidoActivo,
-      carniceriaId,
-      telefono,
-      clienteNombre: cliente.nombre,
-      texto,
-    });
+    return await manejarRespuestaSustitucion({ pedido: pedidoActivo, texto });
+  }
+
+  // Sub-flujo especial: el cliente ya vio el resumen completo y tiene que
+  // confirmarlo (especificación, sección 31).
+  //
+  // Solo se atajan acá las respuestas EXPLÍCITAS de sí/no. Cualquier otra cosa
+  // ("mejor 2 kilos", "agregá chorizos") sigue de largo al intérprete normal:
+  // la sección 31 dice que si el cliente corrige algo hay que actualizar y
+  // volver a mostrar el resumen, y eso es exactamente lo que hace el camino
+  // normal, que ya sabe arrastrar los productos ya resueltos.
+  if (pedidoActivo?.fase?.fase === "esperando_confirmacion_final") {
+    const decision = clasificarRespuesta(texto);
+
+    if (decision === "confirmar") {
+      const guardar = async (cambios: Record<string, unknown>) => {
+        await getSupabaseAdmin().from("pedidos").update(cambios).eq("id", pedidoActivo.id);
+        return pedidoActivo.id;
+      };
+
+      if (!pedidoActivo.hora_retiro) {
+        // No debería pasar (el resumen incluye la hora), pero si pasara,
+        // mandar un pedido sin hora al carnicero sería peor que repreguntar.
+        return "Me falta la hora de retiro para cerrarlo. ¿A qué hora pasás a buscarlo?";
+      }
+
+      return await pasarAPendienteAprobacion({
+        guardar,
+        carniceriaId,
+        telefono,
+        clienteNombre: cliente.nombre,
+        items: pedidoActivo.items,
+        horaRetiroIso: pedidoActivo.hora_retiro,
+        avisoDescartados: "",
+      });
+    }
+
+    if (decision === "cancelar") {
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({
+          estado: "cancelado",
+          pregunta_pendiente: null,
+          interpretacion: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pedidoActivo.id);
+      return "Listo, lo doy de baja. Cuando quieras me escribís y lo armamos de nuevo 🙌";
+    }
   }
 
   const asadoKgObjetivoPrevio = asadoKgObjetivoDeFase(pedidoActivo?.fase);
@@ -1058,6 +1585,110 @@ async function procesarMensajeDeCliente(params: {
 
   const resultado = await interpretarMensajePedido(texto, catalogo.promptCatalogo, ahoraArgentinaIso(), contexto);
 
+  // ------------------------------------------------------------
+  // Cancelación (sección 10)
+  // ------------------------------------------------------------
+  //
+  // La detecta la IA por intención, no por la palabra "cancelar": "sacame
+  // todo" o "al final no" también son cancelaciones (10.4).
+  if (resultado.tipo === "cancelacion") {
+    if (pedidoActivo) {
+      return await cancelarPedido({
+        carniceriaId,
+        pedidoId: pedidoActivo.id,
+        clienteNombre: cliente.nombre,
+        // Solo se molesta al carnicero si él ya lo había visto: un borrador que
+        // el cliente abandona no es noticia para nadie.
+        avisarAlCarnicero: pedidoActivo.estado === "pendiente_aprobacion",
+      });
+    }
+
+    const confirmados = await obtenerPedidosConfirmados(carniceriaId, telefono);
+    if (confirmados.length === 1) {
+      return await cancelarPedido({
+        carniceriaId,
+        pedidoId: confirmados[0].id,
+        clienteNombre: cliente.nombre,
+        avisarAlCarnicero: true,
+      });
+    }
+    if (confirmados.length > 1) {
+      // Sección 1.4: con dos pedidos en pie, cancelar el equivocado es un
+      // problema serio. Se pregunta, nunca se adivina.
+      return preguntarCualPedido(confirmados, "cancelar");
+    }
+
+    return "No tenés ningún pedido en curso ahora mismo. Si querés armar uno, contame qué necesitás 🙌";
+  }
+
+  // ------------------------------------------------------------
+  // El pedido ya estaba esperando al carnicero y el cliente cambia algo
+  // (sección 35)
+  // ------------------------------------------------------------
+  //
+  // La versión que el carnicero tenía a la vista deja de ser aprobable: sube el
+  // número de versión, el pedido vuelve a armarse con el cambio incorporado, y
+  // termina otra vez en el resumen + confirmación + aprobación.
+  if (pedidoActivo?.estado === "pendiente_aprobacion") {
+    if (resultado.tipo === "saludo") {
+      return "Tu pedido ya está esperando que lo revisemos — te aviso apenas lo confirmemos 🙏";
+    }
+
+    // Una consulta no toca el pedido: se contesta y listo (se resuelve más
+    // abajo, en procesarResultado, sin guardar nada).
+    if (resultado.tipo !== "consulta") {
+      const version = await nuevaVersion({
+        pedidoId: pedidoActivo.id,
+        carniceriaId,
+        motivo: "version_invalidada",
+        actor: "cliente",
+        descripcion: "El cliente pidió un cambio mientras el pedido esperaba aprobación.",
+      });
+
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({ estado: "modificacion_pendiente", updated_at: new Date().toISOString() })
+        .eq("id", pedidoActivo.id);
+
+      await crearAviso({
+        carniceriaId,
+        tipo: "pedido_modificado",
+        titulo: "Un cliente modificó su pedido",
+        cuerpo: `${cliente.nombre ?? "Un cliente"} cambió algo del pedido que estaba esperando tu aprobación. La versión anterior ya no se puede aprobar.`,
+        enlace: `/panel/pedidos/${pedidoActivo.id}`,
+        entidadTipo: "pedido",
+        entidadId: pedidoActivo.id,
+        claveUnicidad: `pedido_modificado:${pedidoActivo.id}:${version ?? ""}`,
+      });
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Reprogramar un pedido ya confirmado (secciones 11, 25 y 26)
+  // ------------------------------------------------------------
+  //
+  // El caso es: no hay ningún pedido armándose, pero sí uno confirmado, y el
+  // cliente manda SOLO una hora nueva ("mejor paso a las 9"). Si además
+  // menciona productos, es un pedido nuevo — la sección 9 permite tener varios
+  // para fechas distintas — y sigue el camino normal.
+  if (!pedidoActivo) {
+    const horaNueva = horaRetiroDelResultado(resultado);
+    if (horaNueva && !mencionaProductos(resultado)) {
+      const confirmados = await obtenerPedidosConfirmados(carniceriaId, telefono);
+      if (confirmados.length === 1) {
+        return await reprogramarPedido({
+          carniceriaId,
+          pedido: confirmados[0],
+          nuevaHoraIso: horaNueva,
+          clienteNombre: cliente.nombre,
+        });
+      }
+      if (confirmados.length > 1) {
+        return preguntarCualPedido(confirmados, "mover de horario");
+      }
+    }
+  }
+
   return await procesarResultado({
     carniceriaId,
     telefono,
@@ -1075,6 +1706,8 @@ async function procesarMensajeDeCliente(params: {
     itemsActualesPrevios: pedidoActivo?.items,
     horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
     intentosHoraPrevios: intentosHoraDeFase(pedidoActivo?.fase),
+    preguntaPendientePrevia: pedidoActivo?.pregunta_pendiente ?? null,
+    recomendacionYaHecha: pedidoActivo?.recomendacionHecha ?? false,
   });
 }
 
@@ -1096,6 +1729,13 @@ export async function procesarDecisionCarnicero(params: {
   texto: string;
 }): Promise<string | null> {
   const { carniceriaId, carniceroTelefono, texto } = params;
+
+  // Primero: ¿el carnicero está contestando una pregunta que le hicimos?
+  // (especificación, secciones 36 y 50). Si dejó abierta una consulta y ahora
+  // escribe "2 y 3", eso es la respuesta, no un mensaje nuevo.
+  const respuestaConsulta = await responderConsultaCarnicero({ carniceriaId, texto });
+  if (respuestaConsulta !== null) return respuestaConsulta;
+
   const decision = clasificarDecisionCarnicero(texto);
   if (decision === null) return null;
 
@@ -1115,10 +1755,18 @@ export async function procesarDecisionCarnicero(params: {
   }
   if (!pedido) return "No hay ningún pedido esperando aprobación ahora mismo.";
 
-  const resultado =
-    decision === "aprobar"
-      ? await aprobarPedido({ carniceriaId, pedidoId: pedido.id as string, carniceroTelefono })
-      : await rechazarPedido({ carniceriaId, pedidoId: pedido.id as string, carniceroTelefono });
+  // Rechazar ya no cierra el pedido de una: se le pregunta al carnicero por qué
+  // y se busca una salida (sección 36, "el rechazo no significa necesariamente
+  // fin del pedido").
+  if (decision === "rechazar") {
+    return await iniciarRechazo(pedido.id as string);
+  }
+
+  const resultado = await aprobarPedido({
+    carniceriaId,
+    pedidoId: pedido.id as string,
+    carniceroTelefono,
+  });
 
   return resultado.mensaje;
 }
@@ -1147,10 +1795,35 @@ export async function aprobarPedido(params: {
   carniceroTelefono?: string | null;
   /** Si vino por el panel: el usuario que decidió. */
   decididoPor?: string | null;
+  /**
+   * La versión del pedido que quien aprueba tenía a la vista (sección 51).
+   *
+   * Sin esto, el carnicero puede aprobar desde una pantalla vieja un pedido que
+   * el cliente ya modificó, y terminar preparando lo que decía la versión
+   * anterior. Es opcional para no romper a quien apruebe por WhatsApp, donde no
+   * hay pantalla: ahí el estado `modificacion_pendiente` ya bloquea el caso.
+   */
+  version?: number;
 }): Promise<ResultadoDecision> {
-  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor } = params;
+  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor, version } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
+
+  if (version != null) {
+    const { data: actual } = await supabaseAdmin
+      .from("pedidos")
+      .select("version")
+      .eq("id", pedidoId)
+      .eq("carniceria_id", carniceriaId)
+      .maybeSingle();
+
+    if (actual && Number(actual.version ?? 1) !== version) {
+      return {
+        ok: false,
+        mensaje: "El cliente cambió el pedido mientras lo mirabas. Actualizá la página y revisá la versión nueva.",
+      };
+    }
+  }
 
   const { data: actualizado, error } = await supabaseAdmin
     .from("pedidos")
@@ -1164,7 +1837,7 @@ export async function aprobarPedido(params: {
     .eq("id", pedidoId)
     .eq("carniceria_id", carniceriaId)
     .eq("estado", "pendiente_aprobacion")
-    .select("id, telefono, items, hora_retiro")
+    .select("id, telefono, items, hora_retiro, version")
     .maybeSingle();
 
   if (error) {
@@ -1172,6 +1845,15 @@ export async function aprobarPedido(params: {
     return { ok: false, mensaje: "Tuve un problema técnico aprobando el pedido." };
   }
   if (!actualizado) return { ok: false, mensaje: "Ese pedido ya fue procesado." };
+
+  await registrarEvento({
+    pedidoId,
+    carniceriaId,
+    tipo: "aprobado",
+    actor: "carnicero",
+    descripcion: "El carnicero aprobó el pedido.",
+    version: Number((actualizado as { version?: number }).version ?? 1),
+  });
 
   const items = (actualizado.items ?? []) as ItemGuardadoPedido[];
   const itemsConPrecio: ItemGuardadoPedido[] = [];
@@ -1257,6 +1939,14 @@ export async function rechazarPedido(params: {
 
   if (!actualizado) return { ok: false, mensaje: "Ese pedido ya fue procesado." };
 
+  await registrarEvento({
+    pedidoId,
+    carniceriaId,
+    tipo: "rechazado",
+    actor: "carnicero",
+    descripcion: "El carnicero rechazó el pedido.",
+  });
+
   await avisarClienteDecision({
     carniceriaId,
     clienteTelefono: actualizado.telefono as string,
@@ -1272,6 +1962,57 @@ export async function rechazarPedido(params: {
  * automáticamente que alguien pasó a buscar su pedido (no hay integración con
  * la caja), así que alguien lo tiene que marcar a mano.
  */
+/**
+ * "En espera": el pedido no se retiró hoy pero sigue en pie para mañana
+ * (especificación, sección 7.5).
+ *
+ * Mientras está en espera el stock sigue reservado y el cliente lo puede
+ * retirar al día siguiente. Si tampoco lo retira ahí, recién entonces pasa a
+ * no_show (7.6) — eso lo hace el cron.
+ */
+export async function marcarPedidoEnEspera(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date();
+
+  // Un día más, contado en días de Argentina y no en horas: "mañana" para un
+  // carnicero es el día siguiente, no 24 horas exactas desde el cierre.
+  const manana = new Date(ahora.getTime() + 24 * 60 * 60 * 1000);
+  const enArgentina = new Date(manana.getTime() - 3 * 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hasta = `${enArgentina.getUTCFullYear()}-${pad(enArgentina.getUTCMonth() + 1)}-${pad(enArgentina.getUTCDate())}`;
+
+  const { data } = await supabaseAdmin
+    .from("pedidos")
+    .update({
+      estado: "en_espera",
+      en_espera_hasta: hasta,
+      updated_at: ahora.toISOString(),
+      decidido_por: params.decididoPor ?? null,
+    })
+    .eq("id", params.pedidoId)
+    .eq("carniceria_id", params.carniceriaId)
+    .in("estado", ["aprobado", "no_show"])
+    .select("id")
+    .maybeSingle();
+
+  if (!data) return { ok: false, mensaje: "Ese pedido no se puede dejar en espera." };
+
+  await registrarEvento({
+    pedidoId: params.pedidoId,
+    carniceriaId: params.carniceriaId,
+    tipo: "en_espera",
+    actor: "carnicero",
+    descripcion: "Queda en espera para el día siguiente.",
+    detalle: { hasta },
+  });
+
+  return { ok: true, mensaje: "Queda en espera hasta mañana." };
+}
+
 export async function marcarPedidoRetirado(params: {
   carniceriaId: string;
   pedidoId: string;
@@ -1285,11 +2026,19 @@ export async function marcarPedidoRetirado(params: {
     .update({ estado: "retirado", retirado_at: ahora, updated_at: ahora, decidido_por: params.decididoPor ?? null })
     .eq("id", params.pedidoId)
     .eq("carniceria_id", params.carniceriaId)
-    .in("estado", ["aprobado", "no_show"])
+    .in("estado", ["aprobado", "en_espera", "no_show"])
     .select("id, cliente_id, estado")
     .maybeSingle();
 
   if (!data) return { ok: false, mensaje: "Ese pedido no se puede marcar como retirado." };
+
+  await registrarEvento({
+    pedidoId: params.pedidoId,
+    carniceriaId: params.carniceriaId,
+    tipo: "retirado",
+    actor: "carnicero",
+    descripcion: "El carnicero marcó el pedido como retirado.",
+  });
 
   return { ok: true, mensaje: "Marcado como retirado." };
 }

@@ -69,7 +69,36 @@ export type ResultadoInterpretacionPedido =
   | { tipo: "pedido"; items: ItemPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
   | { tipo: "aclaracion"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
   | { tipo: "info_faltante"; pregunta: string; itemsParciales?: ItemParcialPedido[]; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas }
+  // Tanda 2 (especificación, secciones 1.1 y 15-21): el cliente pregunta algo
+  // en vez de pedir. La IA solo clasifica DE QUÉ está preguntando; el texto de
+  // la respuesta lo arma src/lib/consultas.ts con datos reales de la
+  // carnicería, nunca la IA — si no, inventaría horarios y promociones, que es
+  // justo lo que prohíbe la sección 1.3.
+  | { tipo: "consulta"; tema: TemaConsulta; productosConsultados?: string[] }
+  // Tanda 4 (especificación, sección 10): el cliente quiere dar de baja el
+  // pedido entero. Se detecta por intención y no por la palabra "cancelar":
+  // "sacame todo", "dejalo", "al final no" son cancelaciones igual (10.4).
+  | { tipo: "cancelacion" }
   | { tipo: "no_entendido"; horaRetiroYaPasoIso?: string; personas?: InfoPersonas };
+
+export type TemaConsulta =
+  | "horarios"
+  | "direccion"
+  | "medios_pago"
+  | "promociones"
+  | "delivery"
+  | "stock"
+  | "otro";
+
+const TEMAS_CONSULTA: TemaConsulta[] = [
+  "horarios",
+  "direccion",
+  "medios_pago",
+  "promociones",
+  "delivery",
+  "stock",
+  "otro",
+];
 
 // Contexto de un pedido que se está armando de a poco entre varios mensajes
 // del cliente. `itemsParciales` es la lista COMPLETA de productos
@@ -101,13 +130,36 @@ const TOOL_SCHEMA: Anthropic.Tool = {
     properties: {
       tipo: {
         type: "string",
-        enum: ["saludo", "pedido", "aclaracion", "info_faltante", "no_entendido"],
+        enum: ["saludo", "consulta", "cancelacion", "pedido", "aclaracion", "info_faltante", "no_entendido"],
         description:
           "'saludo' si el mensaje es solo un saludo/apertura sin mencionar ningún producto (ej. 'hola', 'buenas'). " +
+          "'consulta' si el cliente PREGUNTA algo en vez de pedir: horarios, dirección, medios de pago, " +
+          "promociones, si hacen delivery, o si tenés tal producto ('¿tenés vacío?'). " +
+          "'cancelacion' si quiere dar de baja TODO el pedido, aunque no use la palabra cancelar " +
+          "('sacame todo', 'dejalo', 'al final no', 'olvidate'). Ojo: sacar UN producto de varios NO es " +
+          "cancelación, es una modificación. " +
           "'pedido' SOLO si TODOS los productos mencionados hasta ahora en la conversación tienen producto y " +
           "cantidad claros, sin ambigüedad ni nada pendiente. 'aclaracion' si un término es ambiguo. " +
           "'info_faltante' si a uno o más productos ya identificados les falta un dato puntual (típicamente la " +
-          "cantidad). 'no_entendido' si el mensaje no tiene relación con hacer un pedido.",
+          "cantidad). 'no_entendido' si el mensaje no tiene relación ni con un pedido ni con una consulta.",
+      },
+      consulta_tema: {
+        type: "string",
+        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "otro"],
+        description:
+          "Solo si tipo=consulta. De qué está preguntando: 'horarios' (a qué hora abren/cierran, si abren tal " +
+          "día), 'direccion' (dónde están, cómo llegar), 'medios_pago' (si toman tarjeta, transferencia, QR), " +
+          "'promociones' (si hay promos/ofertas), 'delivery' (si llevan a domicilio, si mandan), 'stock' (si " +
+          "tienen tal producto disponible, SIN pedirlo todavía), 'otro' para cualquier otra pregunta. " +
+          "NO inventes la respuesta: el sistema la arma con los datos reales de la carnicería.",
+      },
+      productos_consultados: {
+        type: "array",
+        description:
+          "Solo si tipo=consulta y consulta_tema='stock'. Los códigos de los productos por los que pregunta " +
+          "(EXACTAMENTE los de PRODUCTOS ACTIVOS). Ojo con la diferencia: '¿tenés vacío?' es una consulta de " +
+          "stock; 'dame 2 kg de vacío' es un pedido.",
+        items: { type: "string" },
       },
       items: {
         type: "array",
@@ -271,7 +323,21 @@ Reglas:
   puede venir junto con productos ("asado para 4, quiero vacío y costilla") o solo. Nunca inventes un número
   de personas que no se mencionó.
 - Si el mensaje es solo un saludo sin pedir nada todavía, respondé tipo "saludo".
-- Si no tiene nada que ver con hacer un pedido, respondé tipo "no_entendido".
+- Si el cliente PREGUNTA algo en vez de pedir (horarios, dónde están, si toman tarjeta, si hay promos, si
+  hacen delivery, o si tenés tal corte), respondé tipo "consulta" con "consulta_tema". NUNCA escribas vos la
+  respuesta ni inventes horarios, direcciones, promociones ni medios de pago: el sistema los busca en los
+  datos reales de la carnicería. Vos solo clasificás de qué está preguntando.
+- Cuidado con la diferencia entre consultar y pedir: "¿tenés vacío?" es tipo "consulta" con tema "stock";
+  "dame 2 kg de vacío" es tipo "pedido". Si en el mismo mensaje pregunta Y pide ("¿tenés vacío? dame 2 kg"),
+  tratalo como pedido — el pedido ya contesta la pregunta.
+- Si el cliente quiere dar de baja el pedido ENTERO, respondé tipo "cancelacion", aunque no use la palabra
+  "cancelar": "sacame todo", "dejalo así", "al final no", "olvidate" son cancelaciones. Si en cambio quiere
+  sacar UNO de varios productos, eso NO es una cancelación: es una modificación del pedido.
+- Si el cliente está enojado, se queja o putea: NUNCA le devuelvas el insulto ni te pongas a la defensiva.
+  Buscá cuál es el problema real detrás del enojo (un pedido que salió mal, una demora, algo que no
+  entendió) y tratá el mensaje como lo que sea que corresponda — una consulta, una modificación, una
+  cancelación. Un insulto no cambia lo que hay que hacer con el pedido.
+- Si no tiene nada que ver ni con un pedido ni con una consulta, respondé tipo "no_entendido".
 ${bloqueContexto}
 
 ${promptCatalogo}`;
@@ -407,6 +473,24 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
 
   if (datos.tipo === "saludo") {
     return { tipo: "saludo" };
+  }
+
+  if (datos.tipo === "cancelacion") {
+    return { tipo: "cancelacion" };
+  }
+
+  if (datos.tipo === "consulta") {
+    const tema = TEMAS_CONSULTA.includes(datos.consulta_tema as TemaConsulta)
+      ? (datos.consulta_tema as TemaConsulta)
+      : "otro";
+    const productos = Array.isArray(datos.productos_consultados)
+      ? datos.productos_consultados.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
+      : [];
+    return {
+      tipo: "consulta",
+      tema,
+      ...(productos.length > 0 ? { productosConsultados: productos } : {}),
+    };
   }
 
   if (

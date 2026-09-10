@@ -1,10 +1,16 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import twilio from "twilio";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { procesarMensajeEntrante } from "@/lib/whatsapp/entrante";
-import { registrarMensaje, aFormatoCanonico } from "@/lib/whatsapp";
+import { aFormatoCanonico, enviarWhatsapp } from "@/lib/whatsapp";
 import { escapeXml } from "@/lib/texto";
 import type { MensajeEntranteNormalizado, TipoMensaje } from "@/lib/whatsapp/tipos";
+
+// La ventana de agrupación (especificación, sección 34) hace que el trabajo en
+// `after` dure unos segundos más de lo que duraba antes. El default de Vercel
+// es corto; sin esto, un bloque con audio + interpretación puede cortarse por
+// la mitad y el cliente se queda sin respuesta.
+export const maxDuration = 60;
 
 // Webhook de WhatsApp por Twilio — el proveedor con el que arrancó el proyecto.
 //
@@ -14,11 +20,10 @@ import type { MensajeEntranteNormalizado, TipoMensaje } from "@/lib/whatsapp/tip
 // src/lib/whatsapp/entrante.ts, compartida con el webhook de Meta. Así los dos
 // caminos no se van separando con el tiempo.
 //
-// Diferencia que se mantiene: Twilio permite contestar con TwiML en el cuerpo
-// de la misma respuesta HTTP, que es más simple y más barato que una segunda
-// llamada a la API. Se conserva, y el texto de esa respuesta se registra en el
-// hilo de la conversación para que el panel muestre el diálogo completo (antes
-// las respuestas por TwiML no quedaban en ningún lado).
+// Desde la Tanda 3 los dos webhooks se comportan igual: contestan enseguida y
+// mandan la respuesta del bot como un mensaje aparte por la API. Antes acá se
+// usaba TwiML (la respuesta viajaba en el mismo HTTP); ver el comentario largo
+// más abajo para por qué la ventana de agrupación lo hizo inviable.
 
 function twimlResponse(mensaje?: string): NextResponse {
   const cuerpo = mensaje ? `<Message>${escapeXml(mensaje)}</Message>` : "";
@@ -98,55 +103,60 @@ export async function POST(request: NextRequest) {
     recibidoAt: new Date(),
   };
 
-  try {
-    const resultado = await procesarMensajeEntrante({
-      carniceriaId: carniceria.id as string,
-      telefonoCarniceria: carniceria.telefono_whatsapp as string,
-      mensaje,
-      rawPayload: params,
-    });
+  // ------------------------------------------------------------
+  // Se contesta primero y se trabaja después (igual que el webhook de Meta)
+  // ------------------------------------------------------------
+  //
+  // Hasta la Tanda 3 este webhook contestaba con TwiML: la respuesta del bot
+  // viajaba en el cuerpo de la misma respuesta HTTP. Eso dejó de servir cuando
+  // entró la ventana de agrupación (especificación, sección 34): el bot ahora
+  // espera unos segundos antes de contestar, y hay mensajes que directamente NO
+  // se contestan porque se los lleva un bloque posterior. Con TwiML habría que
+  // mantener abierta la conexión todo ese tiempo, y Twilio corta a los 15
+  // segundos.
+  //
+  // Así que se hace lo mismo que con Meta: se responde el TwiML vacío en el
+  // acto y el trabajo pesado va en `after`, mandando la respuesta como un
+  // mensaje aparte por la API. `enviarWhatsapp` ya sabe hacerlo con Twilio, y
+  // de yapa la respuesta queda registrada sola en el hilo del panel (con TwiML
+  // había que registrarla a mano).
+  after(async () => {
+    try {
+      const resultado = await procesarMensajeEntrante({
+        carniceriaId: carniceria.id as string,
+        telefonoCarniceria: carniceria.telefono_whatsapp as string,
+        mensaje,
+        rawPayload: params,
+      });
 
-    if (!resultado?.respuesta) return twimlResponse();
+      if (!resultado?.respuesta) return;
 
-    // La respuesta sale por TwiML, así que no pasa por `enviarWhatsapp` y hay
-    // que registrarla a mano para que el hilo del panel quede completo.
-    await registrarRespuestaTwiml({
-      carniceriaId: carniceria.id as string,
-      telefonoCarniceria: carniceria.telefono_whatsapp as string,
-      telefonoInterlocutor: mensaje.telefono,
-      cuerpo: resultado.respuesta,
-    });
+      await enviarWhatsapp({
+        carniceriaId: carniceria.id as string,
+        hacia: mensaje.telefono,
+        cuerpo: resultado.respuesta,
+        origen: "bot",
+      });
+    } catch (err) {
+      // Cualquier falla en la interpretación (Whisper/Claude caídos, etc.) no
+      // debe tirar abajo el webhook — el mensaje ya quedó guardado arriba.
+      console.error("Error procesando el mensaje entrante", err);
+      try {
+        await enviarWhatsapp({
+          carniceriaId: carniceria.id as string,
+          hacia: mensaje.telefono,
+          cuerpo: "Tuve un problema técnico procesando tu mensaje. Probá de nuevo en un rato.",
+          origen: "bot",
+        });
+      } catch (err2) {
+        console.error("Tampoco se pudo avisar del error al cliente", err2);
+      }
+    }
+  });
 
-    return twimlResponse(resultado.respuesta);
-  } catch (err) {
-    // Cualquier falla en la interpretación (Whisper/Claude caídos, etc.) no
-    // debe tirar abajo el webhook — el mensaje ya quedó guardado arriba.
-    console.error("Error procesando el mensaje entrante", err);
-    return twimlResponse("Tuve un problema técnico procesando tu mensaje. Probá de nuevo en un rato.");
-  }
+  return twimlResponse();
 }
 
-async function registrarRespuestaTwiml(params: {
-  carniceriaId: string;
-  telefonoCarniceria: string;
-  telefonoInterlocutor: string;
-  cuerpo: string;
-}): Promise<void> {
-  try {
-    await registrarMensaje({
-      carniceriaId: params.carniceriaId,
-      telefonoInterlocutor: params.telefonoInterlocutor,
-      telefonoCarniceria: params.telefonoCarniceria,
-      direccion: "saliente",
-      tipo: "texto",
-      cuerpo: params.cuerpo,
-      origen: "bot",
-      estadoEnvio: "enviado",
-    });
-  } catch (err) {
-    console.error("No se pudo registrar la respuesta TwiML en el hilo", err);
-  }
-}
 
 function tipoDesdeMime(mime: string | null): TipoMensaje {
   if (!mime) return "otro";
@@ -159,5 +169,5 @@ function tipoDesdeMime(mime: string | null): TipoMensaje {
 
 export async function GET() {
   // Para chequear rápido desde el navegador que la ruta está viva.
-  return NextResponse.json({ ok: true, service: "carnicom whatsapp webhook (twilio)", etapa: 4 });
+  return NextResponse.json({ ok: true, service: "kilo whatsapp webhook (twilio)", etapa: 4 });
 }

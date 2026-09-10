@@ -9,9 +9,13 @@ import { rangoDelDiaArgentina } from "./formatos";
 // aunque la consulta no filtre por `carniceria_id`.
 
 export type EstadoPedido =
+  | "borrador"
   | "pendiente_aclaracion"
+  | "pendiente_confirmacion_cliente"
   | "pendiente_aprobacion"
+  | "modificacion_pendiente"
   | "aprobado"
+  | "en_espera"
   | "rechazado"
   | "cancelado"
   | "vencido"
@@ -32,6 +36,10 @@ export type ItemPedido = {
 export type PedidoDelPanel = {
   id: string;
   estado: EstadoPedido;
+  /** Sube en cada cambio. Se manda al aprobar para no aprobar una versión vieja (sección 51). */
+  version: number;
+  /** Pregunta con opciones numeradas que el bot le hizo al carnicero (secciones 36 y 50). */
+  consultaCarnicero: { paso: string; opciones: { numero: number; etiqueta: string; valor: string }[] } | null;
   telefono: string;
   clienteId: string | null;
   clienteNombre: string | null;
@@ -48,7 +56,7 @@ export type PedidoDelPanel = {
 };
 
 const CAMPOS =
-  "id, estado, telefono, cliente_id, items, hora_retiro, total_estimado, origen, created_at, aprobado_at, rechazado_at, retirado_at, clientes(nombre, no_shows)";
+  "id, estado, version, consulta_carnicero, telefono, cliente_id, items, hora_retiro, total_estimado, origen, created_at, aprobado_at, rechazado_at, retirado_at, clientes(nombre, no_shows)";
 
 type FilaPedido = {
   id: string;
@@ -75,6 +83,9 @@ function mapear(fila: FilaPedido): PedidoDelPanel {
   return {
     id: fila.id,
     estado: fila.estado as EstadoPedido,
+    version: Number((fila as unknown as { version?: number }).version ?? 1),
+    consultaCarnicero:
+      ((fila as unknown as { consulta_carnicero?: PedidoDelPanel["consultaCarnicero"] }).consulta_carnicero) ?? null,
     telefono: fila.telefono,
     clienteId: fila.cliente_id,
     clienteNombre: cliente?.nombre ?? null,
@@ -144,7 +155,11 @@ export async function listarPedidos(
   } else {
     // Sin filtro explícito no se muestran los pedidos que quedaron a medio
     // armar: son ruido de conversaciones que no llegaron a ser un pedido.
-    consulta = consulta.not("estado", "in", "(pendiente_aclaracion,vencido)");
+    consulta = consulta.not(
+      "estado",
+      "in",
+      "(borrador,pendiente_aclaracion,pendiente_confirmacion_cliente,vencido)"
+    );
   }
 
   if (filtros.desde) consulta = consulta.gte("created_at", filtros.desde);
@@ -174,8 +189,12 @@ export async function obtenerPedido(
 // ============================================================
 
 export const ETIQUETA_ESTADO: Record<EstadoPedido, string> = {
+  borrador: "Empezado, sin terminar",
   pendiente_aclaracion: "Armando el pedido",
+  pendiente_confirmacion_cliente: "Esperando que el cliente confirme",
   pendiente_aprobacion: "Esperando que lo apruebes",
+  modificacion_pendiente: "El cliente lo está cambiando",
+  en_espera: "En espera para mañana",
   aprobado: "Aprobado",
   rechazado: "Rechazado",
   cancelado: "Cancelado por el cliente",
@@ -185,8 +204,12 @@ export const ETIQUETA_ESTADO: Record<EstadoPedido, string> = {
 };
 
 export const TONO_ESTADO: Record<EstadoPedido, TonoEtiqueta> = {
+  borrador: "neutro",
   pendiente_aclaracion: "neutro",
+  pendiente_confirmacion_cliente: "neutro",
   pendiente_aprobacion: "atencion",
+  modificacion_pendiente: "atencion",
+  en_espera: "atencion",
   aprobado: "exito",
   rechazado: "problema",
   cancelado: "neutro",
@@ -219,3 +242,56 @@ export function resumenItems(items: ItemPedido[]): string {
   if (items.length === 1) return cantidad;
   return `${cantidad} + ${items.length - 1} ${items.length - 1 === 1 ? "más" : "más"}`;
 }
+
+
+// ============================================================
+// Historial de un pedido — especificación, sección 27
+// ============================================================
+//
+// Lo que le permite al carnicero abrir un pedido y entender por qué está como
+// está, sin tener que leer la conversación entera.
+
+export type EventoDelPedido = {
+  id: string;
+  tipo: string;
+  actor: string;
+  descripcion: string | null;
+  version: number | null;
+  creadoAt: string;
+};
+
+export async function obtenerHistorialDePedido(
+  supabase: SupabaseClient,
+  pedidoId: string
+): Promise<EventoDelPedido[]> {
+  const { data, error } = await supabase
+    .from("pedido_eventos")
+    .select("id, tipo, actor, descripcion, version, created_at")
+    .eq("pedido_id", pedidoId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Error leyendo el historial del pedido", error);
+    return [];
+  }
+
+  return ((data ?? []) as unknown[]).map((fila) => {
+    const f = fila as Record<string, unknown>;
+    return {
+      id: f.id as string,
+      tipo: f.tipo as string,
+      actor: f.actor as string,
+      descripcion: (f.descripcion as string | null) ?? null,
+      version: f.version == null ? null : Number(f.version),
+      creadoAt: f.created_at as string,
+    };
+  });
+}
+
+/** Cómo se nombra cada actor en el panel, sin jerga. */
+export const NOMBRE_ACTOR: Record<string, string> = {
+  cliente: "El cliente",
+  carnicero: "Vos",
+  bot: "KILO",
+  sistema: "Automático",
+};

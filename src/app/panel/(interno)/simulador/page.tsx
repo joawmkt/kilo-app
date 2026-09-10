@@ -4,6 +4,11 @@ import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { Simulador } from "@/components/panel/simulador";
 import { EstadoVacio, Tarjeta, clasesBoton } from "@/components/panel/ui";
 import { PRODUCTO } from "@/lib/marca";
+import {
+  TELEFONO_CARNICERO_SIMULADO,
+  TELEFONO_CLIENTE_SIMULADO,
+  soloElNumero,
+} from "@/lib/simulador";
 
 // El simulador llama al mismo motor que los webhooks, así que también espera la
 // ventana de agrupación (especificación, sección 34) antes de contestar.
@@ -15,14 +20,16 @@ export const maxDuration = 60;
 // real la pantalla no se muestra: un mensaje de prueba le llegaría a un cliente
 // de verdad.
 
-// Dos números de prueba, uno por lado. Son distintos a propósito: el motor
-// guarda una conversación por teléfono, así que compartir número mezclaría el
-// hilo del cliente con el de la carga de stock y ninguno de los dos se
-// entendería. Ninguno de los dos está en `numeros_carnicero` — el simulador
-// arma el recorrido del carnicero a mano justamente para no dejar un permiso
-// de verdad abierto (ver acciones.ts).
-const TELEFONO_CLIENTE = "+5493400000001";
-const TELEFONO_CARNICERO = "+5493400000002";
+// Los dos números de prueba viven en `src/lib/simulador.ts`, no acá: el
+// servidor los necesita para decidir quién es quién sin preguntarle nada al
+// navegador (ver quienEs.ts y el bug del 10/09/2026). Esta pantalla solo los
+// muestra.
+//
+// El del carnicero vale como número autorizado ÚNICAMENTE mientras la
+// carnicería está en modo simulado, así que no deja ningún permiso abierto para
+// el día que se conecte Meta.
+const TELEFONO_CLIENTE = TELEFONO_CLIENTE_SIMULADO;
+const TELEFONO_CARNICERO = TELEFONO_CARNICERO_SIMULADO;
 
 export default async function SimuladorPage() {
   const sesion = await requerirSesion();
@@ -53,7 +60,11 @@ export default async function SimuladorPage() {
     const { data: conversacion } = await supabase
       .from("conversaciones")
       .select("id")
-      .eq("telefono", `whatsapp:${telefono}`)
+      // El filtro por carnicería no es decorativo: los números de prueba son
+      // los mismos para todas, así que sin esto una carnicería podría llegar a
+      // ver el hilo de prueba de otra.
+      .eq("carniceria_id", sesion.carniceria.id)
+      .eq("telefono", telefono)
       .maybeSingle();
 
     if (!conversacion) return [];
@@ -105,8 +116,8 @@ export default async function SimuladorPage() {
       </div>
 
       <Simulador
-        telefonoCliente={TELEFONO_CLIENTE}
-        telefonoCarnicero={TELEFONO_CARNICERO}
+        telefonoCliente={soloElNumero(TELEFONO_CLIENTE)}
+        telefonoCarnicero={soloElNumero(TELEFONO_CARNICERO)}
         mensajesCliente={mensajesCliente}
         mensajesCarnicero={mensajesCarnicero}
         sinStock={productosConStock === 0}

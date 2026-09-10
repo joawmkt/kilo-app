@@ -6,6 +6,7 @@ import { iniciarRechazo, responderConsultaCarnicero } from "@/lib/decisionCarnic
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import {
   aprobarPedido,
+  marcarPedidoListo,
   marcarPedidoNoRetirado,
   marcarPedidoRetirado,
   marcarPedidoEnEspera,
@@ -130,6 +131,26 @@ export async function accionRechazarSinVuelta(pedidoId: string): Promise<Resulta
 export async function accionDejarEnEspera(pedidoId: string): Promise<ResultadoAccion> {
   const sesion = await requerirSesion();
   const resultado = await marcarPedidoEnEspera({
+    carniceriaId: sesion.carniceria.id,
+    pedidoId,
+    decididoPor: sesion.usuarioId,
+  });
+  revalidarPedidos();
+  return resultado;
+}
+
+/**
+ * "Ya está listo" — avisarle al cliente que puede pasar a buscarlo antes.
+ *
+ * A diferencia de aprobar o rechazar, esta acción no decide nada sobre el
+ * pedido: manda un WhatsApp. Por eso el botón del panel lo dice con todas las
+ * letras ("Avisar que está listo") en vez de llamarse "Listo" a secas: el
+ * carnicero tiene que saber que tocarlo le escribe al cliente, porque eso no se
+ * puede deshacer.
+ */
+export async function accionMarcarListo(pedidoId: string): Promise<ResultadoAccion> {
+  const sesion = await requerirSesion();
+  const resultado = await marcarPedidoListo({
     carniceriaId: sesion.carniceria.id,
     pedidoId,
     decididoPor: sesion.usuarioId,

@@ -3,9 +3,8 @@ import { notFound } from "next/navigation";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import {
-  ETIQUETA_ESTADO,
   NOMBRE_ACTOR,
-  TONO_ESTADO,
+  etiquetaDePedido,
   obtenerHistorialDePedido,
   obtenerPedido,
 } from "@/lib/panel/pedidos";
@@ -54,7 +53,9 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
         <TarjetaEncabezado
           titulo={pedido.clienteNombre ?? formatearTelefono(pedido.telefono)}
           descripcion={`Pedido del ${formatearFechaYHora(pedido.creadoAt)}`}
-          accion={<Etiqueta tono={TONO_ESTADO[pedido.estado]}>{ETIQUETA_ESTADO[pedido.estado]}</Etiqueta>}
+          accion={
+            <Etiqueta tono={etiquetaDePedido(pedido).tono}>{etiquetaDePedido(pedido).texto}</Etiqueta>
+          }
         />
 
         <div className="flex flex-col gap-4 px-4 py-4 sm:px-5">
@@ -139,6 +140,7 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
             estado={pedido.estado}
             version={pedido.version}
             consulta={pedido.consultaCarnicero}
+            listo={pedido.listoAt !== null}
           />
         </div>
       </Tarjeta>

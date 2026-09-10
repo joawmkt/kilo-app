@@ -20,6 +20,7 @@ import { buscarSustitutoAutorizado } from "./alternativas";
 import { responderConsulta, respuestaSinDato } from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
+import { esCarniceroAutorizado } from "./quienEs";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -1283,6 +1284,21 @@ export async function procesarTextoDePedido(params: {
   texto: string;
   nombreWhatsapp?: string | null;
 }): Promise<string | null> {
+  // La otra mitad de la regla: acá NO entra el carnicero.
+  //
+  // El espejo de la guarda de `flujoStock.ts`. Si el carnicero cayera en el
+  // flujo de pedidos, el bot le armaría un pedido a él —dándole de alta como
+  // cliente, reservándole stock y esperando que alguien lo apruebe— cuando lo
+  // que quiso hacer fue cargar mercadería. Es el mismo error que el del
+  // 10/09/2026, mirado desde el otro lado.
+  if (await esCarniceroAutorizado(params.carniceriaId, params.telefono)) {
+    console.error(
+      "BLOQUEADO: alguien intentó entrar al flujo de pedidos con el número del carnicero",
+      { carniceriaId: params.carniceriaId, telefono: params.telefono }
+    );
+    return null;
+  }
+
   return await procesarMensajeDeCliente(params);
 }
 
@@ -2011,6 +2027,95 @@ export async function marcarPedidoEnEspera(params: {
   });
 
   return { ok: true, mensaje: "Queda en espera hasta mañana." };
+}
+
+/**
+ * "Ya está listo" — el carnicero terminó de armar el pedido y le avisa al
+ * cliente por si lo quiere retirar antes (pedido del fundador, 10/09/2026).
+ *
+ * Tres decisiones que vale la pena dejar escritas:
+ *
+ * 1. NO cambia el estado del pedido. Sigue siendo 'aprobado' (o 'en_espera'):
+ *    el stock sigue reservado, se puede seguir marcando como retirado o como
+ *    ausente, y el recordatorio sigue saliendo. "Listo" es información nueva,
+ *    no un carril nuevo. Ver la migración 0021 para el razonamiento largo.
+ *
+ * 2. Se avisa UNA sola vez. El `.is("listo_at", null)` del update es lo que lo
+ *    garantiza: si el carnicero toca el botón dos veces, el segundo update no
+ *    encuentra la fila y el cliente no recibe dos WhatsApp iguales. Es la misma
+ *    técnica que usa `aprobarPedido` para no descontar stock por duplicado.
+ *
+ * 3. El mensaje NO dice "vení ya". Dice que está listo y que puede pasar cuando
+ *    quiera, y repite la hora que habían acordado. La diferencia importa: el
+ *    cliente arregló una hora, y un mensaje que suene a apuro lo pone incómodo.
+ *    Le estamos dando una opción, no cambiándole el plan.
+ */
+export async function marcarPedidoListo(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  decididoPor?: string | null;
+}): Promise<ResultadoDecision> {
+  const { carniceriaId, pedidoId, decididoPor } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date().toISOString();
+
+  const { data: actualizado, error } = await supabaseAdmin
+    .from("pedidos")
+    .update({ listo_at: ahora, updated_at: ahora, decidido_por: decididoPor ?? null })
+    .eq("id", pedidoId)
+    .eq("carniceria_id", carniceriaId)
+    .in("estado", ["aprobado", "en_espera"])
+    .is("listo_at", null)
+    .select("id, telefono, hora_retiro")
+    .maybeSingle();
+
+  if (error) {
+    console.error("Error marcando el pedido como listo", error);
+    return { ok: false, mensaje: "Tuve un problema técnico. Probá de nuevo en un rato." };
+  }
+  if (!actualizado) {
+    return {
+      ok: false,
+      mensaje: "Ese pedido no se puede marcar como listo, o ya le avisaste al cliente.",
+    };
+  }
+
+  await registrarEvento({
+    pedidoId,
+    carniceriaId,
+    tipo: "listo",
+    actor: "carnicero",
+    descripcion: "El pedido quedó armado y se le avisó al cliente.",
+  });
+
+  const horaRetiro = actualizado.hora_retiro
+    ? new Date(actualizado.hora_retiro as string)
+    : null;
+
+  const cuerpo = horaRetiro
+    ? `¡Tu pedido ya está listo! 🥩 Si te queda cómodo podés pasar a buscarlo cuando quieras, y si no te esperamos alrededor de las ${formatearHoraArgentina(horaRetiro)} hs como habíamos quedado.`
+    : "¡Tu pedido ya está listo! 🥩 Podés pasar a buscarlo cuando quieras.";
+
+  try {
+    await enviarWhatsapp({
+      carniceriaId,
+      hacia: actualizado.telefono as string,
+      cuerpo,
+      origen: "bot",
+      pedidoId,
+    });
+  } catch (err) {
+    // El pedido YA quedó marcado como listo y el evento quedó registrado. Que
+    // falle el envío no se deshace: se le dice la verdad al carnicero para que
+    // decida si avisa él por otro lado.
+    console.error("Error avisándole al cliente que el pedido está listo", err);
+    return {
+      ok: true,
+      mensaje: "Lo marqué como listo, pero no pude avisarle al cliente. Fijate de decirle vos.",
+    };
+  }
+
+  return { ok: true, mensaje: "Listo. Ya le avisé al cliente que puede pasar a buscarlo." };
 }
 
 export async function marcarPedidoRetirado(params: {

@@ -5,14 +5,13 @@ import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { procesarMensajeEntrante } from "@/lib/whatsapp/entrante";
 import { enviarWhatsapp, aFormatoCanonico } from "@/lib/whatsapp";
-import { registrarMensaje } from "@/lib/whatsapp/conversaciones";
-import { procesarTextoEntrante, procesarTextoDeStock } from "@/lib/flujoStock";
-import { procesarDecisionCarnicero } from "@/lib/flujoPedidos";
 import { transcribirAudio } from "@/lib/whisper";
 import { sumarUso } from "@/lib/uso";
+import { TELEFONO_CARNICERO_SIMULADO, TELEFONO_CLIENTE_SIMULADO } from "@/lib/simulador";
 import type { MensajeEntranteNormalizado } from "@/lib/whatsapp/tipos";
 
-// El simulador: escribirle al bot como si fueras un cliente, sin Twilio ni Meta.
+// El simulador: escribirle al bot como si fueras un cliente —o el carnicero—
+// sin Twilio ni Meta.
 //
 // Hace exactamente lo que haría el webhook: arma un mensaje entrante
 // normalizado y se lo pasa a `procesarMensajeEntrante`, que es la misma función
@@ -20,9 +19,30 @@ import type { MensajeEntranteNormalizado } from "@/lib/whatsapp/tipos";
 // "de mentira" del motor — si funciona acá, funciona igual cuando el mensaje
 // venga de Meta.
 //
-// Solo se habilita si la carnicería está en modo simulado. Si estuviera
-// disponible con un proveedor real, un mensaje de prueba haría que el bot le
-// escribiera a un cliente de verdad.
+// ------------------------------------------------------------
+// Por qué el teléfono NO viene del formulario (bug del 10/09/2026)
+// ------------------------------------------------------------
+//
+// Antes cada acción recibía el número en un campo oculto del formulario, y la
+// acción del carnicero armaba su propio enrutamiento a mano en vez de usar el
+// del motor. Las dos solapas del panel compartían la misma instancia de React,
+// así que un mensaje escrito en la solapa del cliente salió por la acción del
+// carnicero: quedó guardado en el hilo del cliente, con el número del cliente,
+// pero procesado como carga de stock. El bot le contestó al cliente
+// "no relacioné eso con una actualización de stock" y le terminó modificando el
+// stock de la carnicería.
+//
+// Dos cambios para que no pueda volver a pasar:
+//
+// 1. El número lo pone el SERVIDOR, a partir de una constante. Lo que mande el
+//    navegador ya no decide quién es quién.
+// 2. Las dos puntas llaman al MISMO `procesarMensajeEntrante`. El rol lo decide
+//    `quienEs.ts`, igual que en producción, y el simulador dejó de tener un
+//    enrutamiento propio que podía desincronizarse del de verdad.
+//
+// Solo se habilita si la carnicería está en modo simulado. Con un proveedor
+// real, un mensaje de prueba haría que el bot le escribiera a un cliente de
+// verdad.
 
 export type ResultadoSimulacion = { ok: boolean; mensaje: string };
 
@@ -89,6 +109,30 @@ export async function enviarComoCliente(
   _previo: ResultadoSimulacion | null,
   datos: FormData
 ): Promise<ResultadoSimulacion> {
+  return await simular({ telefono: TELEFONO_CLIENTE_SIMULADO, nombre: "Cliente de prueba", datos });
+}
+
+export async function enviarComoCarnicero(
+  _previo: ResultadoSimulacion | null,
+  datos: FormData
+): Promise<ResultadoSimulacion> {
+  return await simular({ telefono: TELEFONO_CARNICERO_SIMULADO, nombre: null, datos });
+}
+
+/**
+ * El cuerpo de las dos acciones. Lo único que las distingue es el número, y el
+ * número lo elige esta capa, nunca el formulario.
+ *
+ * De acá para adentro es el motor de verdad: `procesarMensajeEntrante` mira el
+ * número, le pregunta a `quienEs.ts` si es carnicero o cliente, y enruta. El
+ * simulador no sabe ni decide nada sobre roles.
+ */
+async function simular(params: {
+  telefono: string;
+  nombre: string | null;
+  datos: FormData;
+}): Promise<ResultadoSimulacion> {
+  const { telefono: telefonoFijo, nombre, datos } = params;
   const sesion = await requerirSesion();
 
   if (sesion.carniceria.whatsappProveedor !== "simulado") {
@@ -99,24 +143,17 @@ export async function enviarComoCliente(
     };
   }
 
-  const telefonoCrudo = String(datos.get("telefono") ?? "").trim();
-  const nombre = String(datos.get("nombre") ?? "").trim();
-
   const entrada = await mensajeDelFormulario(datos);
   if (!entrada.ok) return entrada;
   const { texto, esAudio } = entrada;
 
-  if (telefonoCrudo.replace(/\D/g, "").length < 8) {
-    return { ok: false, mensaje: "Poné un teléfono de al menos 8 dígitos." };
-  }
-
-  const telefono = aFormatoCanonico(telefonoCrudo);
+  const telefono = aFormatoCanonico(telefonoFijo);
   const carniceriaId = sesion.carniceria.id;
   const telefonoCarniceria = sesion.carniceria.telefonoWhatsapp ?? "whatsapp:+000000000000";
 
   const mensaje: MensajeEntranteNormalizado = {
     telefono,
-    nombrePerfil: nombre || null,
+    nombrePerfil: nombre,
     // Se marca como audio para que el hilo del panel lo muestre como lo que
     // fue. `media` va en null porque no hay archivo que descargar: el audio ya
     // se transcribió acá arriba, que es justo lo que hace el webhook real antes
@@ -159,125 +196,6 @@ export async function enviarComoCliente(
   }
 
   revalidatePath("/panel/simulador");
-  revalidatePath("/panel");
-  revalidatePath("/panel/mensajes");
-  return { ok: true, mensaje: "Mensaje procesado." };
-}
-
-/**
- * El otro lado del simulador: escribir como el CARNICERO, para probar la carga
- * de stock hablada.
- *
- * Por qué es una acción aparte y no el mismo `enviarComoCliente` con otro
- * número: el enrutamiento real decide entre cliente y carnicero mirando si el
- * número está en `numeros_carnicero`. Para reusar esa función habría que dar de
- * alta el número de prueba como número autorizado de verdad — y ese permiso
- * quedaría vivo el día que la carnicería se conecte a Meta, dejando que un
- * desconocido con ese número le toque el stock. No vale la pena: acá se arma el
- * mismo recorrido a mano, sin tocar la tabla de permisos.
- *
- * La única diferencia con WhatsApp de verdad está declarada en pantalla: allá
- * una carga de stock EMPIEZA con un audio, y acá se escribe. De la
- * transcripción en adelante es exactamente el mismo motor (ver
- * `procesarTextoDeStock`).
- */
-export async function enviarComoCarnicero(
-  _previo: ResultadoSimulacion | null,
-  datos: FormData
-): Promise<ResultadoSimulacion> {
-  const sesion = await requerirSesion();
-
-  if (sesion.carniceria.whatsappProveedor !== "simulado") {
-    return {
-      ok: false,
-      mensaje:
-        "El simulador solo funciona con la carnicería en modo simulado. Con un proveedor real, esto tocaría el stock a partir de un mensaje que no mandó nadie.",
-    };
-  }
-
-  const telefonoCrudo = String(datos.get("telefono") ?? "").trim();
-
-  const entrada = await mensajeDelFormulario(datos);
-  if (!entrada.ok) return entrada;
-  const { texto, esAudio } = entrada;
-
-  if (telefonoCrudo.replace(/\D/g, "").length < 8) {
-    return { ok: false, mensaje: "Poné un teléfono de al menos 8 dígitos." };
-  }
-
-  const telefono = aFormatoCanonico(telefonoCrudo);
-  const carniceriaId = sesion.carniceria.id;
-  const telefonoCarniceria = sesion.carniceria.telefonoWhatsapp ?? "whatsapp:+000000000000";
-
-  try {
-    // El mensaje se guarda igual que uno real para que aparezca en el hilo del
-    // panel. `esCarnicero: true` es lo que lo pinta como del negocio y no de un
-    // cliente.
-    const { mensajeId } = await registrarMensaje({
-      carniceriaId,
-      telefonoInterlocutor: telefono,
-      telefonoCarniceria,
-      direccion: "entrante",
-      tipo: esAudio ? "audio" : "texto",
-      // El cuerpo guardado es la transcripción, igual que en el flujo real: el
-      // panel muestra lo que se entendió, no un adjunto que nadie puede abrir.
-      cuerpo: texto,
-      origen: "app_whatsapp",
-      esCarnicero: true,
-      rawPayload: { simulado: true, comoCarnicero: true, audio: esAudio },
-      reiniciaVentana: true,
-    });
-
-    // Mismo orden de prioridad que el enrutamiento real (ver
-    // src/lib/whatsapp/entrante.ts): primero una operación de stock en curso,
-    // después una decisión sobre un pedido.
-    let respuesta = await procesarTextoEntrante({
-      carniceriaId,
-      telefono,
-      mensajeWhatsappId: mensajeId,
-      texto,
-    });
-
-    if (respuesta === null) {
-      respuesta = await procesarDecisionCarnicero({
-        carniceriaId,
-        carniceroTelefono: telefono,
-        texto,
-      });
-    }
-
-    // Y recién acá lo propio del simulador: si no era ninguna de las dos cosas,
-    // se trata como el audio que abre una carga de stock.
-    if (respuesta === null) {
-      respuesta = await procesarTextoDeStock({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        texto,
-      });
-    }
-
-    await sumarUso(carniceriaId, "mensajes_recibidos");
-    if (esAudio) await sumarUso(carniceriaId, "audios_transcriptos");
-
-    if (respuesta) {
-      await enviarWhatsapp({
-        carniceriaId,
-        hacia: telefono,
-        cuerpo: respuesta,
-        origen: "bot",
-        esCarnicero: true,
-      });
-    }
-  } catch (err) {
-    console.error("Error simulando un mensaje del carnicero", err);
-    return {
-      ok: false,
-      mensaje: err instanceof Error ? err.message : "Algo falló procesando el mensaje.",
-    };
-  }
-
-  revalidatePath("/panel/simulador");
   revalidatePath("/panel/stock");
   revalidatePath("/panel");
   revalidatePath("/panel/mensajes");
@@ -292,14 +210,21 @@ export async function enviarComoCarnicero(
  * (por diseño: los pedidos pendientes no vencen solos), y probando se llega a
  * ese estado todo el tiempo.
  */
-export async function limpiarConversacionDePrueba(telefonoCrudo: string): Promise<ResultadoSimulacion> {
+export async function limpiarConversacionDePrueba(
+  lado: "cliente" | "carnicero"
+): Promise<ResultadoSimulacion> {
   const sesion = await requerirSesion();
 
   if (sesion.carniceria.whatsappProveedor !== "simulado") {
     return { ok: false, mensaje: "Solo se puede limpiar en modo simulado." };
   }
 
-  const telefono = aFormatoCanonico(telefonoCrudo);
+  // Igual que arriba: el navegador dice QUÉ lado quiere limpiar, no QUÉ número
+  // borrar. Un número arbitrario acá sería una forma de borrarle a la
+  // carnicería la conversación de un cliente de verdad desde el panel.
+  const telefono = aFormatoCanonico(
+    lado === "carnicero" ? TELEFONO_CARNICERO_SIMULADO : TELEFONO_CLIENTE_SIMULADO
+  );
   const supabaseAdmin = getSupabaseAdmin();
   const carniceriaId = sesion.carniceria.id;
 

@@ -1,10 +1,14 @@
-import { procesarAudioDeStock, procesarTextoEntrante } from "@/lib/flujoStock";
+import {
+  procesarAudioDeStock,
+  procesarTextoDeStock,
+  procesarTextoEntrante,
+} from "@/lib/flujoStock";
 import {
   procesarDecisionCarnicero,
   procesarTextoDePedido,
   transcribirAudioDeCliente,
 } from "@/lib/flujoPedidos";
-import { esNumeroDeCarnicero } from "@/lib/numerosCarnicero";
+import { esCarniceroAutorizado } from "@/lib/quienEs";
 import { registrarMensaje } from "./conversaciones";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { aFormatoCanonico } from "./telefonos";
@@ -20,9 +24,11 @@ import type { MensajeEntranteNormalizado } from "./tipos";
 // el mensaje es idéntica. Vive acá una sola vez para que los dos webhooks no se
 // vayan separando con el tiempo.
 //
-// La regla de la Etapa 3 no cambia: un número autorizado en `numeros_carnicero`
-// es el carnicero (flujo de stock + decisiones sobre pedidos); cualquier otro
-// número es un cliente (flujo de pedidos, nunca el de stock).
+// La regla de la Etapa 3 no cambia: un número autorizado es el carnicero (flujo
+// de stock + decisiones sobre pedidos); cualquier otro número es un cliente
+// (flujo de pedidos, nunca el de stock). Quién es quién lo decide `quienEs.ts`,
+// y NADIE MÁS: ni los webhooks, ni el simulador, ni el panel. Ver el comentario
+// de ese archivo para el bug del 10/09/2026 que costó aprender esta regla.
 
 export type ResultadoEntrante = {
   /** Texto con el que hay que contestar, o null si no hay nada que contestar. */
@@ -40,7 +46,7 @@ export async function procesarMensajeEntrante(params: {
   const { carniceriaId, telefonoCarniceria, mensaje, rawPayload } = params;
   const telefono = aFormatoCanonico(mensaje.telefono);
 
-  const esCarnicero = await esNumeroDeCarnicero(carniceriaId, telefono);
+  const esCarnicero = await esCarniceroAutorizado(carniceriaId, telefono);
 
   // ------------------------------------------------------------
   // Coexistencia: mensajes que el carnicero mandó desde su celular
@@ -146,9 +152,25 @@ async function enrutar(params: {
       });
       if (respuestaStock !== null) return respuestaStock;
 
-      return await procesarDecisionCarnicero({
+      const respuestaDecision = await procesarDecisionCarnicero({
         carniceriaId,
         carniceroTelefono: telefono,
+        texto: mensaje.texto,
+      });
+      if (respuestaDecision !== null) return respuestaDecision;
+
+      // Último recurso: un texto suelto del carnicero se trata como el arranque
+      // de una carga de stock, igual que un audio suelto.
+      //
+      // Antes esto vivía SOLO en el simulador, y esa diferencia era una trampa:
+      // el simulador contestaba cosas que WhatsApp de verdad ignoraba, así que
+      // probar acá no probaba lo mismo que iba a pasar allá. Ahora es un solo
+      // camino. De paso, un carnicero que escribe "entraron 20 kilos de asado"
+      // en vez de mandar el audio ya no queda sin respuesta.
+      return await procesarTextoDeStock({
+        carniceriaId,
+        telefono,
+        mensajeWhatsappId: mensajeId,
         texto: mensaje.texto,
       });
     }

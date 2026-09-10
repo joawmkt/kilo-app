@@ -6,6 +6,7 @@ import type { EstadoPedido } from "@/lib/panel/pedidos";
 import {
   accionAprobarPedido,
   accionDejarEnEspera,
+  accionMarcarListo,
   accionMarcarNoRetirado,
   accionMarcarRetirado,
   accionRechazarPedido,
@@ -26,11 +27,14 @@ export function AccionesPedido({
   estado,
   version,
   consulta,
+  listo = false,
 }: {
   pedidoId: string;
   estado: EstadoPedido;
   version?: number;
   consulta?: ConsultaAbierta | null;
+  /** ¿Ya se le avisó al cliente que el pedido está armado? */
+  listo?: boolean;
 }) {
   const [pendiente, iniciarTransicion] = useTransition();
   const [mensaje, setMensaje] = useState<{ ok: boolean; texto: string } | null>(null);
@@ -152,6 +156,29 @@ export function AccionesPedido({
     );
   }
 
+  // "Ya está listo" (pedido del fundador, 10/09/2026).
+  //
+  // Va antes que "Marcar como retirado" porque es lo que pasa antes: primero el
+  // carnicero termina de armarlo, después el cliente lo viene a buscar.
+  //
+  // El botón dice lo que hace —le manda un WhatsApp al cliente— porque eso no se
+  // puede deshacer. Y desaparece una vez usado, en vez de quedar deshabilitado,
+  // para que no quede la duda de si el aviso salió: si no está el botón, salió.
+  if ((estado === "aprobado" || estado === "en_espera") && !listo) {
+    botones.push(
+      <button
+        key="listo"
+        type="button"
+        disabled={pendiente}
+        onClick={() => ejecutar(() => accionMarcarListo(pedidoId))}
+        className={clasesBoton("principal", "flex-1")}
+      >
+        <IconoCheck className="h-5 w-5" />
+        Avisar que está listo
+      </button>
+    );
+  }
+
   if (estado === "aprobado" || estado === "en_espera" || estado === "no_show") {
     botones.push(
       <button
@@ -159,7 +186,7 @@ export function AccionesPedido({
         type="button"
         disabled={pendiente}
         onClick={() => ejecutar(() => accionMarcarRetirado(pedidoId))}
-        className={clasesBoton("principal", "flex-1")}
+        className={clasesBoton(listo ? "principal" : "secundario", "flex-1")}
       >
         <IconoCheck className="h-5 w-5" />
         Marcar como retirado
@@ -221,6 +248,12 @@ export function AccionesPedido({
       ) : (
         <p className="text-sm text-ink-3">Este pedido ya está cerrado, no hay nada más que hacer.</p>
       )}
+
+      {listo && (estado === "aprobado" || estado === "en_espera") ? (
+        <p className="text-xs text-ink-3">
+          Ya le avisaste al cliente que está listo. Puede pasar a buscarlo en cualquier momento.
+        </p>
+      ) : null}
 
       {estado === "retirado" || estado === "no_show" ? (
         <p className="text-xs text-ink-3">

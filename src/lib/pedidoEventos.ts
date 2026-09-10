@@ -36,6 +36,7 @@ export type TipoEvento =
   | "sustitucion_aceptada"
   | "stock_actualizado"
   | "recordatorio_enviado"
+  | "listo"
   | "retirado"
   | "en_espera"
   | "no_show"

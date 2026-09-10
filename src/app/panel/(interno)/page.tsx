@@ -25,7 +25,7 @@ import {
   formatearPesos,
 } from "@/lib/panel/formatos";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
-import { ETIQUETA_ESTADO, TONO_ESTADO } from "@/lib/panel/pedidos";
+import { etiquetaDePedido } from "@/lib/panel/pedidos";
 
 // Inicio — la pantalla que resuelve el día.
 //
@@ -134,8 +134,8 @@ export default async function InicioPage() {
                     </span>
                   </span>
 
-                  <Etiqueta tono={TONO_ESTADO[pedido.estado]}>
-                    {ETIQUETA_ESTADO[pedido.estado]}
+                  <Etiqueta tono={etiquetaDePedido(pedido).tono}>
+                    {etiquetaDePedido(pedido).texto}
                   </Etiqueta>
                 </Link>
               </li>

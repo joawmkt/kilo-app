@@ -6,6 +6,7 @@ import { interpretarMensajeStock, ItemOperacion, ItemParcial, ResultadoInterpret
 import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
 import { revisarStockDeProducto } from "./notificaciones";
+import { esCarniceroAutorizado } from "./quienEs";
 
 // Máquina de estados "INTERPRETAR → VALIDAR → CONFIRMAR → EJECUTAR" de la
 // especificación "Botonera de confirmación por WhatsApp" (22/08/2026).
@@ -287,6 +288,31 @@ async function pasarAModificar(operacionId: string): Promise<string> {
   return pregunta;
 }
 
+// ============================================================
+// La puerta: acá NO entra un cliente
+// ============================================================
+//
+// El enrutador (`whatsapp/entrante.ts`) ya decide quién es quién, así que en
+// teoría esta comprobación sobra. Está igual, y a propósito: el 10/09/2026 un
+// mensaje de cliente entró a este archivo porque OTRO camino —el simulador—
+// decidía el rol por su cuenta y lo decidió mal. El resultado fue un cliente
+// cargándole stock a la carnicería.
+//
+// La lección: un módulo que puede modificar `productos.stock_actual` no confía
+// en que quien lo llamó haya hecho bien la pregunta. La hace él.
+async function bloqueadoPorNoSerCarnicero(
+  carniceriaId: string,
+  telefono: string
+): Promise<boolean> {
+  if (await esCarniceroAutorizado(carniceriaId, telefono)) return false;
+
+  console.error(
+    "BLOQUEADO: alguien intentó entrar al flujo de stock con un número que no es del carnicero",
+    { carniceriaId, telefono }
+  );
+  return true;
+}
+
 export async function procesarAudioDeStock(params: {
   carniceriaId: string;
   telefono: string;
@@ -294,8 +320,10 @@ export async function procesarAudioDeStock(params: {
   // Referencia al archivo, no una URL: Twilio manda una URL descargable y Meta
   // manda un ID con el que hay que pedir la URL primero. Ver src/lib/whatsapp.
   media: ReferenciaMedia;
-}): Promise<string> {
+}): Promise<string | null> {
   const { carniceriaId, telefono, mensajeWhatsappId, media } = params;
+
+  if (await bloqueadoPorNoSerCarnicero(carniceriaId, telefono)) return null;
 
   let transcripcion: string;
   try {
@@ -332,8 +360,10 @@ export async function procesarTextoDeStock(params: {
   telefono: string;
   mensajeWhatsappId?: string;
   texto: string;
-}): Promise<string> {
+}): Promise<string | null> {
   const { carniceriaId, telefono, mensajeWhatsappId, texto } = params;
+
+  if (await bloqueadoPorNoSerCarnicero(carniceriaId, telefono)) return null;
 
   let catalogo: CatalogoCarniceria;
   try {
@@ -379,6 +409,8 @@ export async function procesarTextoEntrante(params: {
   texto: string;
 }): Promise<string | null> {
   const { carniceriaId, telefono, mensajeWhatsappId, texto } = params;
+
+  if (await bloqueadoPorNoSerCarnicero(carniceriaId, telefono)) return null;
 
   const op = await obtenerOperacionPendienteActiva(carniceriaId, telefono);
   if (!op) return null; // nada pendiente de stock — Etapa 3 se ocupa de mensajes sueltos

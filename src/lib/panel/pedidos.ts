@@ -51,12 +51,13 @@ export type PedidoDelPanel = {
   creadoAt: string;
   aprobadoAt: string | null;
   rechazadoAt: string | null;
+  listoAt: string | null;
   retiradoAt: string | null;
   conversacionId: string | null;
 };
 
 const CAMPOS =
-  "id, estado, version, consulta_carnicero, telefono, cliente_id, items, hora_retiro, total_estimado, origen, created_at, aprobado_at, rechazado_at, retirado_at, clientes(nombre, no_shows)";
+  "id, estado, version, consulta_carnicero, telefono, cliente_id, items, hora_retiro, total_estimado, origen, created_at, aprobado_at, rechazado_at, listo_at, retirado_at, clientes(nombre, no_shows)";
 
 type FilaPedido = {
   id: string;
@@ -70,6 +71,7 @@ type FilaPedido = {
   created_at: string;
   aprobado_at: string | null;
   rechazado_at: string | null;
+  listo_at: string | null;
   retirado_at: string | null;
   clientes: { nombre: string | null; no_shows: number } | { nombre: string | null; no_shows: number }[] | null;
 };
@@ -97,6 +99,7 @@ function mapear(fila: FilaPedido): PedidoDelPanel {
     creadoAt: fila.created_at,
     aprobadoAt: fila.aprobado_at,
     rechazadoAt: fila.rechazado_at,
+    listoAt: fila.listo_at,
     retiradoAt: fila.retirado_at,
     conversacionId: null,
   };
@@ -217,6 +220,29 @@ export const TONO_ESTADO: Record<EstadoPedido, TonoEtiqueta> = {
   retirado: "exito",
   no_show: "problema",
 };
+
+/**
+ * La etiqueta que ve el carnicero, que no siempre es la del estado.
+ *
+ * "Listo para retirar" no es un estado en la base: es un `listo_at` cargado
+ * sobre un pedido que sigue estando aprobado (ver la migración 0021 para el
+ * porqué). Pero para el carnicero sí es un estado —le dice qué le falta hacer
+ * con ese pedido— así que la pantalla lo muestra como tal.
+ *
+ * Esta es la razón de que exista esta función en vez de leer `ETIQUETA_ESTADO`
+ * directo: hay UN solo lugar donde se traduce un pedido a lo que se ve, y no
+ * cinco pantallas cada una con su criterio.
+ */
+export function etiquetaDePedido(pedido: PedidoDelPanel): {
+  texto: string;
+  tono: TonoEtiqueta;
+} {
+  if (pedido.listoAt && (pedido.estado === "aprobado" || pedido.estado === "en_espera")) {
+    return { texto: "Listo para retirar", tono: "exito" };
+  }
+
+  return { texto: ETIQUETA_ESTADO[pedido.estado], tono: TONO_ESTADO[pedido.estado] };
+}
 
 /** Total estimado de un pedido a partir de los precios congelados en sus items. */
 export function totalDePedido(pedido: PedidoDelPanel): number | null {

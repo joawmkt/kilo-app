@@ -117,5 +117,61 @@ Y una decisión que conviene revisar con uso real:
 | `0018_pedido_vivo.sql` | Versionado, estados nuevos, historial y avisos (8-12, 27, 35, 51, 53) |
 | `0019_ciclo_carnicero.sql` | Rechazo conversado, "en espera", resumen diario, cierres (7.4-7.6, 23, 24, 36) |
 | `0020_sustitutos_y_atencion.sql` | Sustitutos autorizados, complementarios y handoff (5, 40, 43) |
+| `0021_pedido_listo.sql` | "Ya está listo" — aviso al cliente por si lo quiere retirar antes |
 
 Correr en orden. La `0020` además carga los reemplazos que la sección 5.5 autoriza explícitamente.
+
+---
+
+## Cambios posteriores a las seis tandas
+
+### 10/09/2026 — El bot no puede confundir al cliente con el carnicero
+
+**Qué pasó.** Probando en el simulador, mensajes escritos en la solapa del cliente se procesaron
+como carga de stock: el bot le contestó al cliente *"no relacioné eso con una actualización de
+stock"* y le terminó modificando el stock a la carnicería desde el hilo de un cliente.
+
+**Por qué.** Dos causas encadenadas, y la segunda es la que importa:
+
+1. Las dos solapas del simulador compartían la misma instancia de React (faltaba `key`), así que un
+   mensaje del cliente salió por la acción del carnicero.
+2. **El simulador decidía el rol por su cuenta**, a partir de un teléfono que mandaba el navegador
+   en un campo oculto, y tenía su propio enrutamiento a mano en vez de usar el del motor. Había dos
+   lugares que contestaban "¿quién es este número?", y uno lo contestó mal.
+
+**Qué se hizo.** El principio: *el rol se decide en un solo lugar, del lado del servidor, y los
+módulos que pueden hacer daño lo vuelven a chequear por las suyas.*
+
+- **`src/lib/quienEs.ts` (nuevo)** — la única función que contesta si un número es del carnicero.
+  Se eliminó `esNumeroDeCarnicero` de `numerosCarnicero.ts` para que no queden dos formas de
+  preguntar lo mismo.
+- **`src/lib/simulador.ts` (nuevo)** — los dos números de prueba, que ahora los pone el servidor. El
+  navegador ya no manda teléfonos. El número del carnicero simulado vale como autorizado
+  **solo mientras la carnicería está en modo simulado**, así que no deja un permiso abierto para
+  cuando se conecte Meta.
+- **El simulador dejó de tener enrutamiento propio.** Las dos puntas llaman al mismo
+  `procesarMensajeEntrante` que usan los webhooks. Un camino, no dos.
+- **Guardas en los flujos.** `flujoStock.ts` rechaza cualquier número que no sea del carnicero y
+  `flujoPedidos.ts` rechaza el del carnicero, cada uno preguntando por su cuenta en vez de confiar
+  en quien lo llamó. Las dos guardas dejan un `console.error` con "BLOQUEADO" si alguna vez saltan.
+- **Efecto secundario bueno:** como el enrutamiento quedó unificado, ahora un carnicero que escribe
+  "entraron 20 kilos de asado" **por texto** en WhatsApp de verdad recibe respuesta. Antes eso solo
+  funcionaba en el simulador, y esa diferencia hacía que probar acá no probara lo de allá.
+
+### 10/09/2026 — "Avisar que está listo" (fuera de especificación, pedido del fundador)
+
+Un botón en el detalle del pedido que le manda al cliente *"tu pedido ya está listo, podés pasar
+cuando quieras"*, por si lo quiere retirar antes de la hora que había acordado.
+
+- **No es un estado nuevo**, es `pedidos.listo_at`. El pedido sigue aprobado: el stock sigue
+  reservado, el recordatorio sigue saliendo y se puede seguir dejando en espera o marcando como
+  retirado. La migración `0021` explica el razonamiento largo.
+- **El panel lo muestra como si fuera un estado** ("Listo para retirar"), vía `etiquetaDePedido()`,
+  que es ahora el único lugar donde un pedido se traduce a lo que se ve.
+- **Se avisa una sola vez.** El `.is("listo_at", null)` del update garantiza que dos toques del
+  botón no manden dos WhatsApp.
+- **El recordatorio se adapta** en vez de suprimirse: si el pedido ya está listo, dice *"ya está
+  armado, esperándote"*. Un cliente que arregló para dentro de seis horas sigue necesitando que le
+  recuerden a qué hora quedó.
+- **Pendiente**: hoy es solo por panel. Que el carnicero pueda contestar "listo" por WhatsApp es
+  posible, pero hay que resolver a cuál pedido se refiere cuando tiene varios aprobados.

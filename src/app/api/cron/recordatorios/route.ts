@@ -58,7 +58,7 @@ export async function GET(request: NextRequest) {
   // ------------------------------------------------------------
   const { data: paraRecordar, error: errRecordar } = await supabaseAdmin
     .from("pedidos")
-    .select("id, carniceria_id, cliente_id, telefono, hora_retiro")
+    .select("id, carniceria_id, cliente_id, telefono, hora_retiro, listo_at")
     .eq("estado", "aprobado")
     .is("recordatorio_enviado_at", null)
     .lte("hora_retiro", limiteRecordatorio.toISOString())
@@ -94,7 +94,17 @@ export async function GET(request: NextRequest) {
         // Texto definitivo de la especificación (sección 54). "Alrededor de"
         // es deliberado: la hora de retiro es una orientación, no un turno
         // con horario exacto (sección 7.1).
-        cuerpo: `🔔 Te recuerdo que tu pedido está para retirar alrededor de las ${hora} hs. ¡Te esperamos!`,
+        //
+        // Si el carnicero ya avisó que el pedido está armado, el recordatorio
+        // lo dice en vez de repetir el mismo texto de siempre. La alternativa
+        // era no mandar recordatorio a los pedidos ya marcados como listos,
+        // pero eso deja sin aviso al cliente que arregló para dentro de seis
+        // horas y recibió el "ya está listo" a los diez minutos: sigue
+        // necesitando que le recuerden a qué hora quedó. Un mensaje por evento,
+        // los dos útiles.
+        cuerpo: pedido.listo_at
+          ? `🔔 Te recuerdo que tu pedido ya está armado, esperándote. Quedamos alrededor de las ${hora} hs. ¡Te esperamos!`
+          : `🔔 Te recuerdo que tu pedido está para retirar alrededor de las ${hora} hs. ¡Te esperamos!`,
         origen: "bot",
         pedidoId: pedido.id as string,
         plantillaDeRespaldo: {

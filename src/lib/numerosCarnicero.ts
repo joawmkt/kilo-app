@@ -1,29 +1,13 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 
-// Etapa 3, Paso 0 — quién es "el carnicero" (o uno de sus empleados
-// autorizados) vs un cliente cualquiera que le escribe al mismo número de
-// WhatsApp de la carnicería. Ver supabase/migrations/0007_numeros_carnicero.sql.
-
-export async function esNumeroDeCarnicero(carniceriaId: string, telefono: string): Promise<boolean> {
-  const supabaseAdmin = getSupabaseAdmin();
-  const { data, error } = await supabaseAdmin
-    .from("numeros_carnicero")
-    .select("id")
-    .eq("carniceria_id", carniceriaId)
-    .eq("telefono", telefono)
-    .eq("activo", true)
-    .maybeSingle();
-
-  if (error) {
-    // Si falla la consulta, preferimos tratar el mensaje como de un cliente
-    // (nunca al revés) — un cliente mal enrutado al flujo de stock podría
-    // llegar a alterar `productos.stock_actual` sin querer.
-    console.error("Error consultando numeros_carnicero", error);
-    return false;
-  }
-
-  return Boolean(data);
-}
+// Los números autorizados de la carnicería. Ver
+// supabase/migrations/0007_numeros_carnicero.sql.
+//
+// OJO: acá NO se pregunta "¿este número es el carnicero?". Esa pregunta se
+// contesta en `quienEs.ts` y en ningún otro lado. Había una función acá que
+// también la contestaba, y tener dos formas de preguntar lo mismo fue
+// exactamente lo que permitió el bug del 10/09/2026 (un cliente enrutado al
+// flujo de stock). Si necesitás saber el rol de un número: `esCarniceroAutorizado`.
 
 // Devuelve TODOS los números activos del carnicero de una carnicería —
 // se usa para mandarle el mensaje de aprobación de un pedido nuevo a

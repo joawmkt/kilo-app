@@ -11,7 +11,7 @@ import {
 import { IconoReloj } from "./iconos";
 import {
   ETIQUETA_ESTADO,
-  TONO_ESTADO,
+  etiquetaDePedido,
   type PedidoDelPanel,
 } from "@/lib/panel/pedidos";
 import { formatearCantidad, formatearHora, formatearPesos, formatearRelativo } from "@/lib/panel/formatos";
@@ -164,7 +164,7 @@ export function FilaPedido({ pedido }: { pedido: PedidoDelPanel }) {
       </div>
 
       <div className="flex shrink-0 flex-col items-end gap-1">
-        <Etiqueta tono={TONO_ESTADO[pedido.estado]}>{ETIQUETA_ESTADO[pedido.estado]}</Etiqueta>
+        <Etiqueta tono={etiquetaDePedido(pedido).tono}>{etiquetaDePedido(pedido).texto}</Etiqueta>
         {total !== null ? (
           <span className="numero text-sm text-ink-2">{formatearPesos(total)}</span>
         ) : null}

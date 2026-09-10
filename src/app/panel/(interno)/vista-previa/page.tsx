@@ -69,6 +69,7 @@ const PEDIDO_PENDIENTE: PedidoDelPanel = {
   creadoAt: AHORA,
   aprobadoAt: null,
   rechazadoAt: null,
+  listoAt: null,
   retiradoAt: null,
   conversacionId: null,
 };

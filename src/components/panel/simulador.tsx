@@ -70,7 +70,7 @@ export function Simulador({
       </div>
 
       {lado === "cliente" ? (
-        <div role="tabpanel" aria-labelledby="solapa-cliente" className="flex flex-col gap-4">
+        <div key="cliente" role="tabpanel" aria-labelledby="solapa-cliente" className="flex flex-col gap-4">
           {sinStock ? (
             <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
               No hay ningún producto con stock cargado, así que el bot va a rechazar todo lo que
@@ -83,13 +83,13 @@ export function Simulador({
           ) : null}
 
           <Conversacion
+            key="conversacion-cliente"
+            lado="cliente"
             titulo="Conversación de prueba"
             descripcion={`Cliente simulado ${telefonoCliente}`}
             etiquetaInterlocutor="Cliente simulado"
-            telefono={telefonoCliente}
             mensajes={mensajesCliente}
             accionServidor={enviarComoCliente}
-            campoNombre="Cliente de prueba"
             marcador="Hola, quiero 2 kilos de asado para las 7…"
             vacioTitulo="Todavía no escribiste nada"
             vacioDescripcion="Mandá un mensaje abajo y el bot te va a contestar igual que le contestaría a un cliente."
@@ -99,7 +99,7 @@ export function Simulador({
           <QueProbarCliente />
         </div>
       ) : (
-        <div role="tabpanel" aria-labelledby="solapa-carnicero" className="flex flex-col gap-4">
+        <div key="carnicero" role="tabpanel" aria-labelledby="solapa-carnicero" className="flex flex-col gap-4">
           <div className="rounded-xl border border-accent/40 bg-accent-soft px-4 py-3">
             <p className="font-titulo text-sm font-semibold text-ink">
               Probalo hablando, que es como se usa
@@ -113,10 +113,11 @@ export function Simulador({
           </div>
 
           <Conversacion
+            key="conversacion-carnicero"
+            lado="carnicero"
             titulo="Carga de stock de prueba"
             descripcion={`Carnicero simulado ${telefonoCarnicero}`}
             etiquetaInterlocutor="Carnicero simulado"
-            telefono={telefonoCarnicero}
             mensajes={mensajesCarnicero}
             accionServidor={enviarComoCarnicero}
             marcador="Entraron 20 kilos de asado y 8 de vacío…"
@@ -159,29 +160,39 @@ function BotonSolapa({
   );
 }
 
+// Ojo con este componente: las dos solapas lo usan.
+//
+// Antes se renderizaba sin `key`, así que React reusaba la MISMA instancia al
+// cambiar de solapa —el estado del formulario, el `useActionState` y todo lo
+// demás quedaban compartidos entre el cliente y el carnicero— y por ahí se coló
+// el bug del 10/09/2026: un mensaje escrito como cliente salió por la acción
+// del carnicero. Las `key` de arriba son lo que hace que sean dos instancias
+// distintas, y no un detalle de estilo.
+//
+// Aun así, la garantía de verdad no está acá: el servidor ya no le cree al
+// navegador quién es quién (ver simulador/acciones.ts). Este componente ni
+// siquiera conoce los números.
 function Conversacion({
+  lado,
   titulo,
   descripcion,
   etiquetaInterlocutor,
-  telefono,
   mensajes,
   accionServidor,
-  campoNombre,
   marcador,
   vacioTitulo,
   vacioDescripcion,
   pie,
 }: {
+  lado: "cliente" | "carnicero";
   titulo: string;
   descripcion: string;
   etiquetaInterlocutor: string;
-  telefono: string;
   mensajes: MensajeSimulado[];
   accionServidor: (
     previo: ResultadoSimulacion | null,
     datos: FormData
   ) => Promise<ResultadoSimulacion>;
-  campoNombre?: string;
   marcador: string;
   vacioTitulo: string;
   vacioDescripcion: string;
@@ -206,7 +217,7 @@ function Conversacion({
             disabled={limpiando}
             onClick={() =>
               iniciarTransicion(async () => {
-                const resultado = await limpiarConversacionDePrueba(telefono);
+                const resultado = await limpiarConversacionDePrueba(lado);
                 setAvisoLimpieza(resultado.mensaje);
               })
             }
@@ -260,14 +271,11 @@ function Conversacion({
         }}
         className="border-t border-border p-3 sm:p-4"
       >
-        <input type="hidden" name="telefono" value={telefono} />
-        {campoNombre ? <input type="hidden" name="nombre" value={campoNombre} /> : null}
-
-        <label className="sr-only" htmlFor={`texto-${telefono}`}>
+        <label className="sr-only" htmlFor={`texto-${lado}`}>
           {pie}
         </label>
         <textarea
-          id={`texto-${telefono}`}
+          id={`texto-${lado}`}
           name="texto"
           rows={2}
           required
@@ -283,8 +291,6 @@ function Conversacion({
         <Grabador
           onEnviar={(archivo) => {
             const datos = new FormData();
-            datos.set("telefono", telefono);
-            if (campoNombre) datos.set("nombre", campoNombre);
             datos.set("audio", archivo, archivo.name);
             accion(datos);
           }}

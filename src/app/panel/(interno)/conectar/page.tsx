@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { altaConfigurada, configuracionPublicaDelAlta } from "@/lib/whatsapp/alta";
 import { BotonConectar } from "@/components/panel/boton-conectar";
-import { Etiqueta, Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
+import { clasesBoton, EncabezadoPantalla, Etiqueta, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
 import { formatearFechaYHora } from "@/lib/panel/formatos";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
 import { PRODUCTO } from "@/lib/marca";
@@ -60,13 +60,11 @@ export default async function ConectarPage() {
     sesion.carniceria.whatsappProveedor === "meta" && Boolean(sesion.carniceria.whatsappPhoneNumberId);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Conectar WhatsApp</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Tu número de siempre, funcionando con {PRODUCTO} sin dejar de usar tu WhatsApp.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EncabezadoPantalla
+        titulo="Conectar WhatsApp"
+        descripcion={`Tu número de siempre, funcionando con ${PRODUCTO} sin dejar de usar tu WhatsApp.`}
+      />
 
       {yaConectada ? (
         <Tarjeta>
@@ -98,7 +96,7 @@ export default async function ConectarPage() {
           {/* Lo que se pierde al conectar. Va ANTES del botón, no en letra chica
               después: son cuatro elecciones sin vuelta atrás en un flujo de
               cinco minutos. */}
-          <div className="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
+          <div className="rounded-tarjeta border border-warning/40 bg-warning-soft px-4 py-3">
             <p className="font-titulo text-sm font-semibold text-warning">
               Cuatro cosas que no se pueden deshacer
             </p>

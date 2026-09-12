@@ -78,7 +78,7 @@ export function AccionesCarniceria({
             return (
               <div
                 key={opcion.valor}
-                className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-3 ${
+                className={`flex flex-wrap items-center justify-between gap-3 rounded-control border px-3 py-3 ${
                   actual ? "border-brand bg-brand-soft" : "border-border"
                 }`}
               >
@@ -106,7 +106,7 @@ export function AccionesCarniceria({
           {aviso ? (
             <p
               role="status"
-              className={`rounded-lg px-3 py-2 text-sm ${
+              className={`rounded-control px-3 py-2 text-sm ${
                 aviso.ok ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
               }`}
             >

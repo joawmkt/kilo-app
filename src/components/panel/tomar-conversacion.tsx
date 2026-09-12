@@ -35,7 +35,7 @@ export function TomarConversacion({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border px-3 py-2">
+    <div className="flex flex-wrap items-center gap-2 rounded-control border border-border px-3 py-2">
       {enPausa ? (
         <>
           <span className="flex-1 text-sm text-ink-2">

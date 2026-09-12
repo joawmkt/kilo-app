@@ -8,28 +8,31 @@ import { Esqueleto } from "@/components/panel/ui";
 
 export default function CargandoPanel() {
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
+    <div className="flex w-full flex-col gap-6">
+      {/* Encabezado de pantalla */}
       <div className="flex flex-col gap-2">
-        <Esqueleto className="h-7 w-56" />
+        <Esqueleto className="h-8 w-56" />
         <Esqueleto className="h-4 w-40" />
       </div>
 
-      <div className="rounded-xl border border-border bg-surface p-4">
+      {/* La fila de números, que es lo primero que aparece en Inicio y en
+          Métricas. El esqueleto tiene su forma para que nada salte de lugar
+          cuando llegan los datos. */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[0, 1, 2, 3].map((indice) => (
+          <div key={indice} className="rounded-tarjeta border border-border bg-surface p-4 sm:p-5">
+            <Esqueleto className="h-5 w-24" />
+            <Esqueleto className="mt-3 h-8 w-16" />
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-tarjeta border border-border bg-surface p-4">
         <Esqueleto className="mb-3 h-5 w-44" />
         <div className="flex flex-col gap-2">
           <Esqueleto className="h-14 w-full" />
           <Esqueleto className="h-14 w-full" />
           <Esqueleto className="h-14 w-full" />
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-border bg-surface p-4">
-        <Esqueleto className="mb-3 h-5 w-32" />
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Esqueleto className="h-14" />
-          <Esqueleto className="h-14" />
-          <Esqueleto className="h-14" />
-          <Esqueleto className="h-14" />
         </div>
       </div>
 

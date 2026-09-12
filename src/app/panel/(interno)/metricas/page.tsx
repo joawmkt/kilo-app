@@ -1,7 +1,12 @@
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
-import { GraficoBarras, GraficoRanking } from "@/components/panel/graficos";
-import { NumeroGrande, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
+import { GraficoBarras, GraficoRanking, GraficoRosca } from "@/components/panel/graficos";
+import {
+  EncabezadoPantalla,
+  Tarjeta,
+  TarjetaEncabezado,
+  TarjetaMetrica,
+} from "@/components/panel/ui";
 import { formatearCantidad, rangoDelDiaArgentina } from "@/lib/panel/formatos";
 import type { ItemPedido } from "@/lib/panel/pedidos";
 
@@ -147,38 +152,33 @@ export default async function MetricasPage() {
   }).length;
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Métricas</h1>
-        <p className="mt-0.5 text-sm text-ink-2">Últimos {DIAS} días</p>
-      </header>
+    <div className="flex w-full flex-col gap-6">
+      <EncabezadoPantalla titulo="Métricas" descripcion={`Últimos ${DIAS} días`} />
 
-      <Tarjeta className="p-4 sm:p-5">
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <NumeroGrande valor={String(reales.length)} etiqueta="Pedidos" />
-          <NumeroGrande
-            valor={String(clientesAtendidos)}
-            etiqueta="Clientes atendidos"
-            ayuda={`${recurrentes} volvieron más de una vez`}
-          />
-          <NumeroGrande
-            valor={tasaAusencias === null ? "—" : `${tasaAusencias}%`}
-            etiqueta="No retirados"
-            tono={tasaAusencias !== null && tasaAusencias > 15 ? "problema" : "neutro"}
-            ayuda={
-              tasaAusencias === null
-                ? "Todavía no hay pedidos entregables"
-                : `${ausencias} de ${entregables}`
-            }
-          />
-          <NumeroGrande
-            valor={String(rechazadosPorStock)}
-            etiqueta="Con falta de stock"
-            tono={rechazadosPorStock > 0 ? "atencion" : "neutro"}
-            ayuda="Pedidos donde faltó algo que el cliente pidió"
-          />
-        </div>
-      </Tarjeta>
+      <section aria-label="Resumen del período" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <TarjetaMetrica valor={String(reales.length)} etiqueta="Pedidos" tono="marca" />
+        <TarjetaMetrica
+          valor={String(clientesAtendidos)}
+          etiqueta="Clientes atendidos"
+          ayuda={`${recurrentes} volvieron más de una vez`}
+        />
+        <TarjetaMetrica
+          valor={tasaAusencias === null ? "—" : `${tasaAusencias}%`}
+          etiqueta="No retirados"
+          tono={tasaAusencias !== null && tasaAusencias > 15 ? "problema" : "neutro"}
+          ayuda={
+            tasaAusencias === null
+              ? "Todavía no hay pedidos entregables"
+              : `${ausencias} de ${entregables}`
+          }
+        />
+        <TarjetaMetrica
+          valor={String(rechazadosPorStock)}
+          etiqueta="Con falta de stock"
+          tono={rechazadosPorStock > 0 ? "atencion" : "neutro"}
+          ayuda="Pedidos donde faltó algo que el cliente pidió"
+        />
+      </section>
 
       <Tarjeta>
         <TarjetaEncabezado titulo="Pedidos por día" descripcion="Últimas dos semanas" />
@@ -191,19 +191,43 @@ export default async function MetricasPage() {
         </div>
       </Tarjeta>
 
-      <Tarjeta>
-        <TarjetaEncabezado
-          titulo="Lo que más te piden"
-          descripcion="Cuántos pedidos incluyeron cada corte"
-        />
-        <div className="px-4 py-4 sm:px-5">
-          <GraficoRanking
-            datos={masPedidos}
-            titulo="Cortes más pedidos"
-            descripcionVacio="Con unos cuantos pedidos vas a poder ver qué cortes te piden más, que es lo que más te dice qué conviene tener."
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* Único reparto parte-de-un-todo de la pantalla, y por eso el único
+            lugar donde una rosca es la forma correcta: cada cliente atendido
+            está en exactamente una de las dos mitades. */}
+        <Tarjeta>
+          <TarjetaEncabezado
+            titulo="Quiénes te compran"
+            descripcion="Cuántos volvieron a pedir en el período"
           />
-        </div>
-      </Tarjeta>
+          <div className="px-4 py-5 sm:px-5">
+            <GraficoRosca
+              segmentos={[
+                { etiqueta: "Volvieron a pedir", valor: recurrentes, serie: 1 },
+                { etiqueta: "Pidieron una sola vez", valor: clientesAtendidos - recurrentes, serie: 2 },
+              ]}
+              total={String(clientesAtendidos)}
+              etiquetaCentro="clientes atendidos"
+              titulo="Clientes que volvieron a pedir y clientes de una sola vez"
+              descripcionVacio="Cuando varios clientes hayan pedido, acá vas a ver qué proporción vuelve, que es la métrica que más dice si el bot está funcionando."
+            />
+          </div>
+        </Tarjeta>
+
+        <Tarjeta>
+          <TarjetaEncabezado
+            titulo="Lo que más te piden"
+            descripcion="Cuántos pedidos incluyeron cada corte"
+          />
+          <div className="px-4 py-4 sm:px-5">
+            <GraficoRanking
+              datos={masPedidos}
+              titulo="Cortes más pedidos"
+              descripcionVacio="Con unos cuantos pedidos vas a poder ver qué cortes te piden más, que es lo que más te dice qué conviene tener."
+            />
+          </div>
+        </Tarjeta>
+      </div>
 
       <Tarjeta>
         <TarjetaEncabezado
@@ -220,7 +244,7 @@ export default async function MetricasPage() {
         </div>
       </Tarjeta>
 
-      <p className="text-xs text-ink-3">
+      <p className="text-xs leading-relaxed text-ink-3">
         Todo lo de esta pantalla se calcula con los pedidos que entraron por WhatsApp. Las ventas del
         mostrador no están contadas.
       </p>

@@ -5,6 +5,7 @@ import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { listarPedidos } from "@/lib/panel/pedidos";
 import { FilaPedido } from "@/components/panel/tarjeta-pedido";
 import {
+  EnlaceVolver,
   EstadoVacio,
   NumeroGrande,
   Tarjeta,
@@ -40,9 +41,7 @@ export default async function FichaClientePage(props: PageProps<"/panel/clientes
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <Link href="/panel/clientes" className="text-sm font-semibold text-brand">
-        ← Volver a clientes
-      </Link>
+      <EnlaceVolver href="/panel/clientes">Volver a clientes</EnlaceVolver>
 
       <Tarjeta className="p-4 sm:p-5">
         <h1 className="font-titulo text-xl font-bold text-ink">
@@ -72,7 +71,7 @@ export default async function FichaClientePage(props: PageProps<"/panel/clientes
             convertirlo en una condena: el dato sirve para decidir, no para
             etiquetar a una persona. */}
         {ausencias > 0 ? (
-          <p className="mt-4 rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">
+          <p className="mt-4 rounded-control bg-warning-soft px-3 py-2 text-sm text-warning">
             Este cliente dejó {ausencias} {ausencias === 1 ? "pedido" : "pedidos"} sin retirar. Puede
             servirte para decidir cuánto preparar por adelantado.
           </p>

@@ -196,6 +196,134 @@ export function GraficoRanking({
 }
 
 // ============================================================
+// Rosca — parte de un todo
+// ============================================================
+//
+// La rosca sirve para UNA cosa y solo una: mostrar cómo se reparte un total
+// entre dos o tres partes, con el total legible en el centro. No sirve para
+// comparar categorías (para eso está el ranking) ni para ver evolución (para
+// eso están las barras), y con más de tres segmentos deja de leerse.
+//
+// El agujero del medio no es un capricho de estilo: es lo que permite poner el
+// total adentro, que es el número que el carnicero viene a buscar.
+
+export type SegmentoRosca = {
+  etiqueta: string;
+  valor: number;
+  /** 1 = serie principal (borgoña), 2 = secundaria (cobre). */
+  serie: 1 | 2;
+};
+
+export function GraficoRosca({
+  segmentos,
+  total,
+  etiquetaCentro,
+  titulo,
+  descripcionVacio,
+}: {
+  segmentos: SegmentoRosca[];
+  /** El número grande del centro. */
+  total: string;
+  /** Qué es ese número, en dos o tres palabras. */
+  etiquetaCentro: string;
+  titulo: string;
+  descripcionVacio: string;
+}) {
+  const suma = segmentos.reduce((acumulado, segmento) => acumulado + segmento.valor, 0);
+
+  if (suma === 0) {
+    return <EstadoVacio titulo="Todavía no hay datos suficientes" descripcion={descripcionVacio} />;
+  }
+
+  // Geometría del anillo. El radio y el grosor están en unidades del viewBox,
+  // así que la rosca escala sola y el grosor nunca se deforma.
+  const RADIO = 60;
+  const CIRCUNFERENCIA = 2 * Math.PI * RADIO;
+
+  // Cada segmento arranca donde terminó la suma de los anteriores. Se calcula
+  // de una en un `reduce` y no acumulando dentro del `map`: mutar una variable
+  // mientras se renderiza da resultados distintos según cuándo React vuelva a
+  // correr el componente.
+  const arcos = segmentos.reduce<{ segmento: SegmentoRosca; largo: number; desfase: number }[]>(
+    (acumulado, segmento) => {
+      const anterior = acumulado.at(-1);
+      const desfase = anterior ? anterior.desfase - anterior.largo : 0;
+      acumulado.push({ segmento, largo: (segmento.valor / suma) * CIRCUNFERENCIA, desfase });
+      return acumulado;
+    },
+    []
+  );
+
+  return (
+    <figure className="m-0 flex flex-col items-center gap-5 sm:flex-row sm:items-center sm:gap-7">
+      <figcaption className="sr-only">{titulo}</figcaption>
+
+      <div className="relative shrink-0">
+        <svg viewBox="0 0 160 160" className="h-40 w-40" role="img" aria-label={titulo}>
+          {/* Pista: cierra el anillo aunque los segmentos no sumen el total. */}
+          <circle
+            cx="80"
+            cy="80"
+            r={RADIO}
+            fill="none"
+            stroke="var(--grafico-pista)"
+            strokeWidth="20"
+          />
+
+          {arcos.map(({ segmento, largo, desfase }) => (
+              <circle
+                key={segmento.etiqueta}
+                cx="80"
+                cy="80"
+                r={RADIO}
+                fill="none"
+                stroke={segmento.serie === 1 ? "var(--grafico-1)" : "var(--grafico-2)"}
+                strokeWidth="20"
+                // El pequeño hueco (2 unidades) separa los segmentos sin
+                // necesidad de pintarles un borde del color del fondo, que se
+                // rompe apenas la tarjeta cambia de superficie.
+                strokeDasharray={`${Math.max(largo - 2, 0)} ${CIRCUNFERENCIA}`}
+                strokeDashoffset={desfase}
+                // -90° para que el primer segmento arranque arriba y no a las 3.
+                transform="rotate(-90 80 80)"
+              />
+          ))}
+        </svg>
+
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-0.5">
+          <span className="numero-grande text-2xl text-ink">{total}</span>
+          <span className="max-w-24 text-center text-[11px] leading-tight text-ink-3">
+            {etiquetaCentro}
+          </span>
+        </div>
+      </div>
+
+      {/* La referencia de colores es también la tabla de datos: cada fila dice
+          su nombre, su número y su porcentaje. Así la identidad de cada
+          segmento nunca depende solo del color. */}
+      <ul className="flex w-full min-w-0 flex-col gap-2.5">
+        {segmentos.map((segmento) => (
+          <li key={segmento.etiqueta} className="flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{
+                backgroundColor: segmento.serie === 1 ? "var(--grafico-1)" : "var(--grafico-2)",
+              }}
+            />
+            <span className="min-w-0 flex-1 truncate text-sm text-ink">{segmento.etiqueta}</span>
+            <span className="numero shrink-0 text-sm font-semibold text-ink">{segmento.valor}</span>
+            <span className="numero w-11 shrink-0 text-right text-sm text-ink-3">
+              {Math.round((segmento.valor / suma) * 100)}%
+            </span>
+          </li>
+        ))}
+      </ul>
+    </figure>
+  );
+}
+
+// ============================================================
 // Tabla equivalente
 // ============================================================
 //

@@ -131,7 +131,7 @@ export function FormularioHorarios({
         ))}
 
         {modo === "informativo" ? (
-          <p className="rounded-lg bg-surface-2 px-3 py-2 text-xs text-ink-2">
+          <p className="rounded-control bg-surface-2 px-3 py-2 text-xs text-ink-2">
             Ahora mismo estos horarios son solo informativos: el bot los menciona pero no rechaza
             nada. Se cambia arriba, en &ldquo;Datos de la carnicería&rdquo;.
           </p>
@@ -147,7 +147,7 @@ function FilaDia({ dia, horario }: { dia: number; horario?: FilaHorario }) {
   const [cerrado, setCerrado] = useState(horario?.cerrado ?? false);
 
   return (
-    <div className="rounded-lg border border-border px-3 py-3">
+    <div className="rounded-control border border-border px-3 py-3">
       <div className="flex items-center justify-between gap-3">
         <span className="font-titulo text-sm font-semibold text-ink">{DIAS_SEMANA[dia]}</span>
 
@@ -200,7 +200,7 @@ function ParDeHoras({
 }) {
   return (
     <div>
-      <p className="mb-1 font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">
+      <p className="mb-1 font-titulo text-xs font-semibold text-ink-3">
         {titulo}
       </p>
       <div className="flex items-center gap-2">
@@ -209,7 +209,7 @@ function ParDeHoras({
           name={nombreDesde}
           aria-label={`${titulo}, desde`}
           defaultValue={desde ? formatearHoraSimple(desde) : ""}
-          className="numero min-h-11 w-full rounded-lg border border-border bg-surface px-2 text-base text-ink"
+          className="numero min-h-11 w-full rounded-control border border-border bg-surface px-2 text-base text-ink"
         />
         <span className="text-ink-3">a</span>
         <input
@@ -217,7 +217,7 @@ function ParDeHoras({
           name={nombreHasta}
           aria-label={`${titulo}, hasta`}
           defaultValue={hasta ? formatearHoraSimple(hasta) : ""}
-          className="numero min-h-11 w-full rounded-lg border border-border bg-surface px-2 text-base text-ink"
+          className="numero min-h-11 w-full rounded-control border border-border bg-surface px-2 text-base text-ink"
         />
       </div>
     </div>
@@ -245,7 +245,7 @@ export function DiasEspeciales({ dias }: { dias: FilaDiaEspecial[] }) {
             No hay ningún día especial cargado. Los que agregues acá van a aparecer en esta lista.
           </p>
         ) : (
-          <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          <ul className="mb-4 divide-y divide-border rounded-control border border-border">
             {dias.map((dia) => (
               <li key={dia.id} className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <span className="min-w-0">
@@ -276,7 +276,7 @@ export function DiasEspeciales({ dias }: { dias: FilaDiaEspecial[] }) {
               type="date"
               name="fecha"
               required
-              className="numero min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink"
+              className="numero min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
             />
           </label>
 
@@ -286,7 +286,7 @@ export function DiasEspeciales({ dias }: { dias: FilaDiaEspecial[] }) {
               type="text"
               name="motivo"
               placeholder="Feriado, vacaciones…"
-              className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
+              className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
             />
           </label>
 
@@ -319,7 +319,7 @@ export function MediosPago({ habilitados }: { habilitados: string[] }) {
           {MEDIOS_PAGO.map((medio) => (
             <label
               key={medio.codigo}
-              className="flex min-h-12 cursor-pointer items-center gap-3 rounded-lg border border-border px-3 py-2"
+              className="flex min-h-12 cursor-pointer items-center gap-3 rounded-control border border-border px-3 py-2"
             >
               <input
                 type="checkbox"
@@ -377,7 +377,7 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
             No hay promos cargadas. Si un cliente pregunta, el bot le va a decir que por ahora no hay ninguna.
           </p>
         ) : (
-          <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          <ul className="mb-4 divide-y divide-border rounded-control border border-border">
             {promociones.map((promo) => (
               <li key={promo.id} className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <span className="min-w-0">
@@ -429,7 +429,7 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
               name="titulo"
               required
               placeholder="2x1 en hamburguesas"
-              className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
+              className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
             />
           </label>
 
@@ -439,7 +439,7 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
               type="text"
               name="detalle"
               placeholder="Llevando 2 packs o más"
-              className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
+              className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
             />
           </label>
 
@@ -449,7 +449,7 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
               <input
                 type="date"
                 name="desde"
-                className="numero min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink"
+                className="numero min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
               />
             </label>
 
@@ -458,7 +458,7 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
               <input
                 type="date"
                 name="hasta"
-                className="numero min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink"
+                className="numero min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
               />
             </label>
 
@@ -514,7 +514,7 @@ export function SustitutosAutorizados({
         {sustitutos.length === 0 ? (
           <p className="text-sm text-ink-2">Todavía no hay reemplazos cargados.</p>
         ) : (
-          <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+          <ul className="mb-4 divide-y divide-border rounded-control border border-border">
             {sustitutos.map((s) => (
               <li key={s.id} className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
                 <span className="min-w-0 text-sm text-ink">
@@ -543,7 +543,7 @@ export function SustitutosAutorizados({
               <select
                 name="producto_id"
                 required
-                className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink"
+                className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
               >
                 <option value="">Elegí un corte</option>
                 {productos.map((p) => (
@@ -559,7 +559,7 @@ export function SustitutosAutorizados({
               <select
                 name="sustituto_id"
                 required
-                className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink"
+                className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
               >
                 <option value="">Elegí el reemplazo</option>
                 {productos.map((p) => (
@@ -617,7 +617,7 @@ function Campo({
         inputMode={modoTeclado}
         required={requerido}
         defaultValue={valorInicial}
-        className={`min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3 ${
+        className={`min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3 ${
           modoTeclado ? "numero" : ""
         }`}
       />
@@ -640,7 +640,7 @@ function Opcion({
   descripcion: string;
 }) {
   return (
-    <label className="flex cursor-pointer gap-3 rounded-lg border border-border px-3 py-3 has-checked:border-brand has-checked:bg-brand-soft">
+    <label className="flex cursor-pointer gap-3 rounded-control border border-border px-3 py-3 has-checked:border-brand has-checked:bg-brand-soft">
       <input
         type="radio"
         name={nombre}
@@ -684,7 +684,7 @@ function Aviso({ estado }: { estado: ResultadoAccion }) {
   return (
     <p
       role="status"
-      className={`rounded-lg px-3 py-2 text-sm ${
+      className={`rounded-control px-3 py-2 text-sm ${
         estado.ok ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
       }`}
     >

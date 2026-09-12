@@ -3,7 +3,7 @@ import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { listarPedidos, type EstadoPedido } from "@/lib/panel/pedidos";
 import { FilaPedido } from "@/components/panel/tarjeta-pedido";
-import { EstadoVacio, Tarjeta } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
 import { rangoDelDiaArgentina } from "@/lib/panel/formatos";
 
 // Historial de pedidos, más allá de los de hoy.
@@ -43,15 +43,10 @@ export default async function PedidosPage(props: PageProps<"/panel/pedidos">) {
   });
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Pedidos</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          {pedidos.length === 0
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Pedidos" descripcion={pedidos.length === 0
             ? "Sin pedidos en este filtro"
-            : `${pedidos.length} ${pedidos.length === 1 ? "pedido" : "pedidos"}`}
-        </p>
-      </header>
+            : `${pedidos.length} ${pedidos.length === 1 ? "pedido" : "pedidos"}`} />
 
       <GrupoFiltros
         titulo="Estado"
@@ -103,7 +98,7 @@ function GrupoFiltros({
 }) {
   return (
     <section>
-      <h2 className="mb-1.5 font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">
+      <h2 className="mb-2 font-titulo text-sm font-semibold text-ink-2">
         {titulo}
       </h2>
       <div className="-mx-3 overflow-x-auto px-3 pb-1 sm:mx-0 sm:px-0">
@@ -117,7 +112,7 @@ function GrupoFiltros({
                 key={valor}
                 href={`/panel/pedidos?${parametros.toString()}`}
                 aria-current={seleccionado ? "true" : undefined}
-                className={`flex min-h-11 items-center rounded-lg border px-3 font-titulo text-sm font-semibold transition-colors ${
+                className={`flex min-h-11 items-center rounded-full border px-4 font-titulo text-sm font-semibold transition-colors ${
                   seleccionado
                     ? "border-brand bg-brand-soft text-brand"
                     : "border-border bg-surface text-ink-2 hover:bg-surface-2"

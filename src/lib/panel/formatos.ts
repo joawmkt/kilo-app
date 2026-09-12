@@ -97,14 +97,25 @@ export function formatearFecha(fecha: Date | string): string {
   }).format(valor);
 }
 
+/**
+ * "Sábado 13 de septiembre". Se usa como encabezado, así que vuelve con la
+ * primera letra en mayúscula: en español el día de la semana va en minúscula
+ * dentro de una oración, pero abriendo una no.
+ *
+ * La mayúscula se pone acá y no con `capitalize` en el CSS porque el CSS lo
+ * resolvía en una sola pantalla y se perdía en cuanto el texto se usaba en
+ * otra.
+ */
 export function formatearFechaLarga(fecha: Date | string): string {
   const valor = typeof fecha === "string" ? new Date(fecha) : fecha;
-  return new Intl.DateTimeFormat(LOCALE, {
+  const texto = new Intl.DateTimeFormat(LOCALE, {
     weekday: "long",
     day: "numeric",
     month: "long",
     timeZone: ZONA,
   }).format(valor);
+
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
 }
 
 export function formatearFechaYHora(fecha: Date | string): string {

@@ -55,7 +55,7 @@ export function Simulador({
       <div
         role="tablist"
         aria-label="De qué lado escribís"
-        className="flex gap-1 rounded-xl border border-border bg-surface-2 p-1"
+        className="flex gap-1 rounded-tarjeta border border-border bg-surface-2 p-1"
       >
         <BotonSolapa activa={lado === "cliente"} onClick={() => setLado("cliente")} id="solapa-cliente">
           Como cliente
@@ -72,7 +72,7 @@ export function Simulador({
       {lado === "cliente" ? (
         <div key="cliente" role="tabpanel" aria-labelledby="solapa-cliente" className="flex flex-col gap-4">
           {sinStock ? (
-            <div className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
+            <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
               No hay ningún producto con stock cargado, así que el bot va a rechazar todo lo que
               pidas. Cargalo desde{" "}
               <Link href="/panel/stock" className="font-semibold text-brand">
@@ -100,7 +100,7 @@ export function Simulador({
         </div>
       ) : (
         <div key="carnicero" role="tabpanel" aria-labelledby="solapa-carnicero" className="flex flex-col gap-4">
-          <div className="rounded-xl border border-accent/40 bg-accent-soft px-4 py-3">
+          <div className="rounded-tarjeta border border-accent/40 bg-accent-soft px-4 py-3">
             <p className="font-titulo text-sm font-semibold text-ink">
               Probalo hablando, que es como se usa
             </p>
@@ -151,7 +151,7 @@ function BotonSolapa({
       role="tab"
       aria-selected={activa}
       onClick={onClick}
-      className={`flex-1 rounded-lg px-3 py-2 font-titulo text-sm font-semibold transition-colors ${
+      className={`flex-1 rounded-control px-3 py-2 font-titulo text-sm font-semibold transition-colors ${
         activa ? "bg-surface text-ink shadow-tarjeta" : "text-ink-2 hover:text-ink"
       }`}
     >
@@ -246,7 +246,7 @@ function Conversacion({
                       esDelInterlocutor ? "bg-surface-2" : "bg-brand-soft"
                     }`}
                   >
-                    <p className="mb-0.5 font-titulo text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+                    <p className="mb-0.5 font-titulo text-xs font-semibold text-ink-3">
                       {esDelInterlocutor ? etiquetaInterlocutor : "Bot"}
                     </p>
                     <p className="whitespace-pre-wrap break-words text-sm text-ink">
@@ -280,7 +280,7 @@ function Conversacion({
           rows={2}
           required
           placeholder={marcador}
-          className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-base text-ink placeholder:text-ink-3"
+          className="w-full resize-none rounded-control border border-border bg-surface px-3 py-2 text-base text-ink placeholder:text-ink-3"
         />
 
         <div className="mt-2 flex items-center justify-between gap-3">
@@ -297,13 +297,13 @@ function Conversacion({
         />
 
         {estado && !estado.ok ? (
-          <p role="alert" className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+          <p role="alert" className="mt-2 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
             {estado.mensaje}
           </p>
         ) : null}
 
         {avisoLimpieza ? (
-          <p role="status" className="mt-2 rounded-lg bg-success-soft px-3 py-2 text-sm text-success">
+          <p role="status" className="mt-2 rounded-control bg-success-soft px-3 py-2 text-sm text-success">
             {avisoLimpieza}
           </p>
         ) : null}
@@ -478,7 +478,7 @@ function Grabador({ onEnviar }: { onEnviar: (archivo: File) => void }) {
       )}
 
       {error ? (
-        <p role="alert" className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+        <p role="alert" className="mt-2 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
           {error}
         </p>
       ) : null}

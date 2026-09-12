@@ -2,7 +2,7 @@ import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { listarProductos } from "@/lib/panel/productos";
 import { TablaStock } from "@/components/panel/tabla-stock";
-import { EstadoVacio, Tarjeta } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
 import { IconoMicrofono } from "@/components/panel/iconos";
 
 export default async function StockPage(props: PageProps<"/panel/stock">) {
@@ -20,18 +20,13 @@ export default async function StockPage(props: PageProps<"/panel/stock">) {
     : "todos";
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Stock y precios</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Tocá cualquier número para corregirlo.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Stock y precios" descripcion="Tocá cualquier número para corregirlo." />
 
       {/* Recordatorio explícito de que esta pantalla NO reemplaza a la voz.
           Si el panel termina siendo la forma más cómoda de cargar stock, algo
           salió mal en el diseño. */}
-      <div className="flex items-start gap-3 rounded-xl border border-border bg-surface-2 px-4 py-3">
+      <div className="flex items-start gap-3 rounded-tarjeta border border-border bg-surface-2 px-4 py-3">
         <IconoMicrofono className="mt-0.5 h-5 w-5 shrink-0 text-ink-3" />
         <p className="text-sm text-ink-2">
           Para cargar mercadería que llega, mandá un audio por WhatsApp como siempre. Esta pantalla

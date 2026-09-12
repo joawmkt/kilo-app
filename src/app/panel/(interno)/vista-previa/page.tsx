@@ -1,15 +1,19 @@
 import { TarjetaPedidoPendiente, FilaPedido } from "@/components/panel/tarjeta-pedido";
 import { TablaStock } from "@/components/panel/tabla-stock";
-import { GraficoBarras, GraficoRanking } from "@/components/panel/graficos";
+import { GraficoBarras, GraficoRanking, GraficoRosca } from "@/components/panel/graficos";
 import {
+  EnlaceVolver,
   EstadoError,
   EstadoVacio,
   Etiqueta,
+  IconoCheck,
   NumeroGrande,
   Tarjeta,
   TarjetaEncabezado,
+  TarjetaMetrica,
   clasesBoton,
 } from "@/components/panel/ui";
+import { IconoCaja, IconoPedidos, IconoStock } from "@/components/panel/iconos";
 import type { PedidoDelPanel } from "@/lib/panel/pedidos";
 import type { ProductoDelPanel } from "@/lib/panel/productos";
 
@@ -146,7 +150,7 @@ const RANKING = [
 export default function VistaPreviaPage() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-      <div className="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
+      <div className="rounded-tarjeta border border-warning/40 bg-warning-soft px-4 py-3">
         <p className="font-titulo text-sm font-semibold text-warning">
           Vista previa del sistema de diseño
         </p>
@@ -164,15 +168,44 @@ export default function VistaPreviaPage() {
       </Seccion>
 
       <Seccion titulo="Resumen del día">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <TarjetaMetrica
+            valor="7"
+            etiqueta="Pedidos de hoy"
+            icono={<IconoPedidos className="h-[18px] w-[18px]" />}
+            tono="marca"
+          />
+          <TarjetaMetrica
+            valor="4"
+            etiqueta="Ya retirados"
+            icono={<IconoCheck className="h-[18px] w-[18px]" />}
+            tono="exito"
+          />
+          <TarjetaMetrica
+            valor="2"
+            etiqueta="Sin stock"
+            icono={<IconoStock className="h-[18px] w-[18px]" />}
+            tono="problema"
+          />
+          <TarjetaMetrica
+            valor="$124.300"
+            etiqueta="Pedidos por WhatsApp"
+            icono={<IconoCaja className="h-[18px] w-[18px]" />}
+            ayuda="Estimado sobre precios de lista. No incluye el mostrador."
+          />
+        </div>
+      </Seccion>
+
+      <Seccion titulo="Números sueltos, dentro de una tarjeta">
         <Tarjeta className="p-4 sm:p-5">
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-5 sm:grid-cols-4">
             <NumeroGrande valor="7" etiqueta="Pedidos de hoy" />
             <NumeroGrande valor="4" etiqueta="Ya retirados" />
             <NumeroGrande valor="2" etiqueta="Sin stock" tono="problema" />
             <NumeroGrande
               valor="$124.300"
               etiqueta="Pedidos por WhatsApp"
-              ayuda="Estimado sobre precios de lista. No incluye el mostrador."
+              ayuda="Estimado sobre precios de lista."
             />
           </div>
         </Tarjeta>
@@ -217,7 +250,29 @@ export default function VistaPreviaPage() {
               />
             </div>
           </Tarjeta>
+
+          <Tarjeta>
+            <TarjetaEncabezado titulo="Quiénes te compran" />
+            <div className="px-4 py-5">
+              <GraficoRosca
+                segmentos={[
+                  { etiqueta: "Volvieron a pedir", valor: 18, serie: 1 },
+                  { etiqueta: "Pidieron una sola vez", valor: 29, serie: 2 },
+                ]}
+                total="47"
+                etiquetaCentro="clientes atendidos"
+                titulo="Clientes que volvieron a pedir"
+                descripcionVacio="Cuando varios clientes hayan pedido, acá vas a ver qué proporción vuelve."
+              />
+            </div>
+          </Tarjeta>
         </div>
+      </Seccion>
+
+      <Seccion titulo="Volver">
+        <Tarjeta className="p-4">
+          <EnlaceVolver href="/panel/vista-previa">Volver a pedidos</EnlaceVolver>
+        </Tarjeta>
       </Seccion>
 
       <Seccion titulo="Estados vacío y de error">

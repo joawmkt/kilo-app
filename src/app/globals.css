@@ -28,7 +28,7 @@
   color-scheme: light;
 
   /* Superficies */
-  --bg: #faf7f5;         /* fondo general, blanco cálido tipo papel */
+  --bg: #f6f1ee;         /* fondo general, blanco cálido tipo papel */
   --surface: #ffffff;    /* tarjetas */
   --surface-2: #f3eeeb;  /* fondos secundarios, filas alternas */
 
@@ -37,7 +37,31 @@
   --ink-2: #5a504c;      /* secundario */
   --ink-3: #8b807a;      /* terciario, etiquetas */
 
-  --border: #e5dcd7;
+  --border: #e8e0db;
+
+  /* ------------------------------------------------------------
+     Armazón de navegación — bloque sólido oscuro
+     ------------------------------------------------------------
+     La navegación no es una tarjeta más: es el marco. Va sobre un vino-negro
+     propio y no sobre `--surface`, así el contenido queda claramente adentro de
+     algo, en vez de flotar sobre una banda blanca que se confunde con las
+     tarjetas.
+
+     No es un gris casi-negro teñido: es el borgoña de marca llevado a la
+     sombra, para que la barra pertenezca a la misma familia que el botón
+     principal y no parezca chrome prestado de otra aplicación.
+
+     Conserva su color en los dos modos. Es el elemento que ancla la identidad;
+     si cambiara con el tema, el panel se vería como dos productos distintos.
+     ------------------------------------------------------------ */
+  --nav: #271518;
+  --nav-2: #382124;            /* hover */
+  --nav-ink: #f2e6e3;
+  --nav-ink-2: #a3908b;
+  --nav-activo: #48242e;
+  --nav-activo-ink: #ffffff;
+  --nav-marca: #d89a5c;        /* el cobre, como marcador del destino actual */
+  --nav-border: #3a2226;
 
   /* Marca — navegación y acciones principales. NO para alertas. */
   --brand: #7d1f35;
@@ -71,10 +95,20 @@
      ------------------------------------------------------------ */
   --grafico-1: #9a2a44;
   --grafico-2: #b87333;
-  --grafico-grilla: #e5dcd7;
+  --grafico-grilla: #e8e0db;
+  --grafico-pista: #efe7e2;   /* el "resto" de una rosca o de una barra */
 
+  /* ------------------------------------------------------------
+     Elevación — tres escalones y ninguno más
+     ------------------------------------------------------------
+     La sombra codifica altura, no decora: una tarjeta apoyada, una tarjeta que
+     pide atención, y algo que flota sobre el resto (menú, popover). Que todo
+     lleve la misma sombra suave es justamente lo que hace que un panel se lea
+     como una plantilla.
+     ------------------------------------------------------------ */
   --sombra-tarjeta: 0 1px 2px rgb(28 23 21 / 0.04), 0 1px 3px rgb(28 23 21 / 0.06);
-  --sombra-elevada: 0 4px 12px rgb(28 23 21 / 0.08);
+  --sombra-media: 0 2px 4px rgb(28 23 21 / 0.04), 0 6px 16px -6px rgb(28 23 21 / 0.10);
+  --sombra-elevada: 0 4px 12px rgb(28 23 21 / 0.08), 0 16px 32px -12px rgb(28 23 21 / 0.14);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -88,6 +122,17 @@
     --ink-3: #857873;
 
     --border: #362d2a;
+
+    /* La barra conserva su vino-negro, apenas separada del fondo de la página
+       para que el filo entre armazón y contenido siga siendo legible. */
+    --nav: #1e1416;
+    --nav-2: #2e1e21;
+    --nav-ink: #f0e4e1;
+    --nav-ink-2: #9c8a85;
+    --nav-activo: #3d2028;
+    --nav-activo-ink: #ffffff;
+    --nav-marca: #d89a5c;
+    --nav-border: #2f1f22;
 
     --brand: #e0798c;
     --brand-hover: #eb92a2;
@@ -105,6 +150,7 @@
     --danger-soft: #3a1c17;
 
     --grafico-grilla: #362d2a;
+    --grafico-pista: #302825;
     /* En oscuro, el rosa de marca (#e0798c) y el cobre (#d89a5c) quedan a
        ΔE 11.8 en visión normal: dos series pintadas así son indistinguibles
        incluso para alguien sin daltonismo. Se re-escalonan las dos hasta pasar
@@ -114,7 +160,8 @@
     --grafico-2: #ae8c3e;
 
     --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
-    --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
+    --sombra-media: 0 2px 4px rgb(0 0 0 / 0.3), 0 6px 16px -6px rgb(0 0 0 / 0.45);
+    --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4), 0 16px 32px -12px rgb(0 0 0 / 0.5);
   }
 
   /* `color-scheme` se declara en `.panel` y no en `:root` para que solo cambien
@@ -138,6 +185,15 @@
 
   --border: #362d2a;
 
+  --nav: #1e1416;
+  --nav-2: #2e1e21;
+  --nav-ink: #f0e4e1;
+  --nav-ink-2: #9c8a85;
+  --nav-activo: #3d2028;
+  --nav-activo-ink: #ffffff;
+  --nav-marca: #d89a5c;
+  --nav-border: #2f1f22;
+
   --brand: #e0798c;
   --brand-hover: #eb92a2;
   --brand-soft: #33191f;
@@ -154,11 +210,13 @@
   --danger-soft: #3a1c17;
 
   --grafico-grilla: #362d2a;
+  --grafico-pista: #302825;
   --grafico-1: #cc5c86;
   --grafico-2: #ae8c3e;
 
   --sombra-tarjeta: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px rgb(0 0 0 / 0.2);
-  --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4);
+  --sombra-media: 0 2px 4px rgb(0 0 0 / 0.3), 0 6px 16px -6px rgb(0 0 0 / 0.45);
+  --sombra-elevada: 0 4px 12px rgb(0 0 0 / 0.4), 0 16px 32px -12px rgb(0 0 0 / 0.5);
 }
 
 :root[data-tema="oscuro"] .panel {
@@ -180,6 +238,15 @@
 
   --color-border: var(--border);
 
+  --color-nav: var(--nav);
+  --color-nav-2: var(--nav-2);
+  --color-nav-ink: var(--nav-ink);
+  --color-nav-ink-2: var(--nav-ink-2);
+  --color-nav-activo: var(--nav-activo);
+  --color-nav-activo-ink: var(--nav-activo-ink);
+  --color-nav-marca: var(--nav-marca);
+  --color-nav-border: var(--nav-border);
+
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
   --color-brand-soft: var(--brand-soft);
@@ -198,6 +265,7 @@
   --color-grafico-1: var(--grafico-1);
   --color-grafico-2: var(--grafico-2);
   --color-grafico-grilla: var(--grafico-grilla);
+  --color-grafico-pista: var(--grafico-pista);
 
   /* Las tres familias del panel:
      - titulo (Archivo): títulos, encabezados de sección, etiquetas.
@@ -212,7 +280,18 @@
   --font-panel: "Public Sans Variable", "Public Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
 
+  /* Radios — tres escalones con significado:
+       control  lo que se toca (botones, campos, filas de lista)
+       tarjeta  los contenedores
+       bloque   los contenedores que agrupan a otros contenedores
+     Un solo radio para todo aplana la jerarquía, y es de los tells más
+     repetidos de un panel armado con plantilla. */
+  --radius-control: 10px;
+  --radius-tarjeta: 14px;
+  --radius-bloque: 20px;
+
   --shadow-tarjeta: var(--sombra-tarjeta);
+  --shadow-media: var(--sombra-media);
   --shadow-elevada: var(--sombra-elevada);
 }
 
@@ -263,10 +342,28 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* Los números grandes de las tarjetas de métrica van más apretados: de 30px
+   para arriba, el tracking normal de Plex Mono abre tanto la cifra que el
+   número deja de leerse como una unidad. */
+.numero-grande {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1;
+}
+
 /* Foco visible y consistente: el carnicero puede estar usando una tablet con
    teclado, o navegando con el teclado sin querer. */
 .panel :focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/* Sobre el bloque oscuro del armazón, el borgoña de marca no llega al contraste
+   necesario para marcar el foco. Ahí manda el cobre. */
+.nav-oscura :focus-visible {
+  outline: 2px solid var(--nav-marca);
+  outline-offset: 2px;
 }

@@ -49,7 +49,7 @@ export function HiloConversacion({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="rounded-xl border border-border bg-surface shadow-tarjeta">
+      <div className="rounded-tarjeta border border-border bg-surface shadow-tarjeta">
         {mensajes.length === 0 ? (
           <EstadoVacio
             titulo="Todavía no hay mensajes"
@@ -107,7 +107,7 @@ function Burbuja({ mensaje, mostrarFecha }: { mensaje: MensajeDelHilo; mostrarFe
           }`}
         >
           {esSaliente && ETIQUETA_ORIGEN[origen] ? (
-            <p className="mb-0.5 flex items-center gap-1 font-titulo text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+            <p className="mb-0.5 flex items-center gap-1 font-titulo text-xs font-semibold text-ink-3">
               {origen === "app_whatsapp" ? <IconoMicrofono className="h-3 w-3" /> : null}
               {origen === "panel" ? <IconoPantalla className="h-3 w-3" /> : null}
               {ETIQUETA_ORIGEN[origen]}
@@ -196,7 +196,7 @@ function Redactor({
 
   if (bloqueado) {
     return (
-      <div className="rounded-xl border border-border bg-surface-2 px-4 py-3">
+      <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3">
         <p className="font-titulo text-sm font-semibold text-ink">
           Pasaron más de 24 horas desde su último mensaje
         </p>
@@ -213,7 +213,7 @@ function Redactor({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-surface p-3 shadow-tarjeta">
+    <div className="rounded-tarjeta border border-border bg-surface p-3 shadow-tarjeta">
       <label className="sr-only" htmlFor="redactor">
         Escribir un mensaje
       </label>
@@ -232,7 +232,7 @@ function Redactor({
           }
         }}
         placeholder="Escribí un mensaje…"
-        className="w-full resize-none rounded-lg border border-border bg-surface px-3 py-2 text-base text-ink placeholder:text-ink-3"
+        className="w-full resize-none rounded-control border border-border bg-surface px-3 py-2 text-base text-ink placeholder:text-ink-3"
       />
 
       <div className="mt-2 flex items-center justify-between gap-3">
@@ -256,7 +256,7 @@ function Redactor({
       </div>
 
       {aviso ? (
-        <p role="alert" className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+        <p role="alert" className="mt-2 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
           {aviso.texto}
         </p>
       ) : null}

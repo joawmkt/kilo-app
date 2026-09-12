@@ -11,7 +11,10 @@ export function FormularioLogin({ volver }: { volver: string }) {
   const [estado, accion] = useActionState(iniciarSesion, ESTADO_INICIAL);
 
   return (
-    <Tarjeta className="p-5" as="div">
+    // La tarjeta va elevada porque apoya sobre el vino-negro del fondo: en modo
+    // oscuro la superficie de tarjeta y la del armazón quedan a dos pasos de
+    // luminosidad, y sin sombra el formulario se fundiría con la página.
+    <Tarjeta className="p-5 shadow-elevada" as="div">
       <form action={accion} className="flex flex-col gap-4">
         <input type="hidden" name="volver" value={volver} />
 
@@ -32,7 +35,7 @@ export function FormularioLogin({ volver }: { volver: string }) {
         {estado.error ? (
           <p
             role="alert"
-            className="flex items-start gap-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger"
+            className="flex items-start gap-2 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger"
           >
             <IconoAlerta className="mt-0.5 h-4 w-4 shrink-0" />
             {estado.error}
@@ -67,7 +70,7 @@ function Campo({
         required
         autoComplete={autoComplete}
         placeholder={placeholder}
-        className="min-h-12 rounded-lg border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
+        className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink placeholder:text-ink-3"
       />
     </label>
   );

@@ -38,11 +38,18 @@ export function TarjetaPedidoPendiente({ pedido }: { pedido: PedidoDelPanel }) {
     });
   }
 
+  // Es la única tarjeta del panel que pide una decisión, y por eso es la única
+  // que sube un escalón de sombra y lleva un filo de color arriba. El ámbar no
+  // está de adorno: es el mismo que significa "esperando" en las etiquetas de
+  // estado. Si el filo apareciera también en tarjetas informativas, dejaría de
+  // querer decir nada.
   return (
-    <article className="rounded-xl border border-warning/40 bg-surface shadow-tarjeta">
-      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3">
+    <article className="overflow-hidden rounded-tarjeta border border-border bg-surface shadow-media">
+      <span aria-hidden className="block h-1 bg-warning" />
+
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-border px-4 py-3.5 sm:px-5">
         <div className="min-w-0">
-          <h3 className="font-titulo text-base font-semibold text-ink">
+          <h3 className="font-titulo text-[17px] font-bold tracking-tight text-ink">
             {pedido.clienteNombre ?? formatearTelefono(pedido.telefono)}
           </h3>
           <p className="mt-0.5 text-xs text-ink-3">
@@ -61,16 +68,23 @@ export function TarjetaPedidoPendiente({ pedido }: { pedido: PedidoDelPanel }) {
         </div>
       </div>
 
-      <div className="px-4 py-3">
-        <ul className="flex flex-col gap-1.5">
+      <div className="px-4 py-3.5 sm:px-5">
+        <ul className="flex flex-col">
           {pedido.items.map((item, indice) => (
-            <li key={`${item.producto_id}-${indice}`} className="flex items-baseline justify-between gap-3">
+            <li
+              key={`${item.producto_id}-${indice}`}
+              className="flex items-baseline justify-between gap-3 py-1.5"
+            >
               <span className="min-w-0 text-sm text-ink">
                 {item.nombre_display}
                 {item.sustituye_a_producto_id ? (
                   <span className="ml-1.5 text-xs text-ink-3">(alternativa)</span>
                 ) : null}
               </span>
+              {/* Punteado entre el producto y su cantidad: con cinco o seis
+                  renglones, la vista sola no sostiene la fila y se termina
+                  leyendo la cantidad del producto de al lado. */}
+              <span aria-hidden className="min-w-4 flex-1 border-b border-dotted border-border" />
               <span className="numero shrink-0 text-base font-semibold text-ink">
                 {formatearCantidad(item.cantidad, item.unidad)}
               </span>
@@ -80,19 +94,25 @@ export function TarjetaPedidoPendiente({ pedido }: { pedido: PedidoDelPanel }) {
 
         {pedido.horaRetiro ? (
           <p className="mt-3 flex items-center gap-1.5 text-sm text-ink-2">
-            <IconoReloj className="h-4 w-4" />
-            Retira a las <span className="numero font-semibold text-ink">{formatearHora(pedido.horaRetiro)}</span>
+            <IconoReloj className="h-4 w-4 text-ink-3" />
+            Retira a las{" "}
+            <span className="numero font-semibold text-ink">{formatearHora(pedido.horaRetiro)}</span>
           </p>
         ) : null}
       </div>
 
       {error ? (
-        <p role="alert" className="mx-4 mb-3 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+        <p
+          role="alert"
+          className="mx-4 mb-3 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger sm:mx-5"
+        >
           {error}
         </p>
       ) : null}
 
-      <div className="flex flex-col gap-2 border-t border-border px-4 py-3 sm:flex-row sm:items-center">
+      {/* La barra de acciones va sobre el fondo secundario: separa "lo que hay
+          que decidir" de "con qué se decide" sin agregar otra línea más. */}
+      <div className="flex flex-col gap-2 border-t border-border bg-surface-2 px-4 py-3 sm:flex-row sm:items-center sm:px-5">
         <button
           type="button"
           disabled={pendiente}
@@ -151,7 +171,7 @@ export function FilaPedido({ pedido }: { pedido: PedidoDelPanel }) {
   return (
     <Link
       href={`/panel/pedidos/${pedido.id}`}
-      className="flex min-h-16 items-center gap-3 border-b border-border px-4 py-3 last:border-b-0 hover:bg-surface-2"
+      className="flex min-h-16 items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-surface-2 sm:px-5"
     >
       <div className="min-w-0 flex-1">
         <p className="truncate font-titulo text-sm font-semibold text-ink">

@@ -107,7 +107,7 @@ export function TablaStock({
           value={busqueda}
           onChange={(evento) => setBusqueda(evento.target.value)}
           placeholder="Buscar un corte…"
-          className="min-h-12 w-full rounded-xl border border-border bg-surface pl-11 pr-3 text-base text-ink placeholder:text-ink-3"
+          className="min-h-12 w-full rounded-tarjeta border border-border bg-surface pl-11 pr-3 text-base text-ink placeholder:text-ink-3"
         />
       </label>
 
@@ -133,7 +133,7 @@ export function TablaStock({
                 type="button"
                 onClick={() => setFiltro(valor)}
                 aria-pressed={activo}
-                className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 font-titulo text-sm font-semibold transition-colors ${
+                className={`flex min-h-11 items-center gap-2 rounded-full border px-4 font-titulo text-sm font-semibold transition-colors ${
                   activo
                     ? "border-brand bg-brand-soft text-brand"
                     : "border-border bg-surface text-ink-2 hover:bg-surface-2"
@@ -148,7 +148,7 @@ export function TablaStock({
       </div>
 
       {visibles.length === 0 ? (
-        <div className="rounded-xl border border-border bg-surface">
+        <div className="rounded-tarjeta border border-border bg-surface">
           <EstadoVacio
             titulo="No encontramos nada"
             descripcion={
@@ -173,8 +173,8 @@ export function TablaStock({
       ) : (
         <div className="flex flex-col gap-4">
           {porFamilia.map(([familia, lista]) => (
-            <section key={familia} className="rounded-xl border border-border bg-surface shadow-tarjeta">
-              <h3 className="border-b border-border px-4 py-2.5 font-titulo text-sm font-semibold uppercase tracking-wide text-ink-3">
+            <section key={familia} className="rounded-tarjeta border border-border bg-surface shadow-tarjeta">
+              <h3 className="border-b border-border px-4 py-3 font-titulo text-sm font-bold tracking-tight text-ink sm:px-5">
                 {nombreDeFamilia(familia)}
               </h3>
               <ul>
@@ -367,7 +367,7 @@ function CampoNumero({
             if (evento.key === "Enter") confirmar();
             if (evento.key === "Escape") setEditando(false);
           }}
-          className="numero min-h-11 w-full rounded-lg border-2 border-brand bg-surface px-2 text-right text-base font-semibold text-ink"
+          className="numero min-h-11 w-full rounded-control border-2 border-brand bg-surface px-2 text-right text-base font-semibold text-ink"
         />
       </span>
     );
@@ -385,7 +385,7 @@ function CampoNumero({
       type="button"
       onClick={abrir}
       aria-label={`${etiqueta}: ${texto}. Tocar para cambiar.`}
-      className={`numero min-h-11 ${ancho} whitespace-nowrap rounded-lg border border-border bg-surface px-2 text-right font-semibold transition-colors hover:border-brand hover:bg-brand-soft ${
+      className={`numero min-h-11 ${ancho} whitespace-nowrap rounded-control border border-border bg-surface px-2 text-right font-semibold transition-colors hover:border-brand hover:bg-brand-soft ${
         valor === null ? "text-sm font-normal text-ink-3" : "text-base text-ink"
       } ${guardando ? "opacity-50" : ""}`}
     >

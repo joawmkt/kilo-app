@@ -25,7 +25,7 @@ export function AvisoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaDe
   return (
     <div
       role="status"
-      className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${
+      className={`flex items-start gap-3 rounded-tarjeta border px-4 py-3 ${
         esProblema
           ? "border-danger/40 bg-danger-soft text-danger"
           : "border-warning/40 bg-warning-soft text-warning"

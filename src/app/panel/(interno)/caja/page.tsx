@@ -4,6 +4,7 @@ import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { ingresosDeHoy, ingresosDelMes, ingresosPorDia } from "@/lib/panel/caja";
 import { GraficoBarras } from "@/components/panel/graficos";
 import {
+  EncabezadoPantalla,
   EstadoVacio,
   NumeroGrande,
   Tarjeta,
@@ -51,17 +52,12 @@ export default async function CajaPage() {
   }));
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Caja</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Lo que entró por los pedidos de WhatsApp. Es para tu control, no es un comprobante.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Caja" descripcion="Lo que entró por los pedidos de WhatsApp. Es para tu control, no es un comprobante." />
 
       {/* La advertencia de alcance va arriba de los números, no en una nota al
           pie que nadie lee. */}
-      <div className="rounded-xl border border-border bg-surface-2 px-4 py-3">
+      <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3">
         <p className="font-titulo text-sm font-semibold text-ink">Qué incluyen estos números</p>
         <p className="mt-1 text-sm text-ink-2">
           Solo los pedidos que entraron por WhatsApp y que aprobaste. Lo que vendés en el mostrador

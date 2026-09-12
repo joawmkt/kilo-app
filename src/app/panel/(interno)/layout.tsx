@@ -5,12 +5,17 @@ import { BarraLateral, NavegacionInferior, SelectorDeTema } from "@/components/p
 import { IconoCampana } from "@/components/panel/iconos";
 import { PRODUCTO } from "@/lib/marca";
 
-// Armazón del panel: barra lateral en escritorio, navegación inferior en
-// teléfono, y el encabezado con la campanita.
+// Armazón del panel: columna lateral oscura en escritorio, navegación inferior
+// en teléfono, y una barra superior fina con el contexto y la campanita.
 //
 // Vive en un grupo de rutas `(interno)` — los paréntesis hacen que no aparezca
 // en la URL — para que el login quede fuera de este armazón sin tener que
 // duplicar las tipografías ni el manejo del tema.
+//
+// La barra superior es deliberadamente flaca: el título de cada pantalla lo
+// pone la página con `EncabezadoPantalla`, no el armazón. Repetir el título
+// arriba y abajo es de las cosas que más espacio vertical le roban a un panel
+// que se usa en un teléfono.
 
 // Todo lo que cuelga de acá depende de quién esté logueado y de datos que
 // cambian minuto a minuto (pedidos, stock, mensajes). No hay nada que
@@ -18,56 +23,61 @@ import { PRODUCTO } from "@/lib/marca";
 export const dynamic = "force-dynamic";
 
 export default async function LayoutInterno({ children }: { children: React.ReactNode }) {
-  const [pendientes, enSimulacion, administra] = await Promise.all([
+  const [pendientes, carniceria, administra] = await Promise.all([
     contarPendientes(),
-    estaEnSimulacion(),
+    datosDeCabecera(),
     esAdmin(),
   ]);
 
   return (
     <div className="flex min-h-screen w-full">
       <BarraLateral
-          pendientes={pendientes.pedidos}
-          mostrarSimulador={enSimulacion}
-          mostrarAdmin={administra}
-        />
+        pendientes={pendientes.pedidos}
+        mostrarSimulador={carniceria.enSimulacion}
+        mostrarAdmin={administra}
+      />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Encabezado noLeidos={pendientes.avisos} />
+        <Encabezado noLeidos={pendientes.avisos} nombre={carniceria.nombre} />
 
         {/* El padding de abajo en teléfono deja lugar para la barra fija. */}
-        <main className="min-w-0 flex-1 px-3 pb-28 pt-4 sm:px-5 md:pb-8">{children}</main>
+        <main className="min-w-0 flex-1 px-3 pb-28 pt-5 sm:px-6 md:pb-10 lg:px-8">
+          <div className="mx-auto w-full max-w-6xl">{children}</div>
+        </main>
       </div>
 
       <NavegacionInferior
         pendientes={pendientes.pedidos}
-        mostrarSimulador={enSimulacion}
+        mostrarSimulador={carniceria.enSimulacion}
         mostrarAdmin={administra}
       />
     </div>
   );
 }
 
-function Encabezado({ noLeidos }: { noLeidos: number }) {
+function Encabezado({ noLeidos, nombre }: { noLeidos: number; nombre: string | null }) {
   return (
-    <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-surface/95 px-3 py-2 backdrop-blur sm:px-5">
-      <Link href="/panel" className="font-titulo text-sm font-bold text-ink md:hidden">
+    <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-bg/85 px-3 py-2 backdrop-blur-md sm:px-6 lg:px-8">
+      <Link href="/panel" className="font-titulo text-base font-bold tracking-tight text-ink md:hidden">
         {PRODUCTO}
       </Link>
-      <span className="hidden font-titulo text-sm font-semibold text-ink-2 md:block">
-        Panel de gestión
+
+      {/* En escritorio el nombre del local es el contexto: con varias pestañas
+          abiertas dice de cuál carnicería es este panel. */}
+      <span className="hidden min-w-0 truncate font-titulo text-sm font-semibold text-ink-2 md:block">
+        {nombre ?? "Panel de gestión"}
       </span>
 
       <div className="flex items-center gap-1">
         <SelectorDeTema />
         <Link
           href="/panel/avisos"
-          className="relative flex h-11 w-11 items-center justify-center rounded-lg text-ink-2 hover:bg-surface-2 hover:text-ink"
+          className="relative flex h-11 w-11 items-center justify-center rounded-control text-ink-2 transition-colors hover:bg-surface-2 hover:text-ink"
           aria-label={noLeidos > 0 ? `Avisos, ${noLeidos} sin leer` : "Avisos"}
         >
-          <IconoCampana className="h-6 w-6" />
+          <IconoCampana className="h-[22px] w-[22px]" />
           {noLeidos > 0 ? (
-            <span className="absolute right-1.5 top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold text-surface">
+            <span className="numero absolute right-1.5 top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-danger px-1 text-[10px] font-semibold text-white">
               {noLeidos > 9 ? "9+" : noLeidos}
             </span>
           ) : null}
@@ -105,16 +115,26 @@ async function contarPendientes(): Promise<{ pedidos: number; avisos: number }> 
 }
 
 /**
- * ¿Esta carnicería todavía está en modo simulado? Decide si la navegación
- * muestra el simulador. Igual que los contadores: si falla, el panel tiene que
- * seguir andando.
+ * Lo que el armazón necesita saber de la carnicería: cómo se llama (va en la
+ * barra superior) y si todavía está en modo simulado (decide si la navegación
+ * muestra el simulador).
+ *
+ * Las dos cosas salen de la misma fila, así que salen de la misma consulta.
+ * Igual que los contadores: si falla, el panel tiene que seguir andando.
  */
-async function estaEnSimulacion(): Promise<boolean> {
+async function datosDeCabecera(): Promise<{ nombre: string | null; enSimulacion: boolean }> {
   try {
     const supabase = await getSupabaseServidor();
-    const { data } = await supabase.from("carnicerias").select("whatsapp_proveedor").maybeSingle();
-    return data?.whatsapp_proveedor === "simulado";
+    const { data } = await supabase
+      .from("carnicerias")
+      .select("nombre, nombre_visible, whatsapp_proveedor")
+      .maybeSingle();
+
+    return {
+      nombre: data?.nombre_visible ?? data?.nombre ?? null,
+      enSimulacion: data?.whatsapp_proveedor === "simulado",
+    };
   } catch {
-    return false;
+    return { nombre: null, enSimulacion: false };
   }
 }

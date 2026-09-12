@@ -38,11 +38,11 @@ export function ListaClientes({ clientes }: { clientes: ClienteDelPanel[] }) {
           value={busqueda}
           onChange={(evento) => setBusqueda(evento.target.value)}
           placeholder="Buscar por nombre o teléfono…"
-          className="min-h-12 w-full rounded-xl border border-border bg-surface pl-11 pr-3 text-base text-ink placeholder:text-ink-3"
+          className="min-h-12 w-full rounded-tarjeta border border-border bg-surface pl-11 pr-3 text-base text-ink placeholder:text-ink-3"
         />
       </label>
 
-      <div className="rounded-xl border border-border bg-surface shadow-tarjeta">
+      <div className="rounded-tarjeta border border-border bg-surface shadow-tarjeta">
         {visibles.length === 0 ? (
           <EstadoVacio
             titulo="No encontramos a nadie"

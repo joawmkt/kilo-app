@@ -55,7 +55,7 @@ export default function ConectarPublico() {
     <div className="panel min-h-screen bg-bg font-panel text-ink">
       <header className="border-b border-border bg-surface">
         <div className="mx-auto flex max-w-3xl items-center gap-3 px-5 py-4">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand text-brand-contraste">
+          <span className="flex h-10 w-10 items-center justify-center rounded-tarjeta bg-brand text-brand-contraste">
             <LogoMarca />
           </span>
           <span className="font-titulo text-lg font-bold text-ink">{PRODUCTO}</span>
@@ -93,7 +93,7 @@ export default function ConectarPublico() {
           </ol>
         </Tarjeta>
 
-        <div className="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
+        <div className="rounded-tarjeta border border-warning/40 bg-warning-soft px-4 py-3">
           <p className="font-titulo text-sm font-semibold text-warning">
             Antes de conectar, revisá esto
           </p>

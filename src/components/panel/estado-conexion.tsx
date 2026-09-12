@@ -86,7 +86,7 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
         </div>
 
         {carniceria.whatsappProveedor !== "meta" || !carniceria.whatsappPhoneNumberId ? (
-          <div className="rounded-lg border border-border bg-surface-2 px-3 py-3">
+          <div className="rounded-control border border-border bg-surface-2 px-3 py-3">
             <p className="font-titulo text-sm font-semibold text-ink">
               Todavía no está conectado a WhatsApp
             </p>
@@ -103,7 +103,7 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
 
         {estado.nivel !== "ok" ? (
           <p
-            className={`rounded-lg px-3 py-2.5 text-sm ${
+            className={`rounded-control px-3 py-2.5 text-sm ${
               estado.nivel === "por_vencer"
                 ? "bg-warning-soft text-warning"
                 : "bg-danger-soft text-danger"
@@ -115,7 +115,7 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
 
         {/* La explicación de la regla, siempre visible. Es el tipo de cosa que
             nadie lee hasta que la necesita, y para entonces tiene que estar. */}
-        <div className="rounded-lg bg-surface-2 px-3 py-3 text-sm text-ink-2">
+        <div className="rounded-control bg-surface-2 px-3 py-3 text-sm text-ink-2">
           <p className="font-titulo font-semibold text-ink">Por qué hay que abrir WhatsApp</p>
           <p className="mt-1">
             Tu número funciona en dos lados a la vez: la app de WhatsApp del celular, que usás como
@@ -132,7 +132,7 @@ export function EstadoConexionWhatsapp({ carniceria }: { carniceria: CarniceriaD
 function Dato({ etiqueta, valor, ayuda }: { etiqueta: string; valor: string; ayuda?: string }) {
   return (
     <div>
-      <p className="font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">{etiqueta}</p>
+      <p className="font-titulo text-xs font-semibold text-ink-3">{etiqueta}</p>
       <p className="mt-0.5 text-sm text-ink">{valor}</p>
       {ayuda ? <p className="text-xs text-ink-3">{ayuda}</p> : null}
     </div>

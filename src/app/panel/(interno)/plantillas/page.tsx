@@ -1,6 +1,6 @@
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
-import { EstadoVacio, Etiqueta, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Etiqueta, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
 import type { TonoEtiqueta } from "@/components/panel/ui";
 
 // Plantillas de Meta.
@@ -54,15 +54,10 @@ export default async function PlantillasPage() {
   const enMeta = sesion.carniceria.whatsappProveedor === "meta";
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Plantillas</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Los mensajes que se le pueden mandar a un cliente después de 24 horas sin hablar.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Plantillas" descripcion="Los mensajes que se le pueden mandar a un cliente después de 24 horas sin hablar." />
 
-      <div className="rounded-xl border border-border bg-surface-2 px-4 py-3">
+      <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3">
         <p className="font-titulo text-sm font-semibold text-ink">Para qué sirven</p>
         <p className="mt-1 text-sm text-ink-2">
           Cuando un cliente te escribe se abre una ventana de 24 horas en la que le podés contestar
@@ -77,7 +72,7 @@ export default async function PlantillasPage() {
       </div>
 
       {!enMeta ? (
-        <div className="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-sm text-warning">
+        <div className="rounded-tarjeta border border-warning/40 bg-warning-soft px-4 py-3 text-sm text-warning">
           Tu carnicería todavía está conectada por Twilio. Las plantillas empiezan a usarse cuando el
           número pase a la API de Meta; hasta entonces esta lista es informativa.
         </div>
@@ -124,7 +119,7 @@ export default async function PlantillasPage() {
                 </div>
 
                 {plantilla.estado === "rechazada" && plantilla.motivo_rechazo ? (
-                  <p className="mt-2 rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">
+                  <p className="mt-2 rounded-control bg-danger-soft px-3 py-2 text-sm text-danger">
                     <span className="font-semibold">Meta la rechazó:</span> {plantilla.motivo_rechazo}
                   </p>
                 ) : null}

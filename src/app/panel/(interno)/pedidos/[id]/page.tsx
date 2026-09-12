@@ -9,7 +9,7 @@ import {
   obtenerPedido,
 } from "@/lib/panel/pedidos";
 import { AccionesPedido } from "@/components/panel/acciones-pedido";
-import { Etiqueta, Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
+import { EnlaceVolver, Etiqueta, Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
 import {
   formatearCantidad,
   formatearFechaYHora,
@@ -45,9 +45,7 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <Link href="/panel/pedidos" className="text-sm font-semibold text-brand">
-        ← Volver a pedidos
-      </Link>
+      <EnlaceVolver href="/panel/pedidos">Volver a pedidos</EnlaceVolver>
 
       <Tarjeta>
         <TarjetaEncabezado
@@ -69,10 +67,10 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
           </div>
 
           <div>
-            <h3 className="font-titulo text-sm font-semibold uppercase tracking-wide text-ink-3">
+            <h3 className="font-titulo text-sm font-semibold text-ink-3">
               Productos
             </h3>
-            <ul className="mt-2 divide-y divide-border rounded-lg border border-border">
+            <ul className="mt-2 divide-y divide-border rounded-control border border-border">
               {pedido.items.map((item, indice) => (
                 <li
                   key={`${item.producto_id}-${indice}`}
@@ -110,7 +108,7 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
           {/* El total es estimativo y la pantalla lo dice. El precio final se
               determina al pesar: un número presentado como definitivo que
               después no coincide destruye la confianza en todo el panel. */}
-          <div className="rounded-lg bg-surface-2 px-3 py-3">
+          <div className="rounded-control bg-surface-2 px-3 py-3">
             <div className="flex items-baseline justify-between gap-3">
               <span className="font-titulo text-sm font-semibold text-ink-2">Total estimado</span>
               <span className="numero text-xl font-semibold text-ink">
@@ -127,7 +125,7 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
           </div>
 
           {pedido.clienteAusencias > 0 ? (
-            <p className="flex items-center gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">
+            <p className="flex items-center gap-2 rounded-control bg-warning-soft px-3 py-2 text-sm text-warning">
               Este cliente tiene {pedido.clienteAusencias}{" "}
               {pedido.clienteAusencias === 1 ? "pedido que no retiró" : "pedidos que no retiró"}.
             </p>
@@ -186,7 +184,7 @@ export default async function DetallePedidoPage(props: PageProps<"/panel/pedidos
 function Dato({ etiqueta, valor }: { etiqueta: string; valor: string }) {
   return (
     <div>
-      <p className="font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">{etiqueta}</p>
+      <p className="font-titulo text-xs font-semibold text-ink-3">{etiqueta}</p>
       <p className="mt-0.5 text-sm text-ink">{valor}</p>
     </div>
   );

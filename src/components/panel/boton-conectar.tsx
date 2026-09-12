@@ -192,7 +192,7 @@ export function BotonConectar({ appId, configId }: { appId: string; configId: st
       {mensaje ? (
         <p
           role="status"
-          className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+          className={`mt-3 rounded-control px-3 py-2 text-sm ${
             estado === "ok"
               ? "bg-success-soft text-success"
               : estado === "error"

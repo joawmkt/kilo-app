@@ -1,7 +1,7 @@
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { ListaAvisos } from "@/components/panel/lista-avisos";
-import { EstadoVacio, Tarjeta } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
 
 // Centro de avisos.
 //
@@ -46,15 +46,10 @@ export default async function AvisosPage() {
   const sinLeer = avisos.filter((aviso) => aviso.leidaAt === null);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Avisos</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          {sinLeer.length === 0
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Avisos" descripcion={sinLeer.length === 0
             ? "No tenés avisos sin leer"
-            : `${sinLeer.length} sin leer`}
-        </p>
-      </header>
+            : `${sinLeer.length} sin leer`} />
 
       {avisos.length === 0 ? (
         <Tarjeta>

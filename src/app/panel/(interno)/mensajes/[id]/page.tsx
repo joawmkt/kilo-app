@@ -5,7 +5,7 @@ import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { HiloConversacion } from "@/components/panel/hilo-conversacion";
 import { TomarConversacion } from "@/components/panel/tomar-conversacion";
 import { accionMarcarLeida } from "../../acciones";
-import { clasesBoton } from "@/components/panel/ui";
+import { EnlaceVolver, clasesBoton } from "@/components/panel/ui";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
 import { minutosRestantesDeVentana, ventanaAbierta } from "@/lib/whatsapp/conversaciones";
 
@@ -48,9 +48,7 @@ export default async function ConversacionPage(props: PageProps<"/panel/mensajes
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Link href="/panel/mensajes" className="text-sm font-semibold text-brand">
-          ← Volver a mensajes
-        </Link>
+        <EnlaceVolver href="/panel/mensajes">Volver a mensajes</EnlaceVolver>
 
         {conversacion.cliente_id ? (
           <Link

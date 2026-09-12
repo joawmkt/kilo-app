@@ -265,7 +265,7 @@ export function AccionesPedido({
       {mensaje ? (
         <p
           role="status"
-          className={`rounded-lg px-3 py-2 text-sm ${
+          className={`rounded-control px-3 py-2 text-sm ${
             mensaje.ok ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
           }`}
         >

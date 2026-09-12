@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { Simulador } from "@/components/panel/simulador";
-import { EstadoVacio, Tarjeta, clasesBoton } from "@/components/panel/ui";
+import { clasesBoton, EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
 import { PRODUCTO } from "@/lib/marca";
 import {
   TELEFONO_CARNICERO_SIMULADO,
@@ -97,16 +97,10 @@ export default async function SimuladorPage() {
     .gt("stock_actual", 0);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Simulador</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Probá las dos puntas del sistema sin que salga nada a WhatsApp: el cliente que hace un
-          pedido y la carnicería que carga stock.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Simulador" descripcion="Probá las dos puntas del sistema sin que salga nada a WhatsApp: el cliente que hace un pedido y la carnicería que carga stock." />
 
-      <div className="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3">
+      <div className="rounded-tarjeta border border-warning/40 bg-warning-soft px-4 py-3">
         <p className="font-titulo text-sm font-semibold text-warning">Modo simulado</p>
         <p className="mt-1 text-sm text-warning">
           Nada de lo que pase acá sale a internet, pero <strong>todo lo demás es real</strong>: se

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requerirAdmin, armarChecklist, listarCarnicerias } from "@/lib/panel/admin";
 import {
+  EncabezadoPantalla,
   EstadoVacio,
   Etiqueta,
   NumeroGrande,
@@ -58,13 +59,11 @@ export default async function AdminPage() {
   );
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Administración</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          {MARCA} · {PRODUCTO} — todas las carnicerías y el estado de la plataforma.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+      <EncabezadoPantalla
+        titulo="Administración"
+        descripcion={`Todas las carnicerías de ${PRODUCTO} y el estado de la plataforma de ${MARCA}.`}
+      />
 
       <Tarjeta className="p-4 sm:p-5">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -181,7 +180,7 @@ export default async function AdminPage() {
                 {carniceria.proveedor === "meta" &&
                 carniceria.tieneToken &&
                 !carniceria.webhooksSuscritosAt ? (
-                  <div className="mt-3 rounded-lg bg-danger-soft px-3 py-2">
+                  <div className="mt-3 rounded-control bg-danger-soft px-3 py-2">
                     <p className="text-sm text-danger">
                       Esta carnicería tiene las credenciales guardadas pero no quedó suscrita a los
                       webhooks. Los mensajes de sus clientes no van a llegar nunca.
@@ -233,7 +232,7 @@ export default async function AdminPage() {
 function Dato({ etiqueta, valor }: { etiqueta: string; valor: string }) {
   return (
     <div>
-      <p className="font-titulo text-[11px] font-semibold uppercase tracking-wide text-ink-3">
+      <p className="font-titulo text-xs font-semibold text-ink-3">
         {etiqueta}
       </p>
       <p className="numero text-base font-semibold text-ink">{valor}</p>

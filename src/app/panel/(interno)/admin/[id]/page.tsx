@@ -1,8 +1,7 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requerirAdmin, listarCarnicerias } from "@/lib/panel/admin";
 import { AccionesCarniceria } from "@/components/panel/acciones-admin";
-import { Etiqueta, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
+import { EnlaceVolver, Etiqueta, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
 import { formatearFechaYHora, formatearRelativo } from "@/lib/panel/formatos";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
 
@@ -15,10 +14,8 @@ export default async function DetalleCarniceriaAdmin(props: PageProps<"/panel/ad
   if (!carniceria) notFound();
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <Link href="/panel/admin" className="text-sm font-semibold text-brand">
-        ← Volver a administración
-      </Link>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EnlaceVolver href="/panel/admin">Volver a administración</EnlaceVolver>
 
       <Tarjeta>
         <TarjetaEncabezado
@@ -95,7 +92,7 @@ function Dato({
 }) {
   return (
     <div>
-      <dt className="font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">
+      <dt className="font-titulo text-xs font-semibold text-ink-3">
         {etiqueta}
       </dt>
       <dd className={`mt-0.5 break-all text-sm text-ink ${mono ? "numero" : ""}`}>{valor}</dd>

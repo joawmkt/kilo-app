@@ -1,7 +1,7 @@
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { ListaClientes } from "@/components/panel/lista-clientes";
-import { EstadoVacio, Tarjeta } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
 
 // Clientes.
 //
@@ -60,15 +60,10 @@ export default async function ClientesPage() {
     });
 
   return (
-    <div className="mx-auto flex w-full max-w-4xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Clientes</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          {clientes.length === 0
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Clientes" descripcion={clientes.length === 0
             ? "Todavía no hay clientes"
-            : `${clientes.length} ${clientes.length === 1 ? "cliente" : "clientes"}`}
-        </p>
-      </header>
+            : `${clientes.length} ${clientes.length === 1 ? "cliente" : "clientes"}`} />
 
       {clientes.length === 0 ? (
         <Tarjeta>

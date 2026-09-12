@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
-import { EstadoVacio, Etiqueta, Tarjeta } from "@/components/panel/ui";
+import { EncabezadoPantalla, EstadoVacio, Etiqueta, Tarjeta } from "@/components/panel/ui";
 import { formatearRelativo } from "@/lib/panel/formatos";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
 import { minutosRestantesDeVentana, ventanaAbierta } from "@/lib/whatsapp/conversaciones";
@@ -47,15 +47,10 @@ export default async function MensajesPage() {
   const delLocal = conversaciones.filter((conversacion) => conversacion.esCarnicero);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Mensajes</h1>
-        <p className="mt-0.5 text-sm text-ink-2">
-          Todo lo que se habló por el WhatsApp de la carnicería, y desde acá podés contestar.
-        </p>
-      </header>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Mensajes" descripcion="Todo lo que se habló por el WhatsApp de la carnicería, y desde acá podés contestar." />
 
-      <p className="rounded-xl border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
+      <p className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3 text-sm text-ink-2">
         Seguís teniendo WhatsApp en el celular como siempre: esto no lo reemplaza. Los mensajes que
         mandes desde el celular también aparecen acá, pero el contador de no leídos puede no
         coincidir con lo que ya viste allá.
@@ -95,7 +90,7 @@ function Grupo({ titulo, conversaciones }: { titulo: string; conversaciones: Con
 
   return (
     <section>
-      <h2 className="mb-1.5 font-titulo text-xs font-semibold uppercase tracking-wide text-ink-3">
+      <h2 className="mb-2 font-titulo text-sm font-semibold text-ink-2">
         {titulo}
       </h2>
 
@@ -109,7 +104,7 @@ function Grupo({ titulo, conversaciones }: { titulo: string; conversaciones: Con
               <li key={conversacion.id}>
                 <Link
                   href={`/panel/mensajes/${conversacion.id}`}
-                  className="flex min-h-16 items-center gap-3 border-b border-border px-4 py-3 last:border-b-0 hover:bg-surface-2"
+                  className="flex min-h-16 items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-surface-2 sm:px-5"
                 >
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">

@@ -13,7 +13,7 @@ import {
   type OpcionProducto,
 } from "@/components/panel/configuracion-formularios";
 import { EstadoConexionWhatsapp } from "@/components/panel/estado-conexion";
-import { Tarjeta, TarjetaEncabezado, clasesBoton } from "@/components/panel/ui";
+import { clasesBoton, EncabezadoPantalla, Tarjeta, TarjetaEncabezado } from "@/components/panel/ui";
 import { formatearTelefono } from "@/lib/whatsapp/telefonos";
 
 export default async function ConfiguracionPage() {
@@ -55,11 +55,8 @@ export default async function ConfiguracionPage() {
     ]);
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-      <header>
-        <h1 className="font-titulo text-xl font-bold text-ink sm:text-2xl">Configuración</h1>
-        <p className="mt-0.5 text-sm text-ink-2">Los datos de tu carnicería y cómo atiende el bot.</p>
-      </header>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
+      <EncabezadoPantalla titulo="Configuración" descripcion="Los datos de tu carnicería y cómo atiende el bot." />
 
       {/* La conexión de WhatsApp va primero: es la falla más probable en
           producción y la más silenciosa. */}

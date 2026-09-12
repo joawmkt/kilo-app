@@ -1,3 +1,11 @@
+> ⚠️ **SUPERADO el 12/09/2026 por `docs/media-res-diseno-final.md`.**
+>
+> Este documento es la propuesta v1. Se conserva porque explica el razonamiento original, pero el
+> diseño que se construye es el del documento final, que sintetiza esta propuesta con otras dos
+> hechas de forma independiente sobre el mismo pedido. Lo que cambió respecto de acá: los cinco
+> pesos en vez de uno, el perfil versionado, los estados de confianza, la reserva de seguridad, el
+> zero-out por piezas y la calibración a partir de las ventas.
+
 # Stock por media res — propuesta de diseño
 
 **Documento de propuesta para KILO — 10/09/2026**

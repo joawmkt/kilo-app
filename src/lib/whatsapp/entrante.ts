@@ -9,6 +9,7 @@ import {
   transcribirAudioDeCliente,
 } from "@/lib/flujoPedidos";
 import { esCarniceroAutorizado } from "@/lib/quienEs";
+import { probarComoMediaRes } from "@/lib/flujoMediaRes";
 import { registrarMensaje } from "./conversaciones";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { aFormatoCanonico } from "./telefonos";
@@ -158,6 +159,19 @@ async function enrutar(params: {
         texto: mensaje.texto,
       });
       if (respuestaDecision !== null) return respuestaDecision;
+
+      // ¿Está avisando que entró una media res? Va ANTES del flujo de stock
+      // genérico porque son dos operaciones distintas: una carga de stock SUMA
+      // kilos a un producto, una media res TRANSFORMA (entra una pieza grande y
+      // salen 28 cortes, hueso, grasa y merma). Si esto devuelve null, el
+      // mensaje sigue de largo y no se pierde nada.
+      const respuestaMediaRes = await probarComoMediaRes({
+        carniceriaId,
+        telefono,
+        mensajeWhatsappId: mensajeId,
+        texto: mensaje.texto,
+      });
+      if (respuestaMediaRes !== null) return respuestaMediaRes;
 
       // Último recurso: un texto suelto del carnicero se trata como el arranque
       // de una carga de stock, igual que un audio suelto.

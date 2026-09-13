@@ -175,3 +175,48 @@ cuando quieras"*, por si lo quiere retirar antes de la hora que había acordado.
   recuerden a qué hora quedó.
 - **Pendiente**: hoy es solo por panel. Que el carnicero pueda contestar "listo" por WhatsApp es
   posible, pero hay que resolver a cuál pedido se refiere cuando tiene varios aprobados.
+
+### 13/09/2026 — Stock por media res (fuera de especificación del bot)
+
+El módulo completo del diseño de `docs/media-res-diseno-final.md`, Etapa 1 y 2. Migraciones `0022`
+a `0024`.
+
+**Lo que se puede hacer ahora:**
+
+1. **Cargar una media res hablando.** *"Llegó una media res de ciento cuatro kilos seiscientos"* →
+   el bot confirma → se crean 28 piezas estimadas. Dos confirmaciones como máximo.
+2. **Cargarla por panel**, en `/panel/stock/medias-reses`. Es el respaldo, no el camino principal.
+3. **Ver el balance del lote**: dónde fue a parar cada kilo, con el descuadre como renglón.
+4. **Ver el costo real por kilo vendible** y el margen por corte.
+5. **Marcar que un corte se acabó**, que además calibra la tabla.
+
+**Decisiones que conviene no volver a discutir:**
+
+- **El stock son piezas y los kilos viven adentro de cada pieza.** No existe una tabla de "kilos por
+  corte": se suman las piezas. Por eso las dos vistas (en kilos y en piezas) no pueden contradecirse.
+- **`productos.stock_actual` es un cache** de esa suma y sigue siendo lo único que lee el bot. Toda
+  función que toca una pieza lo recalcula. Por eso nada del bot hubo que tocarlo.
+- **Dos estados de confianza**, no seis: `estimado` y `pesado`. Un peso real REEMPLAZA al estimado,
+  nunca se suma.
+- **El descuadre es un renglón de la ecuación, no un error.** El balance siempre cierra porque el
+  descuadre es la línea que lo hace cerrar. No se espera que dé cero: lo que se gestiona es su tamaño.
+- **El cierre al 100 % es sobre la TABLA de rendimiento, no sobre el stock físico.** La tabla es una
+  receta y si suma 108 % está rota; el físico nunca cierra y está bien que así sea.
+- **El intérprete de media res es aparte del de stock** (`interpretarMediaRes.ts`). Son operaciones
+  distintas: una carga de stock SUMA kilos, una media res TRANSFORMA. Ante la duda devuelve
+  "no es una media res" y el mensaje sigue al flujo de siempre, que es el error barato.
+- **La media res pendiente vive en `operaciones_stock`**, no en una tabla propia: para el carnicero
+  hay una sola cosa pendiente a la vez, así que su "sí" nunca es ambiguo.
+
+**Descuento de stock al aprobar un pedido:** ahora descuenta POR PIEZA (la más vieja primero, FEFO)
+cuando el producto tiene piezas de alguna media res, y cae al descuento de siempre sobre
+`stock_actual` cuando no las tiene. El fallback no es transitorio: el pollo, el cerdo y las achuras
+nunca van a venir de una media res.
+
+**Códigos del IPCVA:** se cargaron solo los 12 verificados contra el nomenclador publicado. El resto
+quedó en `NULL` a propósito — un código inventado se lee como oficial. Dos trampas anotadas en la
+migración `0022`: "tapa de asado" NO es el 2310 (ese es "Tapa de Aguja – Asado de Carnicero", del
+delantero), y la marucha tiene dos ubicaciones según la fuente.
+
+**Lo que falta:** el peso real al marcar un pedido como retirado (dispara la calibración), y la caja
+para la venta presencial.

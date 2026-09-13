@@ -7,6 +7,8 @@ import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
 import { revisarStockDeProducto } from "./notificaciones";
 import { esCarniceroAutorizado } from "./quienEs";
+import { responderSobreMediaRes } from "./flujoMediaRes";
+import { mencionaMediaRes } from "./interpretarMediaRes";
 
 // Máquina de estados "INTERPRETAR → VALIDAR → CONFIRMAR → EJECUTAR" de la
 // especificación "Botonera de confirmación por WhatsApp" (22/08/2026).
@@ -28,6 +30,8 @@ type OperacionPendiente = {
   pregunta_pendiente: string | null;
   itemParcial?: ItemParcial;
   vencida: boolean;
+  /** La interpretación sin filtrar: el flujo de media res la mira para saber si esta operación es suya. */
+  interpretacionCruda: unknown;
 };
 
 function emojiParaFamilia(familia: string): string {
@@ -105,6 +109,9 @@ async function obtenerOperacionPendienteActiva(
     pregunta_pendiente: (data.pregunta_pendiente as string | null) ?? null,
     itemParcial,
     vencida: estaVencida,
+    // Cruda, sin filtrar por tipo: el flujo de media res necesita mirarla para
+    // reconocer si esta operación es suya.
+    interpretacionCruda: data.interpretacion ?? null,
   };
 }
 
@@ -414,6 +421,48 @@ export async function procesarTextoEntrante(params: {
 
   const op = await obtenerOperacionPendienteActiva(carniceriaId, telefono);
   if (!op) return null; // nada pendiente de stock — Etapa 3 se ocupa de mensajes sueltos
+
+  // Una media res pendiente vive en ESTA misma tabla, a propósito: para el
+  // carnicero hay una sola cosa pendiente a la vez, así que su "sí" nunca es
+  // ambiguo. Si la operación resulta ser una media res, la maneja su flujo.
+  const respuestaMediaRes = await responderSobreMediaRes({
+    carniceriaId,
+    operacion: { id: op.id, estado: op.estado, interpretacion: op.interpretacionCruda },
+    texto,
+  });
+  if (respuestaMediaRes !== null) return respuestaMediaRes;
+
+  // ------------------------------------------------------------
+  // Un aviso de media res ABANDONA la operación de stock pendiente
+  // ------------------------------------------------------------
+  //
+  // La regla general —"si hay algo pendiente, el mensaje es sobre ESO"— es
+  // correcta y hay que respetarla: es lo que hace que "no, eran 12 kilos" se
+  // lea como corrección y no como mensaje nuevo.
+  //
+  // Pero tiene un agujero que ya nos mordió dos veces: si la operación pendiente
+  // quedó vieja o mal, se traga TODO lo que venga después. El carnicero escribe
+  // "llegó una media res de 102 kg" y el modelo, al que se le dijo que eso es la
+  // respuesta a una pregunta sobre cortes, contesta "¿de cuál corte es la media
+  // res?". El modelo hizo bien su trabajo; el contexto estaba mal.
+  //
+  // "Llegó una media res de 102 kg" no es la respuesta a nada: es un hecho nuevo.
+  // Así que cuando el texto nombra una media res con todas las letras, la
+  // operación vieja se cancela y el mensaje sigue su camino.
+  //
+  // La detección es un regex, no el modelo: cuesta cero y no puede dudar.
+  if (mencionaMediaRes(texto)) {
+    await getSupabaseAdmin()
+      .from("operaciones_stock")
+      .update({
+        estado: "cancelado",
+        updated_at: new Date().toISOString(),
+        pregunta_pendiente: null,
+      })
+      .eq("id", op.id);
+
+    return null; // sigue al flujo de media res
+  }
 
   if (op.vencida) {
     const intento = clasificarRespuesta(texto);

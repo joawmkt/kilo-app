@@ -21,6 +21,7 @@ import { responderConsulta, respuestaSinDato } from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { esCarniceroAutorizado } from "./quienEs";
+import { consumirDeProducto } from "./mediaRes";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -1889,11 +1890,40 @@ export async function aprobarPedido(params: {
       continue;
     }
 
-    const nuevoStock = Math.max(0, Number(producto.stock_actual) - item.cantidad);
-    await supabaseAdmin
-      .from("productos")
-      .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora, stock_origen: "pedido" })
-      .eq("id", item.producto_id);
+    // ------------------------------------------------------------
+    // Descontar el stock
+    // ------------------------------------------------------------
+    //
+    // Hay dos formas, y conviven a propósito:
+    //
+    // 1. POR PIEZA, si ese producto tiene piezas de alguna media res. Descuenta
+    //    de la pieza MÁS VIEJA primero (FEFO), deja registrado de qué lote salió
+    //    y con qué causa, y recalcula `productos.stock_actual`. Es lo que hace
+    //    que después se pueda saber cuánto rindió esa media res y cuánto costó
+    //    de verdad el kilo que se vendió.
+    //
+    // 2. RESTANDO DE `stock_actual`, como siempre, si no hay piezas.
+    //
+    // El fallback no es transitorio: es lo correcto. Hay productos que nunca van
+    // a venir de una media res (pollo, cerdo, chorizo, achuras) y otros que se
+    // cargan por audio sin lote. Obligar a todo a pasar por piezas rompería la
+    // mitad del catálogo el primer día.
+    const consumo = await consumirDeProducto({
+      carniceriaId,
+      productoId: item.producto_id,
+      kg: item.cantidad,
+      tipo: "venta",
+      causa: "Pedido aprobado",
+      pedidoId,
+    });
+
+    if (consumo.kgConsumidos <= 0) {
+      const nuevoStock = Math.max(0, Number(producto.stock_actual) - item.cantidad);
+      await supabaseAdmin
+        .from("productos")
+        .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora, stock_origen: "pedido" })
+        .eq("id", item.producto_id);
+    }
 
     const precio = producto.precio === null || producto.precio === undefined ? null : Number(producto.precio);
     if (precio === null) faltaAlgunPrecio = true;

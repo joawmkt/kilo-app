@@ -2,7 +2,8 @@ import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { listarProductos } from "@/lib/panel/productos";
 import { TablaStock } from "@/components/panel/tabla-stock";
-import { EncabezadoPantalla, EstadoVacio, Tarjeta } from "@/components/panel/ui";
+import Link from "next/link";
+import { EncabezadoPantalla, EstadoVacio, Tarjeta, clasesBoton } from "@/components/panel/ui";
 import { IconoMicrofono } from "@/components/panel/iconos";
 
 export default async function StockPage(props: PageProps<"/panel/stock">) {
@@ -21,7 +22,15 @@ export default async function StockPage(props: PageProps<"/panel/stock">) {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-      <EncabezadoPantalla titulo="Stock y precios" descripcion="Tocá cualquier número para corregirlo." />
+      <EncabezadoPantalla
+        titulo="Stock y precios"
+        descripcion="Tocá cualquier número para corregirlo."
+        accion={
+          <Link href="/panel/stock/medias-reses" className={clasesBoton("secundario")}>
+            Medias reses
+          </Link>
+        }
+      />
 
       {/* Recordatorio explícito de que esta pantalla NO reemplaza a la voz.
           Si el panel termina siendo la forma más cómoda de cargar stock, algo

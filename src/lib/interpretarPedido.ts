@@ -1,10 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { modeloPedidos } from "./modelos";
 
 // Intérprete de mensajes del CLIENTE (Etapa 3) — mismo patrón que
 // src/lib/interpretarStock.ts (herramienta con schema fijo + Claude Haiku),
 // pero para armar un pedido en vez de actualizar stock.
 
-const MODELO = process.env.CLAUDE_MODEL_HAIKU || "claude-haiku-4-5-20251001";
 
 let client: Anthropic | null = null;
 
@@ -350,7 +350,7 @@ export async function interpretarMensajePedido(
   contexto?: ContextoPedidoPendiente
 ): Promise<ResultadoInterpretacionPedido> {
   const respuesta = await getClient().messages.create({
-    model: MODELO,
+    model: modeloPedidos(),
     max_tokens: 1024,
     system: construirSystemPrompt(promptCatalogo, ahoraArgentinaIso, contexto),
     messages: [{ role: "user", content: texto }],

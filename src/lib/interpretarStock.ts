@@ -1,9 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { modeloStock } from "./modelos";
 
 // Modelo pineado por defecto — Claude Haiku 4.5. Se puede pisar con
 // CLAUDE_MODEL_HAIKU si Anthropic publica una versión nueva; conviene
 // revisar de vez en cuando en https://platform.claude.com/docs/en/about-claude/models/overview
-const MODELO = process.env.CLAUDE_MODEL_HAIKU || "claude-haiku-4-5-20251001";
 
 let client: Anthropic | null = null;
 
@@ -188,7 +188,7 @@ export async function interpretarMensajeStock(
   contexto?: ContextoPendiente
 ): Promise<ResultadoInterpretacion> {
   const respuesta = await getClient().messages.create({
-    model: MODELO,
+    model: modeloStock(),
     max_tokens: 1024,
     system: construirSystemPrompt(promptCatalogo, contexto),
     messages: [{ role: "user", content: texto }],

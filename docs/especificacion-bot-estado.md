@@ -220,3 +220,66 @@ delantero), y la marucha tiene dos ubicaciones según la fuente.
 
 **Lo que falta:** el peso real al marcar un pedido como retirado (dispara la calibración), y la caja
 para la venta presencial.
+
+### 13/09/2026 — Cintura conversacional: léxico, doble confirmación, sustitutos y repetición
+
+Cuatro fallas reportadas por el fundador probando en el simulador. Las cuatro se
+arreglaron cerrando la clase de problema, no el caso puntual.
+
+**1. El bot no reconocía "sí" y "no" dichos como los dice la gente.**
+`src/lib/confirmacion.ts` comparaba el mensaje ENTERO contra una lista de frases:
+"dale" andaba, "dale no hay problema" no. Ahora el mensaje se parte en palabras
+(y en emojis sueltos) y cada palabra tiene que ser una frase de confirmación, de
+cancelación, de modificación, o relleno sin contenido. **Si sobra una sola
+palabra que no sea ninguna de esas cosas, se devuelve `null` y el mensaje va a la
+IA con el contexto** — que es lo que mantiene intacto el caso "no, eran 12 kilos"
+(una corrección, no una cancelación). Las frases se prueban de la más larga a la
+más corta, y por eso los "sí" argentinos que empiezan con "no" ("no hay problema",
+"no hay drama", "no pasa nada") ganan contra el "no" pelado.
+Emojis reconocidos: 👍 👌 ✅ ✔ ☑ 🆗 💯 🤙 👏 🫡 🤝 / ❌ 👎 🚫 ⛔ 🙅. Cualquier otro
+emoji acompaña pero no decide.
+`confirmacionPedido.ts` sigue teniendo su propia lista corta a propósito (para que
+un "dale" del carnicero no sea ambiguo entre stock y pedidos), pero ahora comparte
+la limpieza de texto con `confirmacion.ts` en vez de duplicarla.
+
+**2. Aceptar un cambio del carnicero reabría el pedido.** Cuando el carnicero
+proponía otro horario, `decisionCarnicero.ts` dejaba el pedido en la fase
+`esperando_confirmacion_final` — la misma que se usa cuando el cliente todavía no
+vio el resumen. El "dale" del cliente hacía que el bot le mostrara el pedido
+entero y le preguntara "¿está bien así?". Ahora hay una fase propia
+(`esperando_aceptacion_cambio`): un sí ahí aprueba el pedido (descuenta stock,
+congela total, avisa al carnicero — regla 4) y contesta con la confirmación
+final, sin repreguntar nada. Un "no" no cancela: pregunta qué horario le sirve.
+También se le refresca el `expires_at` al pedido, que venía con el vencimiento de
+4 h de la aprobación y podía morirse mientras el cliente pensaba.
+
+**3. Sustitutos sin chequear stock.** El filtro de stock ahora vive en una sola
+función, `buscarSustitutosConStock` (`alternativas.ts`), y no hay ningún camino
+que devuelva un sustituto sin pasar por ahí. Se sumó el tema de consulta
+`sustitutos` ("¿tenés algo parecido?", "¿con qué lo cambio?"): la IA solo
+clasifica y dice de qué producto habla — **nunca nombra el reemplazo**, porque
+los pares autorizados están en la base y el stock lo verifica el código.
+`responderStock` también cambió: cuando de algo no hay, ya no termina en "no me
+queda" sino que ofrece lo que sí hay y sirve. Si no hay sustituto autorizado con
+stock, se dice que no hay: no se inventa uno parecido.
+
+**4. El bot repetía la misma pregunta palabra por palabra.** Dos arreglos, uno
+puntual y uno general.
+- Puntual: "¿cuántos son hombres y cuántas mujeres?" contestado con "1 y 1" no se
+  entendía. Se agregó `src/lib/personas.ts`, un lector determinístico (sin IA) de
+  ese desglose: "1 y 1", "2 varones y 1 mujer", "2 son mujeres" sobre un total
+  conocido, "todos hombres", "mitad y mitad". **No reemplaza a la IA, la
+  respalda**: primero se usa lo que trae el intérprete (que ve el mensaje entero
+  y puede traer también la hora o un producto nuevo) y esto completa lo que falte.
+  Además la pregunta tiene escalera: al segundo intento se pide más simple y con
+  ejemplo de formato, y al tercero se deja de insistir y se calcula con el
+  promedio de KG_POR_HOMBRE y KG_POR_MUJER. Un dato de estimación no puede trabar
+  un pedido.
+- General: `variarSiSeRepite` se aplica a CUALQUIER pregunta antes de mandarla —
+  incluidas las que escribe la IA. Si es idéntica a la anterior, le cambia la
+  entrada, rotando entre variantes para que dos repeticiones seguidas tampoco
+  suenen iguales.
+
+Archivos tocados: `confirmacion.ts`, `confirmacionPedido.ts`, `alternativas.ts`,
+`consultas.ts`, `interpretarPedido.ts`, `decisionCarnicero.ts`, `flujoPedidos.ts`,
+y el nuevo `personas.ts`. Sin migraciones.

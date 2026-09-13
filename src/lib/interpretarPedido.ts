@@ -88,6 +88,7 @@ export type TemaConsulta =
   | "promociones"
   | "delivery"
   | "stock"
+  | "sustitutos"
   | "otro";
 
 const TEMAS_CONSULTA: TemaConsulta[] = [
@@ -97,6 +98,7 @@ const TEMAS_CONSULTA: TemaConsulta[] = [
   "promociones",
   "delivery",
   "stock",
+  "sustitutos",
   "otro",
 ];
 
@@ -145,20 +147,25 @@ const TOOL_SCHEMA: Anthropic.Tool = {
       },
       consulta_tema: {
         type: "string",
-        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "otro"],
+        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "sustitutos", "otro"],
         description:
           "Solo si tipo=consulta. De qué está preguntando: 'horarios' (a qué hora abren/cierran, si abren tal " +
           "día), 'direccion' (dónde están, cómo llegar), 'medios_pago' (si toman tarjeta, transferencia, QR), " +
           "'promociones' (si hay promos/ofertas), 'delivery' (si llevan a domicilio, si mandan), 'stock' (si " +
-          "tienen tal producto disponible, SIN pedirlo todavía), 'otro' para cualquier otra pregunta. " +
+          "tienen tal producto disponible, SIN pedirlo todavía), 'sustitutos' (pide un REEMPLAZO o algo " +
+          "parecido: '¿tenés algo parecido?', '¿qué me recomendás en lugar de eso?', '¿con qué lo puedo " +
+          "cambiar?', '¿y algo similar?'), 'otro' para cualquier otra pregunta. " +
           "NO inventes la respuesta: el sistema la arma con los datos reales de la carnicería.",
       },
       productos_consultados: {
         type: "array",
         description:
-          "Solo si tipo=consulta y consulta_tema='stock'. Los códigos de los productos por los que pregunta " +
-          "(EXACTAMENTE los de PRODUCTOS ACTIVOS). Ojo con la diferencia: '¿tenés vacío?' es una consulta de " +
-          "stock; 'dame 2 kg de vacío' es un pedido.",
+          "Solo si tipo=consulta y consulta_tema es 'stock' o 'sustitutos'. Los códigos de los productos por " +
+          "los que pregunta (EXACTAMENTE los de PRODUCTOS ACTIVOS). Ojo con la diferencia: '¿tenés vacío?' es " +
+          "una consulta de stock; 'dame 2 kg de vacío' es un pedido. Si el tema es 'sustitutos', poné acá el " +
+          "producto que quiere REEMPLAZAR (el que no hay), no el reemplazo — el reemplazo lo elige el sistema. " +
+          "Si pregunta por algo parecido sin nombrar el producto ('¿y algo parecido?'), dejá la lista vacía: " +
+          "el sistema sabe de qué producto se venía hablando.",
         items: { type: "string" },
       },
       items: {
@@ -327,6 +334,11 @@ Reglas:
   hacen delivery, o si tenés tal corte), respondé tipo "consulta" con "consulta_tema". NUNCA escribas vos la
   respuesta ni inventes horarios, direcciones, promociones ni medios de pago: el sistema los busca en los
   datos reales de la carnicería. Vos solo clasificás de qué está preguntando.
+- Si el cliente pide un REEMPLAZO ("¿tenés algo parecido?", "¿con qué lo puedo cambiar?", "¿qué me
+  recomendás en lugar de eso?"), es tipo "consulta" con tema "sustitutos". **NUNCA nombres vos el corte de
+  reemplazo, aunque se te ocurra uno obvio.** Los reemplazos válidos están cargados en la base carnicería por
+  carnicería, y el sistema además verifica que el reemplazo TENGA STOCK antes de ofrecerlo. Si lo nombrás vos,
+  vas a ofrecer algo que puede no existir o estar agotado, que es la peor falla posible del bot.
 - Cuidado con la diferencia entre consultar y pedir: "¿tenés vacío?" es tipo "consulta" con tema "stock";
   "dame 2 kg de vacío" es tipo "pedido". Si en el mismo mensaje pregunta Y pide ("¿tenés vacío? dame 2 kg"),
   tratalo como pedido — el pedido ya contesta la pregunta.

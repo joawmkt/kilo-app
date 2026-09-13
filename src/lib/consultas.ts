@@ -1,6 +1,7 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { CatalogoCarniceria } from "./catalogo";
+import { CatalogoCarniceria, Producto } from "./catalogo";
 import { listarParaElCliente, mediosPagoHabilitados } from "./mediosPago";
+import { buscarSustitutosConStock } from "./alternativas";
 
 // ============================================================
 // Atención general — especificación del bot, secciones 1.1 y 15 a 21
@@ -27,6 +28,7 @@ export type TemaConsulta =
   | "promociones"
   | "delivery"
   | "stock"
+  | "sustitutos"
   | "otro";
 
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -196,38 +198,135 @@ async function responderPromociones(carniceriaId: string): Promise<string> {
 }
 
 // ------------------------------------------------------------
-// Stock (secciones 1.1 y 37-38)
+// Stock y sustitutos (secciones 1.1, 5 y 37-38)
 // ------------------------------------------------------------
 //
 // Responde "¿tenés vacío?" sin decir CUÁNTO hay: al cliente le importa si
 // puede pedirlo, y el kilaje exacto es información interna del negocio (es la
 // misma razón por la que la sección 46 pide listar cortes "sin los kg").
-function responderStock(catalogo: CatalogoCarniceria, codigos: string[]): string | null {
+//
+// ⚠️ Regla del 13/09/2026: cuando de algo NO hay, la respuesta no termina en
+// "no me queda". Se busca un sustituto autorizado — y el buscador solo
+// devuelve los que TIENEN STOCK (ver alternativas.ts). Nunca se nombra un
+// reemplazo sin haber mirado el stock, y nunca lo elige la IA: los pares
+// autorizados están en la base y el filtro de stock es del código.
+
+/**
+ * Los nombres de los sustitutos autorizados CON STOCK de un producto.
+ * Devuelve [] si no hay ninguno — y ahí no se ofrece nada, que es lo correcto.
+ */
+async function sustitutosDisponibles(
+  carniceriaId: string,
+  catalogo: CatalogoCarniceria,
+  producto: Producto,
+  yaExcluidos: Set<string>
+): Promise<string[]> {
+  const opciones = await buscarSustitutosConStock({
+    carniceriaId,
+    catalogo,
+    productoFaltante: producto,
+    yaExcluidos,
+  });
+  for (const o of opciones) yaExcluidos.add(o.producto.id);
+  // Dos alcanzan: una lista larga en WhatsApp no la lee nadie.
+  return opciones.slice(0, 2).map((o) => o.producto.nombre_display);
+}
+
+function enumerar(nombres: string[]): string {
+  if (nombres.length <= 1) return nombres[0] ?? "";
+  return `${nombres.slice(0, -1).join(", ")} o ${nombres[nombres.length - 1]}`;
+}
+
+async function responderStock(
+  carniceriaId: string,
+  catalogo: CatalogoCarniceria,
+  codigos: string[]
+): Promise<string | null> {
   if (codigos.length === 0) return null;
 
   const hay: string[] = [];
-  const noHay: string[] = [];
+  const noHay: Producto[] = [];
 
   for (const codigo of codigos) {
     const producto = catalogo.porCodigo.get(codigo);
     if (!producto) continue;
     if (producto.stock_actual > 0) hay.push(producto.nombre_display);
-    else noHay.push(producto.nombre_display);
+    else noHay.push(producto);
   }
 
   if (hay.length === 0 && noHay.length === 0) return null;
 
   const partes: string[] = [];
   if (hay.length > 0) partes.push(`Sí, tenemos ${hay.join(", ")}.`);
+
   if (noHay.length > 0) {
+    const nombres = noHay.map((p) => p.nombre_display);
     partes.push(
       hay.length > 0
-        ? `De ${noHay.join(", ")} no me queda en este momento.`
-        : `Justo de ${noHay.join(", ")} no me queda en este momento.`
+        ? `De ${nombres.join(", ")} no me queda en este momento.`
+        : `Justo de ${nombres.join(", ")} no me queda en este momento.`
     );
+
+    // Antes de decir "no hay" y cortar, se mira si hay un reemplazo REAL.
+    const yaExcluidos = new Set<string>(noHay.map((p) => p.id));
+    const alternativas: string[] = [];
+    for (const producto of noHay) {
+      alternativas.push(...(await sustitutosDisponibles(carniceriaId, catalogo, producto, yaExcluidos)));
+    }
+
+    if (alternativas.length > 0) {
+      partes.push(`Lo que sí tengo y te puede servir es ${enumerar(alternativas)}. ¿Te sirve?`);
+      return partes.join(" ");
+    }
   }
+
   partes.push("¿Te preparo algo?");
 
+  return partes.join(" ");
+}
+
+/**
+ * "¿Tenés algo parecido?" — la consulta explícita por un reemplazo.
+ *
+ * El cliente puede preguntarlo sin nombrar el producto ("¿y algo parecido?"),
+ * así que quien llama tiene que pasarle el producto del que se venía
+ * hablando. Sin referencia no se adivina: se repregunta (regla 2, nunca
+ * suponer ante ambigüedad).
+ */
+async function responderSustitutos(
+  carniceriaId: string,
+  catalogo: CatalogoCarniceria,
+  codigos: string[]
+): Promise<string | null> {
+  const productos = codigos
+    .map((c) => catalogo.porCodigo.get(c))
+    .filter((p): p is Producto => p != null);
+
+  if (productos.length === 0) return null;
+
+  const yaExcluidos = new Set<string>(productos.map((p) => p.id));
+  const partes: string[] = [];
+
+  for (const producto of productos) {
+    // Si de lo que preguntó SÍ hay, la respuesta no es un sustituto: es que
+    // se lo puede llevar.
+    if (producto.stock_actual > 0) {
+      partes.push(`De ${producto.nombre_display} todavía tengo, así que no hace falta cambiarlo.`);
+      continue;
+    }
+
+    const alternativas = await sustitutosDisponibles(carniceriaId, catalogo, producto, yaExcluidos);
+    if (alternativas.length > 0) {
+      partes.push(`En lugar de ${producto.nombre_display} te puedo dar ${enumerar(alternativas)}.`);
+    } else {
+      // Sección 1.3: si no hay un reemplazo autorizado CON stock, no se
+      // inventa uno parecido "porque también es carne vacuna".
+      partes.push(`Para reemplazar ${producto.nombre_display} no tengo nada parecido en este momento.`);
+    }
+  }
+
+  if (partes.length === 0) return null;
+  partes.push("¿Te preparo algo?");
   return partes.join(" ");
 }
 
@@ -265,7 +364,9 @@ export async function responderConsulta(params: {
       // producto, no de la carnicería, así que no depende de la base.
       return "Por el momento los pedidos son para retirar por el local.";
     case "stock":
-      return responderStock(catalogo, productosConsultados ?? []);
+      return await responderStock(carniceriaId, catalogo, productosConsultados ?? []);
+    case "sustitutos":
+      return await responderSustitutos(carniceriaId, catalogo, productosConsultados ?? []);
     default:
       return null;
   }
@@ -285,6 +386,9 @@ export function respuestaSinDato(tema: TemaConsulta): string {
       return "No tengo la dirección a mano para pasártela por acá. ¿Querés que igual te vaya armando el pedido?";
     case "medios_pago":
       return "Eso te lo confirman en el local al momento de pagar. ¿Te preparo algo mientras tanto?";
+    case "sustitutos":
+      // Preguntó por "algo parecido" pero no sabemos parecido a QUÉ.
+      return "¿Parecido a qué corte? Decime cuál tenías en mente y te digo qué tengo.";
     default:
       return "Eso te lo confirmo bien y te aviso. ¿Te puedo ayudar con algo más mientras tanto?";
   }

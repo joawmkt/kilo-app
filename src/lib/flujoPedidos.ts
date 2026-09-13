@@ -15,6 +15,7 @@ import {
   KG_POR_MUJER,
 } from "./interpretarPedido";
 import { clasificarRespuesta } from "./confirmacion";
+import { leerDesglosePersonas } from "./personas";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarSustitutoAutorizado } from "./alternativas";
 import { responderConsulta, respuestaSinDato } from "./consultas";
@@ -84,6 +85,12 @@ type FaseInterna =
       personas?: InfoPersonas;
       asadoKgObjetivo?: number;
       recomendacionMostrada?: boolean;
+      // Cuántas veces seguidas preguntamos el desglose por género sin
+      // conseguirlo. A la tercera dejamos de insistir y calculamos con un
+      // promedio (ver PREGUNTAS_PERSONAS y KG_POR_PERSONA_PROMEDIO): nunca
+      // hay que dejar al cliente en un bucle por un dato que es una
+      // estimación, no un requisito.
+      intentosPersonas?: number;
     }
   // `intentos` cuenta cuántas veces seguidas preguntamos la hora sin obtenerla.
   // Sirve para no repetir la misma frase indefinidamente: a la tercera el bot
@@ -94,7 +101,17 @@ type FaseInterna =
   // y estamos esperando que diga que sí. Recién ahí el pedido sale al
   // carnicero. Es un paso más de conversación, a propósito: cuesta un mensaje
   // y evita que el carnicero prepare un pedido mal entendido.
-  | { fase: "esperando_confirmacion_final" };
+  | { fase: "esperando_confirmacion_final" }
+  // El CARNICERO propuso un cambio (hoy: otro horario, ver decisionCarnicero.ts)
+  // y estamos esperando que el cliente lo acepte.
+  //
+  // ⚠️ Es deliberadamente DISTINTA de "esperando_confirmacion_final", y esa
+  // diferencia es el arreglo del bug del 13/09/2026: antes las dos usaban la
+  // misma fase, así que cuando el cliente aceptaba el horario nuevo el bot le
+  // volvía a mostrar el pedido entero y le preguntaba "¿está bien así?" —
+  // algo que el cliente ya había contestado y que además decidió el carnicero.
+  // Un "sí" acá cierra el pedido; no vuelve a empezar la conversación.
+  | { fase: "esperando_aceptacion_cambio"; cambio: "hora"; horaAnteriorIso?: string };
 
 type PedidoPendiente = {
   id: string;
@@ -223,11 +240,95 @@ function calcularKgAsadoObjetivo(personas: InfoPersonas): number | null {
   return Math.round(total * 100) / 100;
 }
 
-function armarPreguntaPersonas(personas: InfoPersonas): string {
-  if (personas.sinGenero != null) {
-    return `Para calcular mejor la cantidad de asado, ¿más o menos cuántos de esos ${personas.sinGenero} son hombres y cuántas mujeres? (tomamos ${Math.round(KG_POR_HOMBRE * 1000)}g por hombre y ${Math.round(KG_POR_MUJER * 1000)}g por mujer)`;
+// ============================================================
+// No repetirse — regla general del bot (13/09/2026)
+// ============================================================
+//
+// Un bot que manda dos veces el MISMO texto le dice al cliente "no te
+// entendí y tampoco voy a cambiar de estrategia". Aburre y frustra, y es
+// justo cuando la gente abandona la conversación.
+//
+// `variarSiSeRepite` es la red de seguridad general: se aplica a CUALQUIER
+// pregunta, venga de donde venga (de la IA o del código), justo antes de
+// mandarla. Si es idéntica a la anterior, le cambia la entrada.
+//
+// No reemplaza a las escaleras específicas (`preguntaPorLaHora`,
+// `armarPreguntaPersonas`), que además de cambiar el tono cambian lo que se
+// pide. Es lo que atrapa los casos que esas escaleras no previeron.
+const ENTRADAS_REFORMULACION = [
+  "Perdón, no te llegué a entender 🙈 ",
+  "Disculpame, se me escapó. ",
+  "Uy, sigo sin agarrarlo. ",
+];
+
+/**
+ * Devuelve la pregunta con una entrada distinta si es idéntica a la anterior.
+ *
+ * La comparación saca primero cualquier entrada que hayamos agregado nosotros,
+ * para que el texto que guardamos como "pregunta pendiente" no impida
+ * detectar la repetición en el turno siguiente.
+ */
+function variarSiSeRepite(pregunta: string, preguntaPrevia: string | null | undefined): string {
+  if (!preguntaPrevia) return pregunta;
+
+  const sinEntrada = (t: string) => {
+    for (const entrada of ENTRADAS_REFORMULACION) {
+      if (t.startsWith(entrada)) return t.slice(entrada.length);
+    }
+    return t;
+  };
+
+  const nueva = sinEntrada(pregunta.trim());
+  const previa = sinEntrada(preguntaPrevia.trim());
+  if (nueva !== previa) return pregunta;
+
+  // Se elige la entrada según cuál se usó la vez pasada, así dos repeticiones
+  // seguidas tampoco suenan iguales entre sí.
+  const usadaAntes = ENTRADAS_REFORMULACION.findIndex((e) => preguntaPrevia.trim().startsWith(e));
+  return ENTRADAS_REFORMULACION[(usadaAntes + 1) % ENTRADAS_REFORMULACION.length] + nueva;
+}
+
+// ============================================================
+// Preguntar cuántas personas son — con escalera, no en bucle
+// ============================================================
+//
+// El desglose por género es una AYUDA para estimar kilos, no un requisito del
+// pedido. Por eso a la tercera se deja de pedir y se calcula con el promedio
+// de los dos números que ya usa el sistema. Preferimos una estimación un
+// poco menos fina a un cliente atrapado contestando lo mismo tres veces.
+//
+// El promedio sale de KG_POR_HOMBRE y KG_POR_MUJER, no es un número nuevo: si
+// el fundador cambia esos dos, este se mueve solo.
+const KG_POR_PERSONA_PROMEDIO = (KG_POR_HOMBRE + KG_POR_MUJER) / 2;
+
+/** Cuántas veces se insiste con el desglose antes de resolver con el promedio. */
+const MAXIMO_INTENTOS_PERSONAS = 2;
+
+function armarPreguntaPersonas(personas: InfoPersonas, intentos: number): string {
+  const total = personas.sinGenero;
+
+  if (total != null) {
+    if (intentos <= 1) {
+      return `Para calcular mejor la cantidad de asado, ¿más o menos cuántos de esos ${total} son hombres y cuántas mujeres? (tomamos ${Math.round(KG_POR_HOMBRE * 1000)}g por hombre y ${Math.round(KG_POR_MUJER * 1000)}g por mujer)`;
+    }
+    // Segundo intento: la misma pregunta pero mucho más corta y con el
+    // formato de respuesta puesto como ejemplo.
+    return `Perdón, te lo pregunto más simple: de esos ${total}, ¿cuántos varones y cuántas mujeres? Podés contestarme así: *2 y 1*.`;
   }
-  return "¿Para cuántas personas es? Así te tiro una cantidad aproximada de asado 🙂 (más o menos, ¿cuántos hombres y cuántas mujeres son?)";
+
+  if (intentos <= 1) {
+    return "¿Para cuántas personas es? Así te tiro una cantidad aproximada de asado 🙂 (más o menos, ¿cuántos hombres y cuántas mujeres son?)";
+  }
+  return "Decime nomás cuántos son en total y arranco por ahí 🙂 (ej: *somos 4*).";
+}
+
+/**
+ * Kilos estimados cuando el cliente no quiso o no pudo desglosar por género.
+ * Solo se usa después de MAXIMO_INTENTOS_PERSONAS intentos y con un total
+ * conocido — nunca se inventa la cantidad de gente.
+ */
+function kgAsadoConPromedio(total: number): number {
+  return Math.round(total * KG_POR_PERSONA_PROMEDIO * 100) / 100;
 }
 
 function armarPreguntaRecomendacion(
@@ -296,6 +397,10 @@ function recomendacionMostradaDeFase(fase: FaseInterna | null | undefined): bool
 
 function intentosHoraDeFase(fase: FaseInterna | null | undefined): number {
   return fase?.fase === "esperando_hora_retiro" ? (fase.intentos ?? 0) : 0;
+}
+
+function intentosPersonasDeFase(fase: FaseInterna | null | undefined): number {
+  return fase?.fase === "esperando_dato_item" ? (fase.intentosPersonas ?? 0) : 0;
 }
 
 // Saludo inicial — especificación, secciones 2.1 a 2.3 y 4.3.
@@ -879,6 +984,8 @@ async function procesarResultado(params: {
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
   recomendacionMostrada?: boolean;
+  /** Cuántas veces ya preguntamos el desglose por género sin conseguirlo. */
+  intentosPersonasPrevios?: number;
   /** La pregunta que el bot tenía pendiente, para repetirla si el cliente la interrumpe con una consulta. */
   preguntaPendientePrevia?: string | null;
   /** Si a este pedido ya se le ofreció un complementario (sección 40). */
@@ -903,6 +1010,7 @@ async function procesarResultado(params: {
     personasPrevias,
     asadoKgObjetivoPrevio,
     recomendacionMostrada,
+    intentosPersonasPrevios = 0,
   } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
@@ -948,11 +1056,27 @@ async function procesarResultado(params: {
   // nunca completándolo — la sección 1.3 es explícita en que inventar un
   // horario o una promoción es de las peores cosas que puede hacer el bot.
   if (resultado.tipo === "consulta") {
+    // "¿Y algo parecido?" casi nunca nombra el producto: viene después de que
+    // el bot dijo que de algo no hay. Si la IA no pudo indicar de cuál habla,
+    // se lo pasamos nosotros desde lo que ya se venía hablando en ESTE pedido
+    // — nunca se adivina un producto que el cliente no mencionó nunca.
+    let productosConsultados = resultado.productosConsultados;
+    if (
+      resultado.tema === "sustitutos" &&
+      (productosConsultados ?? []).length === 0
+    ) {
+      const delContexto = [
+        ...(itemsParcialesPrevios ?? []).map((i) => i.producto_codigo),
+        ...(itemsActualesPrevios ?? []).map((i) => i.producto_codigo),
+      ].filter((c): c is string => Boolean(c));
+      if (delContexto.length > 0) productosConsultados = Array.from(new Set(delContexto));
+    }
+
     const respuesta = await responderConsulta({
       carniceriaId,
       tema: resultado.tema,
       catalogo,
-      productosConsultados: resultado.productosConsultados,
+      productosConsultados,
     });
 
     const texto = respuesta ?? respuestaSinDato(resultado.tema);
@@ -973,7 +1097,28 @@ async function procesarResultado(params: {
   // combinan SIEMPRE con lo que ya sabíamos de turnos anteriores, en vez
   // de descartarlo cuando el tipo no es exactamente el esperado
   // (23/08/2026, a pedido del fundador).
-  const personas = combinarPersonas(personasPrevias, "personas" in resultado ? resultado.personas : undefined);
+  // ------------------------------------------------------------
+  // Cuántas personas son
+  // ------------------------------------------------------------
+  //
+  // Bug del 13/09/2026: el bot preguntó "¿cuántos de esos 2 son hombres y
+  // cuántas mujeres?", el cliente contestó "1 y 1" y el bot volvió a hacer la
+  // MISMA pregunta. La IA no supo sacar el desglose de un mensaje de tres
+  // caracteres sin sustantivos.
+  //
+  // La red de seguridad: si el turno anterior estábamos esperando justamente
+  // ese desglose y la IA no lo trajo, lo leemos nosotros con texto plano
+  // (`leerDesglosePersonas`, sin IA). El orden importa — **primero la IA**,
+  // porque ella ve el mensaje entero y puede traer además la hora o un
+  // producto nuevo; el lector determinístico solo completa lo que falte.
+  const personasDeLaIA = "personas" in resultado ? resultado.personas : undefined;
+  let personas = combinarPersonas(personasPrevias, personasDeLaIA);
+
+  const esperabamosDesglose = intentosPersonasPrevios > 0;
+  if (esperabamosDesglose && (personas.hombres == null || personas.mujeres == null)) {
+    const leido = leerDesglosePersonas(texto, personas.sinGenero ?? personasPrevias?.sinGenero);
+    if (leido) personas = combinarPersonas(personas, leido);
+  }
   const horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
   // La hora que el cliente dijo y ya pasó: no sirve para agendar, pero sí para
   // contestarle algo que tenga sentido en vez de repetir la pregunta.
@@ -1067,15 +1212,26 @@ async function procesarResultado(params: {
   );
   const sabemosPersonas = personas.hombres != null && personas.mujeres != null;
 
-  if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null) {
-    const pregunta = armarPreguntaPersonas(personas);
+  // Si ya insistimos demasiado con el desglose, dejamos de preguntar y
+  // calculamos con el promedio. Un dato de estimación no puede trabar un
+  // pedido — ver KG_POR_PERSONA_PROMEDIO.
+  const totalSinGenero = personas.sinGenero;
+  const seAgotaronLosIntentos = intentosPersonasPrevios >= MAXIMO_INTENTOS_PERSONAS;
+  const kgPorPromedio =
+    !sabemosPersonas && seAgotaronLosIntentos && totalSinGenero != null && totalSinGenero > 0
+      ? kgAsadoConPromedio(totalSinGenero)
+      : null;
+
+  if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null && kgPorPromedio == null) {
+    const intentos = intentosPersonasPrevios + 1;
+    const pregunta = variarSiSeRepite(armarPreguntaPersonas(personas, intentos), preguntaPendientePrevia);
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
       pregunta_pendiente: pregunta,
       item_parcial: itemsParciales,
       ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
-      interpretacion: { fase: "esperando_dato_item", personas },
+      interpretacion: { fase: "esperando_dato_item", personas, intentosPersonas: intentos },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
@@ -1085,17 +1241,27 @@ async function procesarResultado(params: {
   // Ya sabemos (o acabamos de calcular) el total de asado — si hay cortes
   // sin cantidad y todavía no le mostramos la recomendación, mostrársela
   // ahora en vez de preguntar corte por corte.
-  const kgObjetivoActual = asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null);
+  const kgObjetivoActual =
+    asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null) ?? kgPorPromedio;
 
   if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
-    const pregunta = armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual);
+    const pregunta = variarSiSeRepite(
+      armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual),
+      preguntaPendientePrevia
+    );
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
       pregunta_pendiente: pregunta,
       item_parcial: itemsParciales,
       ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
-      interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: kgObjetivoActual, recomendacionMostrada: true },
+      interpretacion: {
+        fase: "esperando_dato_item",
+        personas,
+        asadoKgObjetivo: kgObjetivoActual,
+        recomendacionMostrada: true,
+        intentosPersonas: intentosPersonasPrevios,
+      },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
@@ -1137,10 +1303,15 @@ async function procesarResultado(params: {
     return `No relacioné "${texto}" con un pedido. Contame qué necesitás llevarte 🙂`;
   }
 
-  const pregunta =
+  const preguntaCruda =
     resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante"
       ? resultado.pregunta
       : "No te entendí. ¿Podés contarme de nuevo qué necesitás, o responder la pregunta de arriba?";
+
+  // Última barrera contra el disco rayado: acá caen también las preguntas que
+  // escribe la IA, que es la vía por la que puede llegar un texto repetido que
+  // ninguna escalera del código previó.
+  const pregunta = variarSiSeRepite(preguntaCruda, preguntaPendientePrevia);
 
   await guardar({
     estado: "pendiente_aclaracion",
@@ -1153,11 +1324,160 @@ async function procesarResultado(params: {
       personas,
       asadoKgObjetivo: kgObjetivoActual ?? undefined,
       recomendacionMostrada,
+      intentosPersonas: intentosPersonasPrevios,
     },
     expires_at: finDeHoyArgentina().toISOString(),
     updated_at: ahora,
   });
   return pregunta;
+}
+
+// ============================================================
+// El cliente contesta un cambio que propuso el CARNICERO (sección 36.2)
+// ============================================================
+//
+// Bug del 13/09/2026, y por qué el arreglo no es cosmético:
+//
+//   Bot:     "Perdón, estamos a full y no llegamos para esa hora.
+//             ¿Te sirve a las 19:00 hs?"
+//   Cliente: "dale no hay problema"
+//   Bot:     "Entonces te preparo: Vacío 1kg. Retiro 19:00 hs. ¿Está bien así?"
+//
+// El pedido volvía al principio. Causa: `decisionCarnicero.ts` dejaba el
+// pedido en la fase "esperando_confirmacion_final", la misma que se usa
+// cuando el cliente todavía no vio el resumen. Un "sí" ahí significa "mostrá
+// y mandá al carnicero", y eso es justo lo que NO corresponde acá.
+//
+// Acá el pedido ya está armado, el cliente ya lo confirmó una vez y el
+// carnicero ya lo miró — de hecho fue ÉL quien propuso el cambio. Un "sí"
+// del cliente cierra el círculo: se aprueba y se avisa. Volver a pedir el
+// visto bueno de cualquiera de los dos es preguntar dos veces lo mismo.
+//
+// Devuelve `null` cuando la respuesta no es un sí ni un no claro (ej. "mejor
+// a las 20") — ahí el mensaje sigue por el camino normal, que sabe
+// reprogramar.
+async function manejarAceptacionCambio(params: {
+  carniceriaId: string;
+  pedido: PedidoPendiente;
+  clienteNombre: string | null;
+  texto: string;
+}): Promise<string | null> {
+  const { carniceriaId, pedido, clienteNombre, texto } = params;
+  const decision = clasificarRespuesta(texto);
+  if (decision === null) return null;
+
+  const supabaseAdmin = getSupabaseAdmin();
+  const ahora = new Date().toISOString();
+
+  if (decision === "confirmar") {
+    // `aprobarPedido` es la única función que sabe descontar stock, congelar
+    // el total y registrar los eventos, y exige que el pedido esté en
+    // `pendiente_aprobacion`. Se lo deja en ese estado y se la llama: no se
+    // duplica nada de esa lógica acá (Patrón 1 del manual).
+    await supabaseAdmin
+      .from("pedidos")
+      .update({
+        estado: "pendiente_aprobacion",
+        pregunta_pendiente: null,
+        interpretacion: null,
+        consulta_carnicero: null,
+        updated_at: ahora,
+      })
+      .eq("id", pedido.id);
+
+    await registrarEvento({
+      pedidoId: pedido.id,
+      carniceriaId,
+      tipo: "cliente_confirmo",
+      actor: "cliente",
+      descripcion: "El cliente aceptó el cambio que propuso el carnicero.",
+    });
+
+    const resultado = await aprobarPedido({
+      carniceriaId,
+      pedidoId: pedido.id,
+      decididoPor: "cliente_acepto_cambio_del_carnicero",
+      // La confirmación se la damos como RESPUESTA a su mensaje, acá abajo.
+      avisarAlCliente: false,
+    });
+
+    if (!resultado.ok) {
+      console.error("No se pudo cerrar el pedido tras aceptar el cambio", resultado.mensaje);
+      return "Perdón, tuve un problema técnico para cerrarlo. Ya lo estamos viendo 🙏";
+    }
+
+    // Regla innegociable 4: todo cambio en un pedido se le notifica al
+    // carnicero, aunque no le pida decidir nada.
+    await avisarCarniceroCambioAceptado({
+      carniceriaId,
+      pedidoId: pedido.id,
+      clienteNombre,
+      horaRetiro: pedido.hora_retiro ? new Date(pedido.hora_retiro) : undefined,
+      aceptado: true,
+    });
+
+    return mensajeClientePedidoConfirmado(pedido.hora_retiro ? new Date(pedido.hora_retiro) : undefined);
+  }
+
+  // "no" / "no me sirve" → el horario propuesto no le va. No se cancela por
+  // las dudas: se le pregunta qué horario sí, que es la salida que deja vivo
+  // el pedido. Si quiere darlo de baja, el intérprete general ya reconoce la
+  // cancelación por intención (sección 10.4).
+  await supabaseAdmin
+    .from("pedidos")
+    .update({
+      estado: "pendiente_aclaracion",
+      pregunta_pendiente: "Entiendo. ¿A qué hora te queda cómodo pasar? Veo si llegamos.",
+      interpretacion: { fase: "esperando_hora_retiro", intentos: 0 },
+      updated_at: ahora,
+    })
+    .eq("id", pedido.id);
+
+  await avisarCarniceroCambioAceptado({
+    carniceriaId,
+    pedidoId: pedido.id,
+    clienteNombre,
+    horaRetiro: pedido.hora_retiro ? new Date(pedido.hora_retiro) : undefined,
+    aceptado: false,
+  });
+
+  return "Entiendo. ¿A qué hora te queda cómodo pasar? Veo si llegamos.";
+}
+
+/** Le cuenta al carnicero qué contestó el cliente a su propuesta (regla 4). */
+async function avisarCarniceroCambioAceptado(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  clienteNombre: string | null;
+  horaRetiro?: Date;
+  aceptado: boolean;
+}): Promise<void> {
+  const { carniceriaId, pedidoId, clienteNombre, horaRetiro, aceptado } = params;
+  const quien = clienteNombre ?? "El cliente";
+
+  const cuerpo = aceptado
+    ? `✅ ${quien} aceptó el horario nuevo${horaRetiro ? ` (${formatearHoraArgentina(horaRetiro)} hs)` : ""}. El pedido quedó confirmado y ya descontamos el stock — no tenés que hacer nada.`
+    : `${quien} no puede en el horario que le propusimos. Le pregunté a qué hora le queda cómodo y te aviso cuando conteste.`;
+
+  try {
+    const numeros = await obtenerNumerosCarnicero(carniceriaId);
+    for (const numero of numeros) {
+      await enviarWhatsapp({ carniceriaId, hacia: numero, cuerpo, origen: "bot", esCarnicero: true });
+    }
+  } catch (err) {
+    console.error("Error avisando al carnicero de la respuesta al cambio", err);
+  }
+
+  await crearAviso({
+    carniceriaId,
+    tipo: "pedido_modificado",
+    titulo: aceptado ? "El cliente aceptó el horario nuevo" : "El cliente rechazó el horario nuevo",
+    cuerpo,
+    enlace: `/panel/pedidos/${pedidoId}`,
+    entidadTipo: "pedido",
+    entidadId: pedidoId,
+    claveUnicidad: `cambio_respondido:${pedidoId}:${aceptado ? "si" : "no"}`,
+  });
 }
 
 async function manejarRespuestaSustitucion(params: {
@@ -1170,7 +1490,9 @@ async function manejarRespuestaSustitucion(params: {
   const decision = clasificarRespuesta(texto);
 
   if (decision === null) {
-    return `No te entendí. ${pedido.pregunta_pendiente}`;
+    // Se cambia la entrada en vez de reenviar la pregunta tal cual: verla dos
+    // veces idéntica es lo que hace que el cliente abandone.
+    return `Perdón, no me quedó claro si te sirve o no 🙈\n\n${pedido.pregunta_pendiente ?? ""}`.trim();
   }
 
   const items = [...pedido.items];
@@ -1535,6 +1857,22 @@ async function procesarMensajeDeCliente(params: {
     return await manejarRespuestaSustitucion({ pedido: pedidoActivo, texto });
   }
 
+  // Sub-flujo especial: el CARNICERO propuso un cambio y estamos esperando
+  // que el cliente lo acepte. Va ANTES de la confirmación final porque un
+  // "sí" acá significa algo distinto: cierra el pedido en vez de reabrirlo
+  // (ver el comentario largo de manejarAceptacionCambio).
+  if (pedidoActivo?.fase?.fase === "esperando_aceptacion_cambio") {
+    const respuesta = await manejarAceptacionCambio({
+      carniceriaId,
+      pedido: pedidoActivo,
+      clienteNombre: cliente.nombre,
+      texto,
+    });
+    // `null` = no fue un sí ni un no claro (ej. "mejor a las 20"): sigue por
+    // el camino normal, que sabe reprogramar.
+    if (respuesta !== null) return respuesta;
+  }
+
   // Sub-flujo especial: el cliente ya vio el resumen completo y tiene que
   // confirmarlo (especificación, sección 31).
   //
@@ -1719,6 +2057,7 @@ async function procesarMensajeDeCliente(params: {
     personasPrevias: personasDeFase(pedidoActivo?.fase),
     asadoKgObjetivoPrevio,
     recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo?.fase),
+    intentosPersonasPrevios: intentosPersonasDeFase(pedidoActivo?.fase),
     itemsParcialesPrevios: pedidoActivo?.itemsParciales,
     itemsActualesPrevios: pedidoActivo?.items,
     horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
@@ -1821,8 +2160,17 @@ export async function aprobarPedido(params: {
    * hay pantalla: ahí el estado `modificacion_pendiente` ya bloquea el caso.
    */
   version?: number;
+  /**
+   * Si hay que mandarle al cliente el WhatsApp de "pedido confirmado".
+   *
+   * Se pone en false cuando quien está aprobando es, indirectamente, el propio
+   * mensaje del cliente (aceptó el horario que propuso el carnicero): ahí la
+   * confirmación va como RESPUESTA a ese mensaje, no como un segundo WhatsApp
+   * pegado al primero.
+   */
+  avisarAlCliente?: boolean;
 }): Promise<ResultadoDecision> {
-  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor, version } = params;
+  const { carniceriaId, pedidoId, carniceroTelefono, decididoPor, version, avisarAlCliente = true } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
 
@@ -1947,13 +2295,15 @@ export async function aprobarPedido(params: {
     })
     .eq("id", pedidoId);
 
-  await avisarClienteDecision({
-    carniceriaId,
-    clienteTelefono: actualizado.telefono as string,
-    aprobado: true,
-    horaRetiro: actualizado.hora_retiro ? new Date(actualizado.hora_retiro as string) : undefined,
-    pedidoId,
-  });
+  if (avisarAlCliente) {
+    await avisarClienteDecision({
+      carniceriaId,
+      clienteTelefono: actualizado.telefono as string,
+      aprobado: true,
+      horaRetiro: actualizado.hora_retiro ? new Date(actualizado.hora_retiro as string) : undefined,
+      pedidoId,
+    });
+  }
 
   return { ok: true, mensaje: "Aprobado. Ya le avisé al cliente." };
 }
@@ -2220,6 +2570,22 @@ export async function marcarPedidoNoRetirado(params: {
   return { ok: true, mensaje: "Marcado como no retirado." };
 }
 
+/**
+ * El texto con el que se le confirma el pedido al cliente.
+ *
+ * Vive en una función porque lo usan dos caminos: el aviso que sale cuando el
+ * carnicero aprueba, y la respuesta directa cuando el cliente acepta un cambio
+ * que propuso el carnicero (ahí no puede salir como mensaje aparte, porque
+ * sería un segundo WhatsApp pegado al primero).
+ */
+function mensajeClientePedidoConfirmado(horaRetiro?: Date): string {
+  // Sección 7.1: "alrededor de las X hs" y no "a las X hs" — la hora de
+  // retiro orienta la preparación, no es un turno exacto.
+  return `¡Listo! Tu pedido está confirmado 🙌 Te esperamos ${
+    horaRetiro ? `alrededor de las ${formatearHoraArgentina(horaRetiro)} hs` : "en el horario que acordamos"
+  } para retirarlo.`;
+}
+
 async function avisarClienteDecision(params: {
   carniceriaId: string;
   clienteTelefono: string;
@@ -2244,9 +2610,7 @@ async function avisarClienteDecision(params: {
   // "Alrededor de las X hs" en vez de "a las X hs": la hora de retiro es una
   // orientación para preparar el pedido, no un turno exacto (sección 7.1).
   const cuerpo = aprobado
-    ? `¡Listo! Tu pedido está confirmado 🙌 Te esperamos ${
-        horaRetiro ? `alrededor de las ${formatearHoraArgentina(horaRetiro)} hs` : "en el horario que acordamos"
-      } para retirarlo.`
+    ? mensajeClientePedidoConfirmado(horaRetiro)
     : "Uy, no pudimos tomar tu pedido en este momento. Cualquier cosa, escribinos de nuevo.";
 
   try {

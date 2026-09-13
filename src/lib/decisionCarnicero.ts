@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { enviarWhatsapp } from "./whatsapp";
-import { formatearHoraArgentina } from "./tiempo";
+import { finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { registrarEvento } from "./pedidoEventos";
 import { crearAviso } from "./notificaciones";
 import type { ItemGuardadoPedido } from "./flujoPedidos";
@@ -191,8 +191,19 @@ export async function responderConsultaCarnicero(params: {
         estado: "pendiente_confirmacion_cliente",
         hora_retiro: propuesta.toISOString(),
         hora_retiro_original: horaRetiro,
+        // El pedido venía con el vencimiento de 4 h de la aprobación, que
+        // puede estar por cumplirse. Si vence mientras el cliente piensa, su
+        // "dale" cae en un pedido muerto y el bot le arma uno nuevo desde
+        // cero. Se le da la ventana normal de una conversación: el día.
+        expires_at: finDeHoyArgentina().toISOString(),
         pregunta_pendiente: null,
-        interpretacion: { fase: "esperando_confirmacion_final" },
+        // ⚠️ Fase propia, NO "esperando_confirmacion_final" (bug del
+        // 13/09/2026). Con la fase de confirmación final, el "dale" del
+        // cliente hacía que el bot le volviera a mostrar el pedido entero y
+        // le preguntara "¿está bien así?" — algo que ya había contestado y
+        // que además había decidido el carnicero. Con esta fase, el sí cierra
+        // el pedido de una (ver manejarAceptacionCambio en flujoPedidos.ts).
+        interpretacion: { fase: "esperando_aceptacion_cambio", cambio: "hora", horaAnteriorIso: horaRetiro },
         updated_at: new Date().toISOString(),
       })
       .eq("id", pedidoId);

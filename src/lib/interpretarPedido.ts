@@ -1,5 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { modeloPedidos } from "./modelos";
+import { conZonaArgentina } from "./horaRetiro";
+import { bloqueHistorial } from "./historial";
 
 // Intérprete de mensajes del CLIENTE (Etapa 3) — mismo patrón que
 // src/lib/interpretarStock.ts (herramienta con schema fijo + Claude Haiku),
@@ -79,7 +81,10 @@ export type ResultadoInterpretacionPedido =
   // pedido entero. Se detecta por intención y no por la palabra "cancelar":
   // "sacame todo", "dejalo", "al final no" son cancelaciones igual (10.4).
   | { tipo: "cancelacion" }
-  | { tipo: "no_entendido"; horaRetiroYaPasoIso?: string; personas?: InfoPersonas };
+  // `horaRetiroIso` también acá (21/09/2026): si la respuesta del modelo vino
+  // mal armada pero la hora estaba bien, la hora se conserva. Antes se tiraba
+  // todo y el cliente veía "¿A qué hora pasás?" otra vez después de decir "19".
+  | { tipo: "no_entendido"; horaRetiroIso?: string; horaRetiroYaPasoIso?: string; personas?: InfoPersonas };
 
 export type TemaConsulta =
   | "horarios"
@@ -250,7 +255,8 @@ const TOOL_SCHEMA: Anthropic.Tool = {
 function construirSystemPrompt(
   promptCatalogo: string,
   ahoraArgentinaIso: string,
-  contexto?: ContextoPedidoPendiente
+  contexto?: ContextoPedidoPendiente,
+  historial = ""
 ): string {
   // Bug real del 23/08/2026: el cliente escribió "quiero vacío y costilla"
   // (dos productos, ninguno con cantidad) y el bot solo preguntó por uno
@@ -350,7 +356,7 @@ Reglas:
   entendió) y tratá el mensaje como lo que sea que corresponda — una consulta, una modificación, una
   cancelación. Un insulto no cambia lo que hay que hacer con el pedido.
 - Si no tiene nada que ver ni con un pedido ni con una consulta, respondé tipo "no_entendido".
-${bloqueContexto}
+${bloqueContexto}${bloqueHistorial(historial)}
 
 ${promptCatalogo}`;
 }
@@ -359,12 +365,14 @@ export async function interpretarMensajePedido(
   texto: string,
   promptCatalogo: string,
   ahoraArgentinaIso: string,
-  contexto?: ContextoPedidoPendiente
+  contexto?: ContextoPedidoPendiente,
+  /** Los últimos mensajes de la conversación (ver historial.ts). */
+  historial = ""
 ): Promise<ResultadoInterpretacionPedido> {
   const respuesta = await getClient().messages.create({
     model: modeloPedidos(),
     max_tokens: 1024,
-    system: construirSystemPrompt(promptCatalogo, ahoraArgentinaIso, contexto),
+    system: construirSystemPrompt(promptCatalogo, ahoraArgentinaIso, contexto, historial),
     messages: [{ role: "user", content: texto }],
     tools: [TOOL_SCHEMA],
     tool_choice: { type: "tool", name: NOMBRE_HERRAMIENTA },
@@ -442,7 +450,7 @@ type HoraRetiroInterpretada =
 
 function interpretarHoraRetiro(valor: unknown): HoraRetiroInterpretada {
   if (typeof valor !== "string" || !valor.trim()) return { estado: "ausente" };
-  const fecha = new Date(valor);
+  const fecha = new Date(conZonaArgentina(valor));
   if (Number.isNaN(fecha.getTime())) return { estado: "ausente" };
   // Un margen chico hacia atrás (5 min) tolera pequeños desfasajes de reloj;
   // cualquier cosa más vieja que eso no sirve como hora de retiro — pero se
@@ -537,9 +545,10 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
   }
 
   const horaSuelta = interpretarHoraRetiro(datos.hora_retiro_iso);
-  if (personas || horaSuelta.estado === "ya_paso") {
+  if (personas || horaSuelta.estado !== "ausente") {
     return {
       tipo: "no_entendido",
+      ...(horaSuelta.estado === "valida" ? { horaRetiroIso: horaSuelta.iso } : {}),
       ...(horaSuelta.estado === "ya_paso" ? { horaRetiroYaPasoIso: horaSuelta.iso } : {}),
       ...(personas ? { personas } : {}),
     };

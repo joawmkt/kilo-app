@@ -7,8 +7,12 @@ import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
 import { revisarStockDeProducto } from "./notificaciones";
 import { esCarniceroAutorizado } from "./quienEs";
-import { responderSobreMediaRes } from "./flujoMediaRes";
-import { mencionaMediaRes } from "./interpretarMediaRes";
+import { responderSobreLote, cargarPollosEnteros } from "./flujoLotes";
+import { mencionaLote } from "./interpretarLote";
+import { moverStock, consumirUnidadesEnteras } from "./lotes";
+import { descriptor } from "./especies";
+import { variarSiSeRepite } from "./conversacion";
+import { historialReciente } from "./historial";
 
 // Máquina de estados "INTERPRETAR → VALIDAR → CONFIRMAR → EJECUTAR" de la
 // especificación "Botonera de confirmación por WhatsApp" (22/08/2026).
@@ -28,8 +32,10 @@ type OperacionPendiente = {
   estado: "pendiente_aclaracion" | "pendiente_confirmacion" | "pendiente_modificacion";
   items: ItemGuardado[];
   pregunta_pendiente: string | null;
-  itemParcial?: ItemParcial;
+  itemsParciales?: ItemParcial[];
   vencida: boolean;
+  /** Cuántos mensajes seguidos no se entendieron sobre esta operación. */
+  fallos: number;
   /** La interpretación sin filtrar: el flujo de media res la mira para saber si esta operación es suya. */
   interpretacionCruda: unknown;
 };
@@ -43,11 +49,48 @@ function emojiParaFamilia(familia: string): string {
   return "🥩";
 }
 
+/**
+ * ¿Este item cuenta pollos (cabezas) y no kilos?
+ *
+ * El pollo entero vive en piezas de un pollo cada una. "Trocé 3 pollos" son
+ * tres piezas, no tres kilos.
+ */
+function esConteoDeUnidades(item: { producto_codigo: string; unidad: string }): boolean {
+  if (item.producto_codigo !== descriptor("aviar").codigoProductoUnidad) return false;
+  const u = item.unidad.toLowerCase();
+  return u.startsWith("unidad") || u === "u" || u.startsWith("pollo") || u.startsWith("cabeza");
+}
+
+function lineaItem(item: ItemGuardado): string {
+  const signo = item.accion === "ingreso" ? "+" : item.accion === "baja" ? "−" : "=";
+  const unidad = esConteoDeUnidades(item) ? (item.cantidad === 1 ? " pollo" : " pollos") : item.unidad;
+  return `${item.nombre_display} ${signo}${item.cantidad}${unidad}`;
+}
+
+// Las transformaciones se muestran como UNA línea con flecha ("Vacío −3kg →
+// Picada especial +3kg") y no como dos sueltas. Es a propósito: el 21/09 la
+// picada salió con "−" en vez de "+" y en una lista suelta no se notaba. Con la
+// flecha, un signo al revés salta a la vista antes de confirmar.
 function armarMensajeResumen(items: ItemGuardado[]): string {
-  const lineas = items.map((item) => {
-    const signo = item.accion === "ingreso" ? "+" : item.accion === "baja" ? "-" : "=";
-    return `${emojiParaFamilia(item.familia)} ${item.nombre_display} — ${signo}${item.cantidad}${item.unidad}`;
+  const lineas: string[] = [];
+  const usados = new Set<number>();
+
+  items.forEach((item, i) => {
+    if (usados.has(i) || !item.transformacion) return;
+    const grupo = items
+      .map((otro, j) => ({ otro, j }))
+      .filter(({ otro }) => otro.transformacion === item.transformacion);
+    grupo.forEach(({ j }) => usados.add(j));
+    const origen = grupo.filter(({ otro }) => otro.accion === "baja").map(({ otro }) => lineaItem(otro));
+    const destino = grupo.filter(({ otro }) => otro.accion !== "baja").map(({ otro }) => lineaItem(otro));
+    lineas.push(`🔄 ${origen.join(" + ") || "?"} → ${destino.join(" + ") || "?"}`);
   });
+
+  items.forEach((item, i) => {
+    if (usados.has(i)) return;
+    lineas.push(`${emojiParaFamilia(item.familia)} ${lineaItem(item)}`);
+  });
+
   return `Entendí:\n${lineas.join("\n")}\n¿Está bien? Respondé *confirmar* o *modificar*.`;
 }
 
@@ -92,14 +135,14 @@ async function obtenerOperacionPendienteActiva(
   // respuesta fue de tipo aclaracion/info_faltante; si el registro es de
   // otro tipo (ej. quedó de una operación vieja) no hay nada que rescatar.
   const interpretacion = data.interpretacion as
-    | { tipo?: string; itemParcial?: ItemParcial }
+    | { tipo?: string; itemParcial?: ItemParcial; itemsParciales?: ItemParcial[]; fallos?: number }
     | null
     | undefined;
-  const itemParcial =
-    interpretacion &&
-    (interpretacion.tipo === "aclaracion" || interpretacion.tipo === "info_faltante") &&
-    interpretacion.itemParcial
-      ? interpretacion.itemParcial
+  // `itemParcial` (uno solo) es el formato viejo: se sigue leyendo para no
+  // perder una operación que haya quedado pendiente de antes del cambio.
+  const itemsParciales =
+    interpretacion && (interpretacion.tipo === "aclaracion" || interpretacion.tipo === "info_faltante")
+      ? (interpretacion.itemsParciales ?? (interpretacion.itemParcial ? [interpretacion.itemParcial] : undefined))
       : undefined;
 
   return {
@@ -107,8 +150,9 @@ async function obtenerOperacionPendienteActiva(
     estado: data.estado as OperacionPendiente["estado"],
     items: (data.items ?? []) as ItemGuardado[],
     pregunta_pendiente: (data.pregunta_pendiente as string | null) ?? null,
-    itemParcial,
+    itemsParciales,
     vencida: estaVencida,
+    fallos: Number(interpretacion?.fallos ?? 0),
     // Cruda, sin filtrar por tipo: el flujo de media res necesita mirarla para
     // reconocer si esta operación es suya.
     interpretacionCruda: data.interpretacion ?? null,
@@ -123,8 +167,10 @@ async function guardarResultado(params: {
   resultado: ResultadoInterpretacion;
   catalogo: CatalogoCarniceria;
   texto: string;
+  /** La operación como estaba antes de este mensaje, si había una. */
+  previa?: OperacionPendiente | null;
 }): Promise<string> {
-  const { carniceriaId, telefono, mensajeWhatsappId, operacionId, resultado, catalogo, texto } = params;
+  const { carniceriaId, telefono, mensajeWhatsappId, operacionId, resultado, catalogo, texto, previa } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
 
@@ -144,26 +190,50 @@ async function guardarResultado(params: {
   }
 
   if (resultado.tipo === "no_entendido") {
-    await guardar({ transcripcion: texto, interpretacion: resultado, updated_at: ahora });
-    return operacionId
-      ? "No entendí tu respuesta. Podés responder *confirmar*, *modificar*, o contarme de nuevo qué cambió."
-      : `No relacioné "${texto}" con una actualización de stock. ¿Podés decirlo de otra forma?`;
+    // Antes esto pisaba la interpretación con {tipo: "no_entendido"}, y ahí se
+    // borraban los items a medio armar: un solo mensaje confuso y se perdía
+    // todo lo anterior. Ahora se conserva lo que había y se cuenta el fallo.
+    // `procesarTextoEntrante` usa ese contador para no quedarse trabado.
+    if (operacionId && previa) {
+      const cruda = (previa.interpretacionCruda ?? {}) as Record<string, unknown>;
+      await guardar({
+        transcripcion: texto,
+        interpretacion: { ...cruda, fallos: previa.fallos + 1 },
+        updated_at: ahora,
+      });
+      const pendiente = previa.pregunta_pendiente
+        ? `Lo que tengo pendiente es esto:\n${previa.pregunta_pendiente}`
+        : previa.items.length > 0
+          ? `Lo que tengo pendiente es esto:\n${armarMensajeResumen(previa.items)}`
+          : "";
+      return `Perdón, eso no lo pude relacionar 🙈 ${pendiente}\n\nSi es otra cosa, decime *cancelar* y arrancamos de nuevo.`.trim();
+    }
+    // Sin operación previa NO se crea una fila: antes se guardaba una operación
+    // "pendiente_aclaracion" vacía por un mensaje que no se entendió, y esa fila
+    // fantasma se tragaba el mensaje siguiente (Patrón 2 del manual).
+    return `No relacioné "${texto}" con una actualización de stock. ¿Podés decirlo de otra forma? Por ejemplo: *entraron 20 kilos de asado* o *piqué 3 kilos de vacío*.`;
   }
 
   if (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante") {
+    // Red de seguridad: si el modelo "olvidó" items que ya estaban completos en
+    // el turno anterior, se los vuelve a poner. Nunca confiar en que la IA se
+    // acuerde de repetirlos (mismo arreglo que pedidos, 23/08).
+    const itemsParciales = fusionarParciales(resultado.itemsParciales, previa?.itemsParciales);
+    const pregunta = variarSiSeRepite(resultado.pregunta, previa?.pregunta_pendiente);
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
-      interpretacion: resultado,
-      pregunta_pendiente: resultado.pregunta,
+      interpretacion: { ...resultado, pregunta, ...(itemsParciales ? { itemsParciales } : {}), fallos: 0 },
+      pregunta_pendiente: pregunta,
       updated_at: ahora,
     });
-    return resultado.pregunta;
+    return pregunta;
   }
 
   // tipo === "operacion"
+  const itemsFinales = rescatarCompletos(resultado.items, previa?.itemsParciales);
   const itemsResueltos: ItemGuardado[] = [];
-  for (const item of resultado.items) {
+  for (const item of itemsFinales) {
     const producto = catalogo.porCodigo.get(item.producto_codigo);
     if (!producto) {
       await guardar({ transcripcion: texto, interpretacion: resultado, updated_at: ahora });
@@ -180,7 +250,10 @@ async function guardarResultado(params: {
       // aplicado sin importar qué tan bien se haya entendido el mensaje
       // (bug real detectado 22/08/2026: "chorizo" estaba en kg cuando se
       // cuenta por unidad).
-      unidad: producto.unidad,
+      // Excepción única: el pollo entero contado en cabezas ("trocé 3 pollos").
+      // Ahí la unidad del catálogo (kg) sería la equivocada: 3 pollos no son
+      // 3 kilos. Se ejecuta cerrando piezas enteras (ver confirmarYEjecutar).
+      unidad: esConteoDeUnidades(item) ? "unidad" : producto.unidad,
       producto_id: producto.id,
       nombre_display: producto.nombre_display,
       familia: producto.familia,
@@ -198,6 +271,45 @@ async function guardarResultado(params: {
   });
 
   return armarMensajeResumen(itemsResueltos);
+}
+
+function claveParcial(i: ItemParcial): string {
+  return `${i.producto_codigo ?? "?"}|${i.accion ?? "?"}|${i.transformacion ?? ""}`;
+}
+
+function estaCompleto(i: ItemParcial): i is ItemParcial & { producto_codigo: string; accion: "ingreso" | "baja" | "ajuste"; cantidad: number } {
+  return Boolean(i.producto_codigo && i.accion && i.cantidad && i.cantidad > 0);
+}
+
+/** Suma a la lista nueva los items COMPLETOS de antes que el modelo no repitió. */
+function fusionarParciales(nuevos: ItemParcial[] | undefined, previos: ItemParcial[] | undefined): ItemParcial[] | undefined {
+  const lista = [...(nuevos ?? [])];
+  const claves = new Set(lista.map(claveParcial));
+  const codigos = new Set(lista.map((i) => i.producto_codigo).filter(Boolean));
+  for (const previo of previos ?? []) {
+    if (!estaCompleto(previo)) continue;
+    if (claves.has(claveParcial(previo)) || codigos.has(previo.producto_codigo)) continue;
+    lista.push(previo);
+  }
+  return lista.length > 0 ? lista : undefined;
+}
+
+/** Al cerrar la operación: que ningún item completo de la construcción quede afuera. */
+function rescatarCompletos(items: ItemOperacion[], previos: ItemParcial[] | undefined): ItemOperacion[] {
+  const codigos = new Set(items.map((i) => i.producto_codigo));
+  const rescatados: ItemOperacion[] = [];
+  for (const previo of previos ?? []) {
+    if (!estaCompleto(previo) || codigos.has(previo.producto_codigo)) continue;
+    rescatados.push({
+      producto_codigo: previo.producto_codigo,
+      accion: previo.accion,
+      cantidad: previo.cantidad,
+      unidad: previo.unidad ?? "kg",
+      confidence: 1,
+      ...(previo.transformacion ? { transformacion: previo.transformacion } : {}),
+    });
+  }
+  return [...items, ...rescatados];
 }
 
 async function confirmarYEjecutar(operacionId: string): Promise<string> {
@@ -235,40 +347,61 @@ async function confirmarYEjecutar(operacionId: string): Promise<string> {
   // por vez; si en el futuro hay updates realmente concurrentes sobre el
   // mismo producto, esto podría perder una escritura y habría que pasar a
   // un UPDATE con expresión relativa (ej. una función de Postgres).
+  // Todo pasa por el motor de piezas (`moverStock`). Antes esto escribía
+  // `stock_actual` directo y el motor lo pisaba en el próximo recálculo: por
+  // eso "piqué 3 kg de vacío" no bajaba el vacío. Ver el comentario largo de
+  // `moverStock` en lotes.ts.
   for (const item of items) {
-    const { data: producto, error: errProducto } = await supabaseAdmin
-      .from("productos")
-      .select("stock_actual, unidad")
-      .eq("id", item.producto_id)
-      .single();
+    const destino = item.transformacion
+      ? items.find((otro) => otro.transformacion === item.transformacion && otro.accion !== "baja")
+      : undefined;
+    const causa = destino && item.accion === "baja"
+      ? `Transformado en ${destino.nombre_display} (carga por voz)`
+      : item.transformacion
+        ? "Sale de una transformación (carga por voz)"
+        : "Carga por voz del carnicero";
 
-    if (errProducto || !producto) {
-      resumen.push(`${item.nombre_display}: no se pudo actualizar (producto no encontrado).`);
-      continue;
+    try {
+      if (item.accion === "ingreso" && esConteoDeUnidades(item)) {
+        const hecho = await cargarPollosEnteros({ carniceriaId, unidades: item.cantidad });
+        resumen.push(hecho.mensaje);
+        continue;
+      }
+
+      if (item.accion === "baja" && esConteoDeUnidades(item)) {
+        const hecho = await consumirUnidadesEnteras({
+          carniceriaId,
+          productoId: item.producto_id,
+          unidades: item.cantidad,
+          causa,
+        });
+        resumen.push(
+          hecho.unidades < item.cantidad
+            ? `${item.nombre_display}: tenías ${hecho.unidades}, bajé esos (${hecho.kg} kg).`
+            : `${item.nombre_display}: bajé ${hecho.unidades} (${hecho.kg} kg).`
+        );
+        await revisarStockDeProducto({ carniceriaId, productoId: item.producto_id });
+        continue;
+      }
+
+      const nuevoStock = await moverStock({
+        carniceriaId,
+        productoId: item.producto_id,
+        accion: item.accion,
+        cantidad: item.cantidad,
+        causa,
+        tipoBaja: destino && /picad/i.test(destino.nombre_display) ? "recorte_picada" : "ajuste",
+        origen: "audio",
+      });
+
+      // Si la carga dejó el producto en cero o por debajo del umbral, se genera
+      // el aviso; si volvió a estar bien, se cierran los avisos viejos.
+      await revisarStockDeProducto({ carniceriaId, productoId: item.producto_id });
+      resumen.push(`${item.nombre_display} = ${nuevoStock}${item.unidad}`);
+    } catch (err) {
+      console.error("Error aplicando un item de stock", item, err);
+      resumen.push(`${item.nombre_display}: no se pudo actualizar.`);
     }
-
-    const stockActual = Number(producto.stock_actual);
-    let nuevoStock = stockActual;
-    if (item.accion === "ingreso") nuevoStock = stockActual + item.cantidad;
-    else if (item.accion === "baja") nuevoStock = Math.max(0, stockActual - item.cantidad);
-    else if (item.accion === "ajuste") nuevoStock = item.cantidad;
-
-    await supabaseAdmin
-      .from("productos")
-      .update({
-        stock_actual: nuevoStock,
-        stock_actualizado_at: ahora,
-        // Deja registrado en el panel que este cambio vino de un audio y no de
-        // una edición manual.
-        stock_origen: "audio",
-      })
-      .eq("id", item.producto_id);
-
-    // Si la carga dejó el producto en cero o por debajo del umbral, se genera
-    // el aviso; si volvió a estar bien, se cierran los avisos viejos.
-    await revisarStockDeProducto({ carniceriaId, productoId: item.producto_id });
-
-    resumen.push(`${item.nombre_display} = ${nuevoStock}${producto.unidad}`);
   }
 
   return `Listo, quedó actualizado:\n${resumen.join("\n")}`;
@@ -386,6 +519,7 @@ export async function procesarTextoDeStock(params: {
   const opExistente = await obtenerOperacionPendienteActiva(carniceriaId, telefono);
   const opActiva = opExistente && !opExistente.vencida ? opExistente : null;
 
+  const historial = await historialReciente({ carniceriaId, telefono, quien: "Carnicero" });
   const resultado = await interpretarMensajeStock(
     texto,
     catalogo.promptCatalogo,
@@ -393,9 +527,10 @@ export async function procesarTextoDeStock(params: {
       ? {
           itemsActuales: opActiva.items,
           preguntaPendiente: opActiva.pregunta_pendiente ?? undefined,
-          itemParcial: opActiva.itemParcial,
+          itemsParciales: opActiva.itemsParciales,
         }
-      : undefined
+      : undefined,
+    historial
   );
 
   return await guardarResultado({
@@ -406,6 +541,7 @@ export async function procesarTextoDeStock(params: {
     resultado,
     catalogo,
     texto,
+    previa: opActiva,
   });
 }
 
@@ -425,12 +561,13 @@ export async function procesarTextoEntrante(params: {
   // Una media res pendiente vive en ESTA misma tabla, a propósito: para el
   // carnicero hay una sola cosa pendiente a la vez, así que su "sí" nunca es
   // ambiguo. Si la operación resulta ser una media res, la maneja su flujo.
-  const respuestaMediaRes = await responderSobreMediaRes({
+  const respuestaLote = await responderSobreLote({
     carniceriaId,
     operacion: { id: op.id, estado: op.estado, interpretacion: op.interpretacionCruda },
     texto,
+    telefono,
   });
-  if (respuestaMediaRes !== null) return respuestaMediaRes;
+  if (respuestaLote !== null) return respuestaLote;
 
   // ------------------------------------------------------------
   // Un aviso de media res ABANDONA la operación de stock pendiente
@@ -451,7 +588,9 @@ export async function procesarTextoEntrante(params: {
   // operación vieja se cancela y el mensaje sigue su camino.
   //
   // La detección es un regex, no el modelo: cuesta cero y no puede dudar.
-  if (mencionaMediaRes(texto)) {
+  // Y vale para las tres especies: una media res de cerdo o un cajón de pollo
+  // tampoco son la respuesta a una pregunta sobre cortes.
+  if (mencionaLote(texto)) {
     await getSupabaseAdmin()
       .from("operaciones_stock")
       .update({
@@ -462,6 +601,23 @@ export async function procesarTextoEntrante(params: {
       .eq("id", op.id);
 
     return null; // sigue al flujo de media res
+  }
+
+  // ------------------------------------------------------------
+  // No quedarse trabado (21/09/2026)
+  // ------------------------------------------------------------
+  //
+  // Si el mensaje anterior ya no se entendió y este tampoco es un sí/no claro,
+  // lo más probable es que el carnicero haya cambiado de tema y la operación
+  // vieja se esté tragando todo (Patrón 2 del manual). Se la abandona y el
+  // mensaje sigue su camino como algo nuevo, en vez de contestar por tercera
+  // vez "no te entendí".
+  if (op.fallos >= 1 && clasificarRespuesta(texto) === null) {
+    await getSupabaseAdmin()
+      .from("operaciones_stock")
+      .update({ estado: "cancelado", updated_at: new Date().toISOString(), pregunta_pendiente: null })
+      .eq("id", op.id);
+    return null;
   }
 
   if (op.vencida) {
@@ -492,11 +648,17 @@ export async function procesarTextoEntrante(params: {
     return "Tuve un problema técnico cargando el catálogo. Probá de nuevo en un rato.";
   }
 
-  const resultado = await interpretarMensajeStock(texto, catalogo.promptCatalogo, {
-    itemsActuales: op.items,
-    preguntaPendiente: op.pregunta_pendiente ?? undefined,
-    itemParcial: op.itemParcial,
-  });
+  const historial = await historialReciente({ carniceriaId, telefono, quien: "Carnicero" });
+  const resultado = await interpretarMensajeStock(
+    texto,
+    catalogo.promptCatalogo,
+    {
+      itemsActuales: op.items,
+      preguntaPendiente: op.pregunta_pendiente ?? undefined,
+      itemsParciales: op.itemsParciales,
+    },
+    historial
+  );
 
   return await guardarResultado({
     carniceriaId,
@@ -506,5 +668,6 @@ export async function procesarTextoEntrante(params: {
     resultado,
     catalogo,
     texto,
+    previa: op,
   });
 }

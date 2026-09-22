@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { cargarCatalogo, CatalogoCarniceria, Producto } from "./catalogo";
+import { cargarCatalogo, nombreComoLoPidio, CatalogoCarniceria, Producto } from "./catalogo";
+import { detectarPreparacion, etiquetaPreparacion } from "./preparacion";
 import { descargarAudio, enviarWhatsapp, type ReferenciaMedia } from "./whatsapp";
 import { avisarPedidoPendiente, crearAviso, revisarStockDeProducto } from "./notificaciones";
 import { nuevaVersion, registrarEvento } from "./pedidoEventos";
@@ -16,13 +17,16 @@ import {
 } from "./interpretarPedido";
 import { clasificarRespuesta } from "./confirmacion";
 import { leerDesglosePersonas } from "./personas";
+import { variarSiSeRepite } from "./conversacion";
+import { leerHoraSuelta } from "./horaRetiro";
+import { historialReciente } from "./historial";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarSustitutoAutorizado } from "./alternativas";
-import { responderConsulta, respuestaSinDato } from "./consultas";
+import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt } from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { esCarniceroAutorizado } from "./quienEs";
-import { consumirDeProducto } from "./mediaRes";
+import { consumirDeProducto } from "./lotes";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -46,6 +50,11 @@ export type ItemGuardadoPedido = {
   unidad: string;
   disponible: boolean;
   sustituye_a_producto_id?: string;
+  /**
+   * Cómo hay que entregarlo: "entero" | "trozado" | texto libre. NO cambia qué
+   * pieza de stock se consume — ver `preparacion.ts`.
+   */
+  preparacion?: string | null;
   // Precio de lista congelado al aprobar. Se guarda acá y no se recalcula
   // después: si mañana sube el precio del asado, el pedido de ayer no cambia
   // de valor retroactivamente. ESTIMATIVO — el total real se define al pesar.
@@ -240,53 +249,9 @@ function calcularKgAsadoObjetivo(personas: InfoPersonas): number | null {
   return Math.round(total * 100) / 100;
 }
 
-// ============================================================
-// No repetirse — regla general del bot (13/09/2026)
-// ============================================================
-//
-// Un bot que manda dos veces el MISMO texto le dice al cliente "no te
-// entendí y tampoco voy a cambiar de estrategia". Aburre y frustra, y es
-// justo cuando la gente abandona la conversación.
-//
-// `variarSiSeRepite` es la red de seguridad general: se aplica a CUALQUIER
-// pregunta, venga de donde venga (de la IA o del código), justo antes de
-// mandarla. Si es idéntica a la anterior, le cambia la entrada.
-//
-// No reemplaza a las escaleras específicas (`preguntaPorLaHora`,
-// `armarPreguntaPersonas`), que además de cambiar el tono cambian lo que se
-// pide. Es lo que atrapa los casos que esas escaleras no previeron.
-const ENTRADAS_REFORMULACION = [
-  "Perdón, no te llegué a entender 🙈 ",
-  "Disculpame, se me escapó. ",
-  "Uy, sigo sin agarrarlo. ",
-];
-
-/**
- * Devuelve la pregunta con una entrada distinta si es idéntica a la anterior.
- *
- * La comparación saca primero cualquier entrada que hayamos agregado nosotros,
- * para que el texto que guardamos como "pregunta pendiente" no impida
- * detectar la repetición en el turno siguiente.
- */
-function variarSiSeRepite(pregunta: string, preguntaPrevia: string | null | undefined): string {
-  if (!preguntaPrevia) return pregunta;
-
-  const sinEntrada = (t: string) => {
-    for (const entrada of ENTRADAS_REFORMULACION) {
-      if (t.startsWith(entrada)) return t.slice(entrada.length);
-    }
-    return t;
-  };
-
-  const nueva = sinEntrada(pregunta.trim());
-  const previa = sinEntrada(preguntaPrevia.trim());
-  if (nueva !== previa) return pregunta;
-
-  // Se elige la entrada según cuál se usó la vez pasada, así dos repeticiones
-  // seguidas tampoco suenan iguales entre sí.
-  const usadaAntes = ENTRADAS_REFORMULACION.findIndex((e) => preguntaPrevia.trim().startsWith(e));
-  return ENTRADAS_REFORMULACION[(usadaAntes + 1) % ENTRADAS_REFORMULACION.length] + nueva;
-}
+// `variarSiSeRepite` vive en conversacion.ts desde el 21/09/2026: el carnicero
+// también recibía la misma pregunta dos veces seguidas, y un solo lugar que
+// sepa no repetirse es mejor que dos copias que se van separando.
 
 // ============================================================
 // Preguntar cuántas personas son — con escalera, no en bucle
@@ -441,7 +406,10 @@ function mensajeResumenPedidoParaCarnicero(params: {
 }): string {
   const { clienteNombre, clienteTelefono, items, horaRetiro } = params;
   const quien = clienteNombre ? `${clienteNombre} (${clienteTelefono})` : clienteTelefono;
-  const lineas = items.map((item) => `- ${item.nombre_display}: ${item.cantidad}${item.unidad}`);
+  const lineas = items.map(
+    (item) =>
+      `- ${item.nombre_display}: ${item.cantidad}${item.unidad}${etiquetaPreparacion(item.preparacion)}`
+  );
   return [
     `🧾 Pedido nuevo de ${quien}`,
     ...lineas,
@@ -548,10 +516,14 @@ async function armarYGuardarPedido(params: {
       itemsResueltos.push({
         producto_id: producto.id,
         producto_codigo: producto.codigo,
-        nombre_display: producto.nombre_display,
+        // Se le contesta con LA MISMA palabra que usó él. Ver
+        // `nombreComoLoPidio` en catalogo.ts: si pidió "aguja" y le
+        // contestamos "Roast beef", no sabe si le entendieron.
+        nombre_display: nombreComoLoPidio(producto, texto),
         cantidad: cantidadReal,
         unidad: producto.unidad,
         disponible: true,
+        preparacion: detectarPreparacion(texto),
       });
       continue;
     }
@@ -581,13 +553,14 @@ async function armarYGuardarPedido(params: {
       itemsResueltos.push({
         producto_id: producto.id,
         producto_codigo: producto.codigo,
-        nombre_display: producto.nombre_display,
+        nombre_display: nombreComoLoPidio(producto, texto),
         cantidad: producto.stock_actual,
         unidad: producto.unidad,
         disponible: true,
+        preparacion: detectarPreparacion(texto),
       });
       parciales.push({
-        nombre: producto.nombre_display,
+        nombre: nombreComoLoPidio(producto, texto),
         hay: producto.stock_actual,
         faltan: faltante,
         unidad: producto.unidad,
@@ -720,6 +693,12 @@ function preguntaPorLaHora(params: { intentos: number; horaRetiroYaPasoIso?: str
     return "Perdón, sigo sin agarrar el horario. Mandame solo la hora, así: *18:30*. Si es para mañana, escribime *mañana 11:00*.";
   }
 
+  // El segundo intento también es distinto del primero: mandar dos veces la
+  // misma pregunta seguida es justo lo que hace que el cliente abandone.
+  if (intentos === 2) {
+    return "¿Más o menos a qué hora pasás? Con la hora sola me alcanza (ej: *19* o *19:30*).";
+  }
+
   return "¿A qué hora pasás a retirarlo?";
 }
 
@@ -741,7 +720,10 @@ function resumenParaConfirmar(params: {
   avisoDescartados: string;
 }): string {
   const { items, horaRetiroIso, avisoDescartados } = params;
-  const lineas = items.map((item) => `- ${item.nombre_display}: ${item.cantidad}${item.unidad}`);
+  const lineas = items.map(
+    (item) =>
+      `- ${item.nombre_display}: ${item.cantidad}${item.unidad}${etiquetaPreparacion(item.preparacion)}`
+  );
   return [
     `${avisoDescartados}Entonces te preparo:`,
     ...lineas,
@@ -1119,14 +1101,23 @@ async function procesarResultado(params: {
     const leido = leerDesglosePersonas(texto, personas.sinGenero ?? personasPrevias?.sinGenero);
     if (leido) personas = combinarPersonas(personas, leido);
   }
-  const horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
+  let horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
   // La hora que el cliente dijo y ya pasó: no sirve para agendar, pero sí para
   // contestarle algo que tenga sentido en vez de repetir la pregunta.
-  const horaRetiroYaPasoIso = horaRetiroIso
+  let horaRetiroYaPasoIso = horaRetiroIso
     ? undefined
     : "horaRetiroYaPasoIso" in resultado
       ? resultado.horaRetiroYaPasoIso
       : undefined;
+
+  // Red de seguridad de la hora (21/09/2026): si la pregunta pendiente era la
+  // hora y el modelo no la trajo, se lee con texto plano ("tipo 19", "a las 7",
+  // "19:30"). Primero el modelo, después esto: nunca al revés.
+  if (!horaRetiroIso && !horaRetiroYaPasoIso && (intentosHoraPrevios ?? 0) > 0) {
+    const leida = leerHoraSuelta(texto);
+    if (leida && !leida.yaPaso) horaRetiroIso = leida.iso;
+    else if (leida) horaRetiroYaPasoIso = leida.iso;
+  }
   let itemsParciales =
     (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante" ? resultado.itemsParciales : undefined) ??
     itemsParcialesPrevios ??
@@ -1528,7 +1519,10 @@ async function manejarRespuestaSustitucion(params: {
       .update({
         items,
         pregunta_pendiente: pregunta,
-        interpretacion: { fase: "esperando_hora_retiro" },
+        // `intentos: 1` para que la próxima respuesta ("tipo 19") pase por la
+        // lectura de hora sin IA: sin esto, el flujo no sabía que la pregunta
+        // pendiente era la hora.
+        interpretacion: { fase: "esperando_hora_retiro", intentos: 1 },
       })
       .eq("id", pedido.id);
     return pregunta;
@@ -1938,7 +1932,21 @@ async function procesarMensajeDeCliente(params: {
       }
     : undefined;
 
-  const resultado = await interpretarMensajePedido(texto, catalogo.promptCatalogo, ahoraArgentinaIso(), contexto);
+  // Las promos vigentes van en el prompt para que "quiero la promo" se pueda
+  // armar como pedido (21/09/2026). Antes el modelo no sabía qué promos había,
+  // así que "quiero una promo" caía de nuevo en "¿tienen promos?" y el bot
+  // repetía la lista palabra por palabra.
+  const bloquePromos = await bloquePromocionesParaPrompt(carniceriaId);
+  // Los últimos mensajes tal cual se dijeron: la red para que el bot no se
+  // olvide de lo que el cliente ya contestó (ver historial.ts).
+  const historial = await historialReciente({ carniceriaId, telefono, quien: "Cliente" });
+  const resultado = await interpretarMensajePedido(
+    texto,
+    bloquePromos ? `${catalogo.promptCatalogo}\n\n${bloquePromos}` : catalogo.promptCatalogo,
+    ahoraArgentinaIso(),
+    contexto,
+    historial
+  );
 
   // ------------------------------------------------------------
   // Cancelación (sección 10)
@@ -2250,13 +2258,12 @@ export async function aprobarPedido(params: {
     //    que después se pueda saber cuánto rindió esa media res y cuánto costó
     //    de verdad el kilo que se vendió.
     //
-    // 2. RESTANDO DE `stock_actual`, como siempre, si no hay piezas.
-    //
-    // El fallback no es transitorio: es lo correcto. Hay productos que nunca van
-    // a venir de una media res (pollo, cerdo, chorizo, achuras) y otros que se
-    // cargan por audio sin lote. Obligar a todo a pasar por piezas rompería la
-    // mitad del catálogo el primer día.
-    const consumo = await consumirDeProducto({
+    // 2. (21/09/2026) Ya no hay un segundo camino "restando de stock_actual".
+    //    Todo producto vive en piezas: el que tenía stock de antes se convierte
+    //    en pieza la primera vez que se lo toca (`asegurarPiezaDeArrastre`,
+    //    adentro de consumirDeProducto). Restar de `stock_actual` a mano se
+    //    borraba en el próximo recálculo.
+    await consumirDeProducto({
       carniceriaId,
       productoId: item.producto_id,
       kg: item.cantidad,
@@ -2265,13 +2272,6 @@ export async function aprobarPedido(params: {
       pedidoId,
     });
 
-    if (consumo.kgConsumidos <= 0) {
-      const nuevoStock = Math.max(0, Number(producto.stock_actual) - item.cantidad);
-      await supabaseAdmin
-        .from("productos")
-        .update({ stock_actual: nuevoStock, stock_actualizado_at: ahora, stock_origen: "pedido" })
-        .eq("id", item.producto_id);
-    }
 
     const precio = producto.precio === null || producto.precio === undefined ? null : Number(producto.precio);
     if (precio === null) faltaAlgunPrecio = true;

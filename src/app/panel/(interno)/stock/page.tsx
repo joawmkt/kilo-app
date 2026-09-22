@@ -26,9 +26,14 @@ export default async function StockPage(props: PageProps<"/panel/stock">) {
         titulo="Stock y precios"
         descripcion="Tocá cualquier número para corregirlo."
         accion={
-          <Link href="/panel/stock/medias-reses" className={clasesBoton("secundario")}>
-            Medias reses
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link href="/panel/stock/medias-reses" className={clasesBoton("secundario")}>
+              Lo que entra
+            </Link>
+            <Link href="/panel/stock/desposte" className={clasesBoton("secundario")}>
+              Desposte
+            </Link>
+          </div>
         }
       />
 

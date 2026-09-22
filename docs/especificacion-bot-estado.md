@@ -283,3 +283,78 @@ puntual y uno general.
 Archivos tocados: `confirmacion.ts`, `confirmacionPedido.ts`, `alternativas.ts`,
 `consultas.ts`, `interpretarPedido.ts`, `decisionCarnicero.ts`, `flujoPedidos.ts`,
 y el nuevo `personas.ts`. Sin migraciones.
+
+### 21/09/2026 — Segunda ronda: stock por voz, lotes, desposte, hora y promos
+
+Diez puntos que reportó el fundador probando pollo y cerdo en el simulador.
+
+**El arreglo de fondo: un solo camino para cambiar el stock.** El flujo de voz, el
+panel, el rechazo de pedidos por falta de stock y el fallback de la aprobación
+escribían `productos.stock_actual` directo. El motor de piezas (lotes.ts) lo
+recalcula como SUMA DE PIEZAS cada vez que toca algo, así que esos cambios se
+borraban solos en el próximo recálculo: "piqué 3 kg de vacío" bajaba el vacío hasta
+la próxima venta de vacío. Ahora todo pasa por `moverStock` (ingreso = nace una
+pieza, baja = se gasta FEFO, ajuste = la diferencia). El stock de antes de las piezas
+se convierte en una pieza "de arrastre" la primera vez que se toca el producto, así
+no se pierde.
+
+**Stock por voz (`interpretarStock.ts`, `flujoStock.ts`).**
+- `itemsParciales` es una lista: mientras se aclara un dato, se guardan TODOS los
+  items del mensaje. Antes era uno solo y "saqué 6 pechugas y piqué 3 kg de vacío"
+  perdía las pechugas y el vacío al preguntar qué picada era.
+- Transformaciones: "piqué 3 kg de vacío" son dos movimientos con el mismo
+  `transformacion` (vacío −3, picada +3). El resumen los muestra con flecha
+  ("🔄 Vacío −3kg → Picada especial +3kg") para que un signo al revés salte a la vista.
+- Pollo entero se cuenta en cabezas: "trocé 3 pollos" cierra 3 piezas enteras;
+  "entraron 8" carga un cajón de 8.
+- Un mensaje no entendido ya no borra lo que estaba a medio armar; la primera vez
+  se muestra qué está pendiente, la segunda vez seguida se abandona y el mensaje se
+  procesa como nuevo. Un mensaje suelto no entendido ya no crea una operación vacía
+  que se trague el siguiente.
+
+**Lotes (`deteccionLote.ts`, `interpretarLote.ts`, `flujoLotes.ts`).**
+- La especie sale de la palabra de especie que aparezca cerca ("dos medias res MÁS
+  de cerdo" ya es cerdo). "Media res" a secas con un peso que podría ser de cerdo
+  (≤ 70 kg) pregunta "¿Es de vaca o de cerdo?" en vez de cargarla como novillo.
+- "8 pollos" es un cajón de 8 cabezas.
+- Se puede corregir el animal de un lote pendiente ("de cerdo") conservando el peso.
+- Un lote de otra forma (un cajón de pollo mientras esperaba una media res), o una
+  llegada con su propio número, deja de lado lo pendiente y arranca de nuevo.
+- Varias medias reses de distinto peso: `pesosKg` (una de 51 y otra de 46 son dos
+  lotes). "51 y 46" se lee sin IA: nunca más 51,46 kg.
+- Después de dos mensajes sin entender, se cancela y se avisa, en vez del disco rayado.
+
+**Desposte y trozado.** Se puede despostar una media res de cerdo de a partes: cada
+guardado suma al stock, descuenta de lo que le queda a la media res y saca esos
+cortes de las opciones de esa media res. "Terminé de despostar" la cierra y anota el
+resto como hueso y merma. En el trozado de pollo los pesos siguen a la cantidad de
+pollos, y ni el formulario ni el servidor aceptan que salga más de lo que entró
+(antes 3 pollos de 7,5 kg dieron 14,8 kg de presas).
+
+**Cliente.**
+- Hora de retiro: una hora válida ya no se descarta si el resto de la respuesta del
+  modelo vino mal; si la pregunta pendiente es la hora y el modelo no la trajo, se lee
+  sin IA ("tipo 19", "a las 7", "mañana a las 10"); un ISO sin zona se toma como hora
+  argentina; el segundo "¿a qué hora?" ya no es igual al primero.
+- Promos: las vigentes van en el prompt, así "quiero la promo" arma el pedido; la
+  respuesta a "¿tienen promos?" cierra invitando a pedirla.
+
+**Panel.** Catálogo con relleno en las tarjetas y colores de estado que existen en
+el sistema de diseño; el % de los cortes de pollo dice "del pollo", no "de la media res".
+
+Archivos nuevos: `conversacion.ts` (no repetirse, compartido), `horaRetiro.ts`.
+Sin migraciones.
+
+### 22/09/2026 — El bot recuerda lo que se habló (historial en el prompt)
+
+Hasta acá, a la IA se le mandaba solo el mensaje nuevo más un resumen armado por el
+código. Si el resumen perdía algo, no había de dónde recuperarlo. Ahora los intérpretes
+de stock y de pedidos reciben además los últimos 12 mensajes de las últimas 3 horas,
+tal cual se dijeron (`src/lib/historial.ts`, leyendo `mensajes_whatsapp`). El resumen
+estructurado sigue mandando sobre qué está confirmado o cargado; el historial es la red
+para que "vacuno" se entienda como la respuesta a "¿vacío vacuno o de cerdo?" sin
+olvidar los 3 kg ni la picada especial.
+
+Nota de la misma fecha: la carpeta local había vuelto al último commit (se perdieron del
+disco pollo/cerdo y los arreglos del 21/09, que nunca se habían subido a GitHub). Se
+restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida.**

@@ -22,12 +22,17 @@ export default async function MediasResesPage() {
   const [{ data: lotes }, { data: tablas }] = await Promise.all([
     supabase
       .from("recepciones_lote")
-      .select("id, categoria, proveedor, peso_recibido_kg, peso_facturado_kg, fecha, estado, rinde_real")
+      .select("id, especie, categoria, unidades, proveedor, peso_recibido_kg, peso_facturado_kg, fecha, estado, rinde_real")
       .order("fecha", { ascending: false })
       .limit(50),
+    // Solo las de VACUNO: son las únicas que crean stock al cargar el lote.
+    // La tabla de pollo existe pero su `uso` es 'precarga_trozado' y su
+    // categoría es null — si entrara acá, el desplegable mostraría un vacío.
     supabase
       .from("tablas_rendimiento")
       .select("categoria")
+      .eq("especie", "vacuno")
+      .eq("uso", "explota_lote")
       .is("vigente_hasta", null),
   ]);
 
@@ -55,7 +60,9 @@ export default async function MediasResesPage() {
 
   const lotesDelPanel: LoteDelPanel[] = filas.map((fila) => ({
     id: fila.id,
+    especie: fila.especie,
     categoria: fila.categoria,
+    unidades: fila.unidades === null ? null : Number(fila.unidades),
     proveedor: fila.proveedor,
     pesoRecibidoKg: Number(fila.peso_recibido_kg),
     pesoFacturadoKg: fila.peso_facturado_kg === null ? null : Number(fila.peso_facturado_kg),
@@ -66,14 +73,18 @@ export default async function MediasResesPage() {
   }));
 
   const categorias = Array.from(
-    new Set(((tablas ?? []) as { categoria: string }[]).map((t) => t.categoria))
+    new Set(
+      ((tablas ?? []) as { categoria: string | null }[])
+        .map((t) => t.categoria)
+        .filter((c): c is string => typeof c === "string" && c.length > 0)
+    )
   );
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
       <EncabezadoPantalla
-        titulo="Medias reses"
-        descripcion="Cargá lo que entra y el sistema reparte los cortes solo."
+        titulo="Lo que entra"
+        descripcion="Medias reses, medias reses de cerdo y cajones de pollo. En vacuno el sistema reparte los cortes solo; en cerdo y pollo las piezas nacen cuando las pesás."
         accion={
           <Link href="/panel/stock" className={clasesBoton("secundario")}>
             Ver el stock
@@ -87,7 +98,9 @@ export default async function MediasResesPage() {
         <IconoMicrofono className="mt-0.5 h-5 w-5 shrink-0 text-ink-3" />
         <p className="text-sm text-ink-2">
           Esta pantalla es el respaldo. Lo normal va a ser mandar un audio:{" "}
-          <em>&ldquo;llegó una media res de ciento cuatro kilos seiscientos&rdquo;</em>.
+          <em>&ldquo;llegó una media res de ciento cuatro kilos seiscientos&rdquo;</em>,{" "}
+          <em>&ldquo;llegó una media res de cerdo de cuarenta y dos&rdquo;</em> o{" "}
+          <em>&ldquo;llegó un cajón de pollo de diez&rdquo;</em>.
         </p>
       </div>
 
@@ -115,7 +128,9 @@ export default async function MediasResesPage() {
 
 type FilaLote = {
   id: string;
-  categoria: string;
+  especie: "vacuno" | "porcino" | "aviar";
+  categoria: string | null;
+  unidades: number | null;
   proveedor: string | null;
   peso_recibido_kg: number;
   peso_facturado_kg: number | null;

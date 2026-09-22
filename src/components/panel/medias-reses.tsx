@@ -13,7 +13,11 @@ import {
 
 export type LoteDelPanel = {
   id: string;
-  categoria: string;
+  /** Null en cerdo y pollo: la investigación no encontró categorías comerciales. */
+  categoria: string | null;
+  especie: "vacuno" | "porcino" | "aviar";
+  /** Cabezas del cajón. Null donde no aplica. */
+  unidades: number | null;
   proveedor: string | null;
   pesoRecibidoKg: number;
   pesoFacturadoKg: number | null;
@@ -22,6 +26,31 @@ export type LoteDelPanel = {
   rindeReal: number | null;
   piezasVivas: number;
 };
+
+/**
+ * Cómo se titula un lote en la lista.
+ *
+ * La categoría solo existe en vacuno: en cerdo no hay categorías comerciales
+ * documentadas y en pollo no hay ninguna. Antes esto hacía
+ * `lote.categoria.charAt(0)` y con un lote de cerdo reventaba la pantalla.
+ */
+function tituloDeLote(lote: LoteDelPanel): string {
+  const peso = `${formatearNumero(lote.pesoRecibidoKg)} kg`;
+
+  if (lote.especie === "aviar") {
+    const cabezas = lote.unidades ? ` de ${lote.unidades} cabezas` : "";
+    return `Cajón de pollo${cabezas} · ${peso}`;
+  }
+
+  const cabecera =
+    lote.especie === "porcino"
+      ? "Media res de cerdo"
+      : lote.categoria
+        ? lote.categoria.charAt(0).toUpperCase() + lote.categoria.slice(1)
+        : "Media res";
+
+  return `${cabecera} de ${peso}`;
+}
 
 // ============================================================
 // Cargar una media res
@@ -186,8 +215,7 @@ export function ListaDeLotes({ lotes }: { lotes: LoteDelPanel[] }) {
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-titulo text-sm font-semibold text-ink">
-                  {lote.categoria.charAt(0).toUpperCase() + lote.categoria.slice(1)} de{" "}
-                  {formatearNumero(lote.pesoRecibidoKg)} kg
+                  {tituloDeLote(lote)}
                 </span>
                 <span className="block truncate text-xs text-ink-3">
                   {formatearFecha(lote.fecha)}

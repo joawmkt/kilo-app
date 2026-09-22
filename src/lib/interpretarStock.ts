@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { modeloStock } from "./modelos";
+import { bloqueHistorial } from "./historial";
 
 // Modelo pineado por defecto — Claude Haiku 4.5. Se puede pisar con
 // CLAUDE_MODEL_HAIKU si Anthropic publica una versión nueva; conviene
@@ -23,6 +24,13 @@ export type ItemOperacion = {
   cantidad: number;
   unidad: string;
   confidence: number;
+  /**
+   * Si este movimiento es una mitad de una TRANSFORMACIÓN ("piqué 3 kg de
+   * vacío"), el mismo identificador en las dos mitades: la baja del origen y
+   * el ingreso del destino. Sirve para mostrarlas juntas en el resumen
+   * ("Vacío −3 kg → Picada +3 kg") y que un error de signo salte a la vista.
+   */
+  transformacion?: string;
 };
 
 // El "item en construcción" cuando falta un dato o hay que desambiguar —
@@ -39,12 +47,20 @@ export type ItemParcial = {
   accion?: "ingreso" | "baja" | "ajuste";
   cantidad?: number;
   unidad?: string;
+  transformacion?: string;
 };
 
+// ⚠️ `itemsParciales` es una LISTA, no un item (21/09/2026). Antes era uno solo
+// y ese era el bug de "solo retuvo una parte de la información": el carnicero
+// dijo "saqué 6 pechugas que pesaron 2,700 y piqué 3 kg de vacío", el bot
+// preguntó qué picada era, y como solo podía guardar UN item a medio armar, las
+// pechugas y la baja del vacío se perdieron. Es exactamente el bug que el
+// flujo de pedidos tuvo el 23/08 y resolvió igual: mientras algo falta, se
+// guardan TODOS los items del mensaje, completos o no.
 export type ResultadoInterpretacion =
   | { tipo: "operacion"; items: ItemOperacion[] }
-  | { tipo: "aclaracion"; pregunta: string; itemParcial?: ItemParcial }
-  | { tipo: "info_faltante"; pregunta: string; itemParcial?: ItemParcial }
+  | { tipo: "aclaracion"; pregunta: string; itemsParciales?: ItemParcial[] }
+  | { tipo: "info_faltante"; pregunta: string; itemsParciales?: ItemParcial[] }
   | { tipo: "no_entendido" };
 
 // Contexto de una operación que ya está en curso (aclaración, dato
@@ -55,7 +71,7 @@ export type ResultadoInterpretacion =
 export type ContextoPendiente = {
   itemsActuales: ItemOperacion[];
   preguntaPendiente?: string;
-  itemParcial?: ItemParcial;
+  itemsParciales?: ItemParcial[];
 };
 
 const NOMBRE_HERRAMIENTA = "registrar_interpretacion";
@@ -93,6 +109,12 @@ const TOOL_SCHEMA: Anthropic.Tool = {
               type: "number",
               description: "Qué tan segura está la interpretación de este item, entre 0 y 1.",
             },
+            transformacion: {
+              type: "string",
+              description:
+                "Solo si este item es una mitad de una TRANSFORMACIÓN (ver TRANSFORMACIONES). Poné el MISMO " +
+                "identificador corto (ej. 't1') en la baja del origen y en el ingreso del destino.",
+            },
           },
           required: ["producto_codigo", "accion", "cantidad", "unidad"],
         },
@@ -101,18 +123,22 @@ const TOOL_SCHEMA: Anthropic.Tool = {
         type: "string",
         description: "Solo si tipo=aclaracion o tipo=info_faltante. La pregunta a mandarle al carnicero.",
       },
-      item_parcial: {
-        type: "object",
+      items_parciales: {
+        type: "array",
         description:
-          "Solo si tipo=aclaracion o tipo=info_faltante. Lo que YA se sabe del item que se está armando, aunque " +
-          "esté incompleto (poné solo los campos que ya estén claros, dejá afuera los que falten). Esto es lo que " +
-          "permite retomarlo en el próximo mensaje sin perderlo — SIEMPRE completalo con todo lo que ya sepas, " +
-          "aunque la pregunta sea sobre un solo dato puntual.",
-        properties: {
-          producto_codigo: { type: "string", description: "Si ya se sabe (o no aplica porque es justo lo ambiguo)." },
-          accion: { type: "string", enum: ["ingreso", "baja", "ajuste"] },
-          cantidad: { type: "number" },
-          unidad: { type: "string" },
+          "Solo si tipo=aclaracion o tipo=info_faltante. TODOS los items que aparecieron en la conversación " +
+          "hasta ahora, completos o no — uno por producto (en una transformación, uno por cada mitad). Los que " +
+          "ya estén completos van IGUAL acá. Es lo único que impide que se pierdan mientras se aclara el que " +
+          "falta. Nunca devuelvas aclaracion/info_faltante con esta lista vacía si ya se mencionó algún producto.",
+        items: {
+          type: "object",
+          properties: {
+            producto_codigo: { type: "string", description: "Si ya se sabe (dejalo afuera si es justo lo ambiguo)." },
+            accion: { type: "string", enum: ["ingreso", "baja", "ajuste"] },
+            cantidad: { type: "number" },
+            unidad: { type: "string" },
+            transformacion: { type: "string" },
+          },
         },
       },
     },
@@ -120,26 +146,26 @@ const TOOL_SCHEMA: Anthropic.Tool = {
   },
 };
 
-function construirSystemPrompt(promptCatalogo: string, contexto?: ContextoPendiente): string {
+function construirSystemPrompt(promptCatalogo: string, contexto?: ContextoPendiente, historial = ""): string {
   const bloqueContexto = contexto
     ? `\n\nCONTEXTO DE LA CONVERSACIÓN EN CURSO — el mensaje del usuario es una respuesta a algo que ya se venía hablando, no un mensaje nuevo aislado:
 - Items ya identificados y confirmados hasta ahora: ${JSON.stringify(contexto.itemsActuales)}
-- Item en construcción, todavía incompleto (puede venir vacío): ${JSON.stringify(contexto.itemParcial ?? {})}
+- Items del mensaje en construcción, completos o no (esto es lo importante: NUNCA pierdas ninguno): ${JSON.stringify(contexto.itemsParciales ?? [])}
 - Pregunta que se le había hecho al carnicero: ${contexto.preguntaPendiente ?? "(ninguna — el carnicero está corrigiendo una operación ya armada)"}
 
 Interpretá el mensaje nuevo COMO RESPUESTA a ese contexto, nunca como un mensaje nuevo aislado:
-- Si responde el dato que faltaba del item en construcción (ej. "15" o "15 kilos" respondiendo cuánto entró, o
-  un "sí"/"dale"/"👍"/similar confirmando un dato puntual que vos preguntaste), COMPLETÁ ese item combinando lo
-  que ya tenías en "item en construcción" con el dato nuevo.
-- En cuanto el item en construcción quede completo (producto, acción, cantidad y unidad, los cuatro), NO vuelvas
-  a preguntar de nuevo por las dudas — devolvé tipo "operacion" con la lista completa: los items ya confirmados
-  MÁS este item recién completado (nunca lo pierdas ni lo dejes afuera).
+- Si responde el dato que faltaba (ej. "15" o "15 kilos" respondiendo cuánto entró, "especial" respondiendo qué
+  picada, o un "sí"/"dale"/"👍" confirmando un dato puntual que vos preguntaste), COMPLETÁ el item que
+  corresponde dentro de "items del mensaje en construcción", sin tocar los demás.
+- En cuanto TODOS los items en construcción queden completos (producto, acción, cantidad y unidad), NO vuelvas
+  a preguntar por las dudas — devolvé tipo "operacion" con la lista completa: los items ya confirmados MÁS
+  TODOS los de la construcción (nunca pierdas ninguno, tampoco los que ya estaban completos). Si todavía falta
+  algo de alguno, devolvé aclaracion/info_faltante con "items_parciales" = TODOS otra vez.
 - Si en cambio el mensaje corrige un dato de un item YA CONFIRMADO (ej. "no, eran 12", "en realidad era vacío"),
   devolvé tipo "operacion" con la lista COMPLETA actualizada (los que no cambian, igual; el que corrige, con el
   valor nuevo).
-- Si el mensaje agrega un producto más al mismo pedido (no relacionado con la pregunta pendiente), tratalo como
-  un item en construcción nuevo (aclaracion o info_faltante con su propio item_parcial) o, si ya viene completo,
-  sumalo directo a la lista de items sin borrar los anteriores.`
+- Si el mensaje agrega un producto más (no relacionado con la pregunta pendiente), sumalo a la lista sin borrar
+  los anteriores.`
     : "";
 
   return `Sos el intérprete de mensajes del carnicero de Carnicom, una app para carnicerías de barrio.
@@ -173,11 +199,43 @@ Reglas:
   palabra), pero no inventes sinónimos nuevos que no estén en la lista del catálogo.
 - "confidence" (0 a 1) es qué tan segura está tu interpretación de ESE item puntual — no afecta si se pide
   o no confirmación (eso siempre se le pide al carnicero de todos modos), es solo para que quede registrado.
-- Cada vez que respondas tipo "aclaracion" o "info_faltante", completá SIEMPRE "item_parcial" con todo lo que
-  ya sepas de ese item (aunque sea un solo campo) — es lo único que le permite al sistema no perder ese item
-  en el próximo mensaje. Nunca respondas "aclaracion"/"info_faltante" sin "item_parcial", salvo que
-  literalmente no sepas nada todavía de ese item.
-${bloqueContexto}
+- Cada vez que respondas tipo "aclaracion" o "info_faltante", completá SIEMPRE "items_parciales" con TODOS los
+  items del mensaje (los completos también) — es lo único que le permite al sistema no perder ninguno en el
+  próximo mensaje. Si el mensaje trae tres cosas y una sola es ambigua, en "items_parciales" van las TRES.
+
+TRANSFORMACIONES — cuando el carnicero convierte un producto en otro ADENTRO de la carnicería (picar, trozar,
+hacer milanesas, embutir, cortar en bifes), eso NO es una sola cosa: son DOS movimientos, y los dos van, con
+el mismo "transformacion":
+  1. "baja" del producto de ORIGEN (lo que se usó),
+  2. "ingreso" del producto de DESTINO (lo que salió).
+Ejemplos:
+  "piqué 3 kilos de vacío a carne picada"
+     -> vacio baja 3 (t1) + la picada ingreso 3 (t1). La picada es AMBIGUA (común, especial o magra): respondé
+        aclaracion con la pregunta de la picada, y en items_parciales mandá LAS DOS mitades (el vacío completo,
+        la picada con accion ingreso, cantidad 3 y sin producto_codigo).
+  "con 5 kilos de nalga hice milanesas" -> nalga baja 5 (t1) + milanesa ingreso 5 (t1).
+  "trocé pollo y saqué 6 pechugas que pesaron 2,700"
+     -> pechuga ingreso 2.7 (t1) + pollo entero baja (t1). Del pollo entero falta CUÁNTOS: preguntalo
+        (info_faltante "¿Cuántos pollos trozaste?"), con las dos mitades en items_parciales.
+Reglas de las transformaciones:
+  - NUNCA pongas "baja" en el producto que SALIÓ: la picada, las milanesas, las pechugas SUBEN. El que baja
+    es el que se usó. Un signo cambiado acá es el peor error posible: resta lo que se hizo y deja intacto lo
+    que se gastó.
+  - Si dijo UN solo peso ("piqué 3 kilos de vacío"), es el mismo para las dos mitades: es la misma carne
+    cambiada de forma. Si dijo los dos ("usé 5 de nalga y salieron 4,5 de milanesas"), cada uno el suyo.
+  - Si no dijo de qué salió ("hice 3 kilos de picada"), es un ingreso normal de picada, sin transformación:
+    no inventes un origen.
+
+POLLO ENTERO — se cuenta en CABEZAS, no en kilos, SIEMPRE (entre o salga). Cuando el carnicero dice cuántos
+("trocé 3 pollos", "entraron 8"), poné cantidad = cantidad de pollos y unidad = "unidad". El sistema sabe cuánto
+pesa cada uno. Si falta el número, preguntá "¿Cuántos pollos?", NUNCA "¿cuántos kilos de pollo entero?".
+Y ojo: "entraron 8 pollos" o "un cajón de pollo" NO es una carga de stock suelta — eso lo resuelve otro módulo
+antes de llegar a vos; si igual te llega, el número son cabezas, nunca kilos.
+
+RESPUESTA A UNA PREGUNTA DE OPCIONES — si la pregunta pendiente ofrecía opciones ("¿Pollo entero, pata y muslo
+o pechuga?") y el carnicero contesta con algo que coincide con UNA de ellas aunque agregue más datos ("8
+pollos", "pollos enteros", "la especial"), esa es la elección. No vuelvas a hacer la misma pregunta.
+${bloqueContexto}${bloqueHistorial(historial)}
 
 ${promptCatalogo}`;
 }
@@ -185,12 +243,14 @@ ${promptCatalogo}`;
 export async function interpretarMensajeStock(
   texto: string,
   promptCatalogo: string,
-  contexto?: ContextoPendiente
+  contexto?: ContextoPendiente,
+  /** Los últimos mensajes de la conversación (ver historial.ts). */
+  historial = ""
 ): Promise<ResultadoInterpretacion> {
   const respuesta = await getClient().messages.create({
     model: modeloStock(),
     max_tokens: 1024,
-    system: construirSystemPrompt(promptCatalogo, contexto),
+    system: construirSystemPrompt(promptCatalogo, contexto, historial),
     messages: [{ role: "user", content: texto }],
     tools: [TOOL_SCHEMA],
     tool_choice: { type: "tool", name: NOMBRE_HERRAMIENTA },
@@ -205,6 +265,10 @@ export async function interpretarMensajeStock(
   }
 
   return validarInterpretacion(bloqueHerramienta.input);
+}
+
+function validarTransformacion(valor: unknown): string | undefined {
+  return typeof valor === "string" && valor.trim() ? valor.trim().slice(0, 20) : undefined;
 }
 
 function validarItem(valor: unknown): ItemOperacion | null {
@@ -225,12 +289,14 @@ function validarItem(valor: unknown): ItemOperacion | null {
       typeof item.confidence === "number" && item.confidence >= 0 && item.confidence <= 1
         ? item.confidence
         : 1;
+    const transformacion = validarTransformacion(item.transformacion);
     return {
       producto_codigo: item.producto_codigo.trim(),
       accion: item.accion,
       cantidad: item.cantidad,
       unidad: item.unidad.trim(),
       confidence,
+      ...(transformacion ? { transformacion } : {}),
     };
   }
   return null;
@@ -253,8 +319,22 @@ function validarItemParcial(valor: unknown): ItemParcial | undefined {
   if (typeof item.unidad === "string" && item.unidad.trim()) {
     parcial.unidad = item.unidad.trim();
   }
+  const transformacion = validarTransformacion(item.transformacion);
+  if (transformacion) parcial.transformacion = transformacion;
 
   return Object.keys(parcial).length > 0 ? parcial : undefined;
+}
+
+function validarItemsParciales(datos: Record<string, unknown>): ItemParcial[] | undefined {
+  // Se acepta también el campo viejo `item_parcial` (uno solo) por si el modelo
+  // lo usa: mejor rescatar uno que perderlo.
+  const crudos = Array.isArray(datos.items_parciales)
+    ? datos.items_parciales
+    : datos.item_parcial
+      ? [datos.item_parcial]
+      : [];
+  const lista = crudos.map(validarItemParcial).filter((i): i is ItemParcial => i !== undefined);
+  return lista.length > 0 ? lista : undefined;
 }
 
 function validarInterpretacion(input: unknown): ResultadoInterpretacion {
@@ -265,8 +345,8 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacion {
   const datos = input as Record<string, unknown>;
 
   if ((datos.tipo === "aclaracion" || datos.tipo === "info_faltante") && typeof datos.pregunta === "string" && datos.pregunta.trim()) {
-    const itemParcial = validarItemParcial(datos.item_parcial);
-    return { tipo: datos.tipo, pregunta: datos.pregunta.trim(), ...(itemParcial ? { itemParcial } : {}) };
+    const itemsParciales = validarItemsParciales(datos);
+    return { tipo: datos.tipo, pregunta: datos.pregunta.trim(), ...(itemsParciales ? { itemsParciales } : {}) };
   }
 
   if (datos.tipo === "operacion" && Array.isArray(datos.items) && datos.items.length > 0) {

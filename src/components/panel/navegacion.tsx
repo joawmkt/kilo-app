@@ -47,6 +47,7 @@ export const DESTINOS: Destino[] = [
   { href: "/panel", etiqueta: "Inicio", Icono: IconoInicio, principal: true },
   { href: "/panel/pedidos", etiqueta: "Pedidos", Icono: IconoPedidos, principal: true },
   { href: "/panel/stock", etiqueta: "Stock", Icono: IconoStock, principal: true },
+  { href: "/panel/catalogo", etiqueta: "Catálogo", Icono: IconoStock },
   { href: "/panel/mensajes", etiqueta: "Mensajes", Icono: IconoMensajes, principal: true },
   { href: "/panel/clientes", etiqueta: "Clientes", Icono: IconoClientes },
   { href: "/panel/caja", etiqueta: "Caja", Icono: IconoCaja },

@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { moverStock } from "@/lib/lotes";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { iniciarRechazo, responderConsultaCarnicero } from "@/lib/decisionCarnicero";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
@@ -202,24 +203,30 @@ export async function accionActualizarStock(
   }
 
   const supabaseAdmin = getSupabaseAdmin();
-  const ahora = new Date().toISOString();
 
-  const { data, error } = await supabaseAdmin
+  const { data } = await supabaseAdmin
     .from("productos")
-    .update({
-      stock_actual: nuevoStock,
-      stock_actualizado_at: ahora,
-      // Queda registrado que este cambio vino del panel y no de un audio.
-      stock_origen: "panel",
-    })
+    .select("id, nombre_display")
     .eq("id", productoId)
     .eq("carniceria_id", sesion.carniceria.id)
-    .select("id, nombre_display, stock_actual")
     .maybeSingle();
 
-  if (error || !data) {
+  if (!data) {
     return { ok: false, mensaje: "No se pudo guardar el stock. Probá de nuevo." };
   }
+
+  // Pasa por el motor de piezas y no escribe `stock_actual` directo: si lo
+  // escribiera, la próxima venta de ese producto lo recalcularía desde las
+  // piezas y el número que puso el carnicero desaparecería solo. Ver
+  // `moverStock` en lotes.ts.
+  await moverStock({
+    carniceriaId: sesion.carniceria.id,
+    productoId,
+    accion: "ajuste",
+    cantidad: nuevoStock,
+    causa: "Corregido a mano desde el panel",
+    origen: "panel",
+  });
 
   await revisarAvisoDeStock(sesion.carniceria.id, productoId);
   revalidatePath("/panel/stock");

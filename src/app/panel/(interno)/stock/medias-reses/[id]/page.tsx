@@ -16,7 +16,7 @@ export default async function DetalleMediaResPage(
   const { data: lote } = await supabase
     .from("recepciones_lote")
     .select(
-      "id, categoria, proveedor, remito, peso_recibido_kg, peso_facturado_kg, fecha, estado, rinde_real, descuadre_kg"
+      "id, especie, categoria, unidades, proveedor, remito, peso_recibido_kg, peso_facturado_kg, fecha, estado, rinde_real, descuadre_kg, modo_carga"
     )
     .eq("id", id)
     .maybeSingle();
@@ -50,7 +50,7 @@ export default async function DetalleMediaResPage(
 
       <Tarjeta>
         <TarjetaEncabezado
-          titulo={`${capitalizar(lote.categoria as string)} de ${formatearNumero(recibido)} kg`}
+          titulo={tituloDelLote(lote, recibido)}
           descripcion={`${formatearFecha(lote.fecha as string)}${lote.proveedor ? ` · ${lote.proveedor}` : ""}`}
           accion={
             <Etiqueta tono={lote.estado === "abierta" ? "atencion" : "neutro"}>
@@ -288,3 +288,23 @@ type FilaPieza = {
   estado: string;
   productos: { nombre_display: string } | null;
 };
+
+/**
+ * El título del lote. La categoría solo existe en vacuno: en cerdo no hay
+ * categorías comerciales documentadas y en pollo no hay ninguna, así que
+ * `capitalizar(lote.categoria)` reventaba con cualquier lote que no fuera vacuno.
+ */
+function tituloDelLote(
+  lote: { especie?: string | null; categoria?: string | null; unidades?: number | null },
+  recibidoKg: number
+): string {
+  const peso = `${formatearNumero(recibidoKg)} kg`;
+
+  if (lote.especie === "aviar") {
+    const cabezas = lote.unidades ? ` de ${lote.unidades} cabezas` : "";
+    return `Cajón de pollo${cabezas} · ${peso}`;
+  }
+  if (lote.especie === "porcino") return `Media res de cerdo de ${peso}`;
+  if (lote.categoria) return `${capitalizar(lote.categoria)} de ${peso}`;
+  return `Media res de ${peso}`;
+}

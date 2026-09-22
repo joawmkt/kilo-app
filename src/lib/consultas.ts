@@ -173,7 +173,9 @@ async function responderMediosPago(carniceriaId: string): Promise<string | null>
 // respuesta legítima y frecuente, no un fallo — por eso devuelve texto en vez
 // de null cuando la consulta se pudo responder y la respuesta es que no hay
 // nada cargado.
-async function responderPromociones(carniceriaId: string): Promise<string> {
+type PromoVigente = { titulo: string; detalle: string | null };
+
+async function promocionesVigentes(carniceriaId: string): Promise<PromoVigente[]> {
   const hoy = hoyEnArgentina();
 
   const { data } = await getSupabaseAdmin()
@@ -186,15 +188,49 @@ async function responderPromociones(carniceriaId: string): Promise<string> {
     .order("created_at", { ascending: false })
     .limit(5);
 
-  const vigentes = data ?? [];
+  return (data ?? []).map((p) => ({
+    titulo: String(p.titulo),
+    detalle: ((p.detalle as string | null) ?? "").trim() || null,
+  }));
+}
+
+async function responderPromociones(carniceriaId: string): Promise<string> {
+  const vigentes = await promocionesVigentes(carniceriaId);
   if (vigentes.length === 0) return "Por ahora no tenemos ninguna promo cargada.";
 
-  const lineas = vigentes.map((p) => {
-    const detalle = (p.detalle as string | null)?.trim();
-    return detalle ? `• ${p.titulo} — ${detalle}` : `• ${p.titulo}`;
-  });
+  const lineas = vigentes.map((p) => (p.detalle ? `• ${p.titulo} — ${p.detalle}` : `• ${p.titulo}`));
 
-  return `Sí, tenemos:\n${lineas.join("\n")}`;
+  // Se cierra invitando a pedirla (21/09): antes la respuesta terminaba en la
+  // lista y el cliente tenía que adivinar cómo seguir. "Quiero la promo" ya lo
+  // entiende el intérprete como un pedido (ver bloquePromocionesParaPrompt).
+  const invitacion =
+    vigentes.length === 1 ? "¿Querés que te la prepare?" : "¿Querés que te prepare alguna?";
+
+  return `Sí, tenemos:\n${lineas.join("\n")}\n\n${invitacion}`;
+}
+
+/**
+ * Las promos vigentes, como bloque para el prompt del intérprete de pedidos.
+ *
+ * Existe para que "quiero la promo" se entienda como un PEDIDO de lo que dice
+ * la promo, y no como otra pregunta por las promos. El modelo solo usa el
+ * texto que cargó la carnicería: si la promo no dice producto y cantidad, no
+ * se inventan (regla 1) y se pregunta.
+ */
+export async function bloquePromocionesParaPrompt(carniceriaId: string): Promise<string | null> {
+  const vigentes = await promocionesVigentes(carniceriaId);
+  if (vigentes.length === 0) return null;
+
+  return [
+    "PROMOS VIGENTES (texto tal cual lo cargó la carnicería):",
+    ...vigentes.map((p) => `- ${p.titulo}${p.detalle ? ` — ${p.detalle}` : ""}`),
+    "",
+    'Si el cliente dice que QUIERE una promo ("quiero la promo", "dame esa", "mandame la de las',
+    'milanesas"), eso NO es una consulta: es un PEDIDO. Armalo con el producto y la cantidad que dice la',
+    "promo (usando los códigos de PRODUCTOS ACTIVOS). Si hay varias promos y no queda claro cuál quiere,",
+    "respondé aclaracion preguntando cuál. Si la promo no dice cantidad o producto, preguntalo: NUNCA",
+    "inventes una promo, un regalo ni un descuento que no esté escrito acá.",
+  ].join("\n");
 }
 
 // ------------------------------------------------------------

@@ -44,6 +44,12 @@ le estaba pidiendo una decisión que no necesita modelo; ver Patrón 3). Antes d
 
 ### 1. ¿El código que está probando existe en el entorno donde probó?
 
+> **Caso real (22/09):** "8 pollos" volvió a preguntar "¿pollo entero, pata y muslo o
+> pechuga?" un día después de arreglarlo. Causa: la carpeta local había vuelto al último
+> commit y el arreglo nunca se había pusheado. Se detecta en la base: las operaciones
+> guardadas tenían `itemParcial` (formato viejo) en vez de `itemsParciales`. **Mirar la
+> forma de lo que se guardó es la forma más rápida de saber qué versión corrió.**
+
 Joaquín prueba en el panel desplegado en Vercel, que se construye desde **GitHub**. Si el arreglo no
 está pusheado, está probando otra cosa.
 
@@ -260,6 +266,30 @@ función que siempre devuelve el mismo string, y dos situaciones distintas compa
    distintas según cómo llegaste ahí, son dos fases. Es el Patrón 1 (dos lugares decidiendo lo mismo)
    visto en la máquina de estados.
 
+### Patrón 5 — Un dato bueno que se tira porque vino mal envuelto
+
+*Bugs del 21/09: "19" contestado a "¿a qué hora pasás?" y el bot volvió a preguntar;
+"de cerdo" contestado a una media res pendiente y el bot contestó "No te entendí".*
+
+En los dos casos el dato estaba: la hora en la respuesta del modelo, la especie en el
+mensaje. Se perdió porque el código que lo recibía solo sabía aceptarlo en UNA forma (la
+respuesta del modelo tenía que venir perfecta; la corrección tenía que ser un peso o una
+categoría de vaca).
+
+**Las reglas que salieron de ahí:**
+
+1. **Un validador nunca tira un dato válido porque el resto de la respuesta vino mal.** Si
+   el modelo armó mal los items pero la hora está bien, la hora se conserva.
+2. **Cuando la pregunta pendiente tiene respuestas contadas, hay un lector sin IA de
+   respaldo** (`horaRetiro.ts`, `personas.ts`, `leerListaDePesos`). Primero el modelo,
+   después el lector: nunca al revés.
+3. **Toda corrección que el usuario pueda hacer en una palabra tiene que estar prevista**
+   ("de cerdo", "especial", "8 pollos"). Si no está, el mensaje cae en "no te entendí".
+
+Y un corolario del Patrón 1 que costó caro: **el stock se cambia por un solo lado**
+(`moverStock` en lotes.ts). Escribir `productos.stock_actual` directo desde cualquier otro
+lugar es un bug aunque parezca andar: el próximo recálculo lo borra.
+
 ---
 
 ## Cómo probar
@@ -289,6 +319,8 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | "1 y 1" (a la pregunta de personas) | Entender 1 hombre y 1 mujer, no repetir la pregunta |
 | El carnicero propone otra hora y el cliente dice "dale" | Cerrar el pedido, **no** volver a mostrar el resumen |
 | Cualquier pregunta contestada mal dos veces | Reformularla, nunca mandar el mismo texto dos veces |
+| "tipo 19" (a "¿a qué hora pasás?") | Tomar las 19:00, no volver a preguntar |
+| "quiero una promo" | Armar el pedido de la promo, no repetir la lista |
 | "gracias" | No reabrir la venta |
 
 | Como carnicero | Tiene que |
@@ -299,6 +331,14 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | "no, es vaca" | Cambiar la categoría |
 | "aprobar" | Aprobar el pedido pendiente |
 | "media docena de huevos" | **NO** dispararse como media res |
+| "8 pollos" (a "¿pollo entero, pata y muslo o pechuga?") | Cajón de 8 cabezas, NO preguntar kilos |
+| "piqué 3 kilos de vacío a carne picada" | 🔄 Vacío −3 → Picada +3 (después de preguntar cuál picada), sin perder otros items del mensaje |
+| "la media res pesó 49500" (sin decir el animal) | Preguntar "¿Es de vaca o de cerdo?" |
+| "de cerdo" (con una media res pendiente) | Corregir el animal y conservar el peso |
+| "me entraron dos medias de cerdo, una de 51 y otra de 46" | Dos lotes: 51 kg y 46 kg (nunca 51,46) |
+| Dos mensajes seguidos que no entiende | La segunda vez, soltar lo pendiente y avisar |
+| Desposte parcial de cerdo (solo matambre) | Suma el matambre, descuenta de la media res, saca matambre de esa media res |
+| Trozado con más kilos de salida que de entrada | No deja guardar |
 
 ---
 

@@ -3,6 +3,7 @@ import { enviarWhatsapp } from "./whatsapp";
 import { finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { registrarEvento } from "./pedidoEventos";
 import { crearAviso } from "./notificaciones";
+import { moverStock } from "./lotes";
 import type { ItemGuardadoPedido } from "./flujoPedidos";
 
 // ============================================================
@@ -246,11 +247,18 @@ export async function responderConsultaCarnicero(params: {
 
     // Sección 37: si el carnicero dice que se terminó, el stock va a 0 y deja
     // de ofrecerse a todo el mundo, no solo a este cliente.
+    // Por el motor de piezas: poner `stock_actual` en 0 a mano duraba hasta el
+    // próximo recálculo, que lo volvía a subir con las piezas que quedaban.
     for (const faltante of faltantes) {
-      await supabaseAdmin
-        .from("productos")
-        .update({ stock_actual: 0, stock_actualizado_at: new Date().toISOString() })
-        .eq("id", faltante.valor);
+      await moverStock({
+        carniceriaId,
+        productoId: faltante.valor,
+        accion: "ajuste",
+        cantidad: 0,
+        causa: "El carnicero avisó que se terminó (al rechazar un pedido)",
+        tipoBaja: "ajuste",
+        origen: "ajuste",
+      });
     }
 
     await registrarEvento({

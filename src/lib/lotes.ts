@@ -370,6 +370,12 @@ export type SalidaPesada = {
   kg: number;
   /** Hueso, grasa, cuerito, patitas, cabeza: entran al stock pero no al mostrador. */
   esSubproducto?: boolean;
+  /**
+   * true si el peso lo calculó el sistema (con la tabla) y no salió de la
+   * balanza. La pieza nace 'estimado' y la primera venta con peso real la
+   * corrige. Ver `estimarTrozado`.
+   */
+  estimado?: boolean;
 };
 
 /**
@@ -675,6 +681,374 @@ export async function precargaDeTrozado(params: {
   return { kgEntrada, salidas };
 }
 
+// ============================================================
+// Trozar con UNA pesada: el resto se calcula
+// ============================================================
+//
+// Pedido del fundador (22/09/2026), con el cálculo explicado por él:
+//
+//   "Trocé 3 pollos y saqué 2,700 de pechuga."
+//   3 pollos = 6 pechugas -> 2,700 / 6 = 450 g cada pechuga.
+//   Con ese peso y la tabla, se estiman las otras presas. Y se carga TODO,
+//   porque cada vez que se troza un pollo se separan todas las partes (aunque
+//   el cliente buscara solo una), y todas quedan en la vitrina.
+//
+// Cómo se hace la cuenta, en castellano: la tabla dice qué porcentaje del pollo
+// es cada presa (pechuga 28,75 %, pata y muslo 40,5 %...). Si la pechuga real
+// pesó 2,7 kg y es el 28,75 %, cada "punto de tabla" vale 2,7 / 28,75. Con eso,
+// la pata y muslo es 40,5 puntos, las alitas 14,87, y así. Si pesó más de una
+// presa, se usan todas las pesadas (mejor dato). Si no pesó ninguna, se parte
+// del peso de los pollos.
+//
+// Y un tope: nunca puede salir más de lo que entró. Si la cuenta se pasa (la
+// pechuga de ESTOS pollos salió más grande que la de la tabla), se achican las
+// presas estimadas — nunca las pesadas, que son reales.
+//
+// Las pesadas nacen 'pesado'; las calculadas nacen 'estimado', y la primera
+// venta con balanza las corrige. Es el mismo criterio que la media res vacuna.
+
+/** Cuántas de cada presa trae UN ave. Es anatomía, no un dato de negocio. */
+export const UNIDADES_POR_AVE: Record<string, number> = {
+  pechuga_desosada: 2,
+  pata_y_muslo: 2,
+  alitas: 2,
+  pata: 2,
+  muslo: 2,
+};
+
+export type SalidaEstimada = { codigo: string; nombre: string; kg: number; estimado: boolean };
+
+export type EstimacionTrozado =
+  | {
+      ok: true;
+      unidades: number;
+      kgEntrada: number;
+      salidas: SalidaEstimada[];
+      mermaKg: number;
+      /** Si la pesada no cierra con el peso de los pollos, se avisa (no se frena). */
+      aviso?: string;
+    }
+  | { ok: false; mensaje: string };
+
+export async function estimarTrozado(params: {
+  carniceriaId: string;
+  especie: Especie;
+  unidades: number;
+  pesadas: { codigo: string; kg: number }[];
+  /** Si el carnicero dijo cuánto pesaba cada pollo, manda sobre el stock. */
+  kgPorUnidadDicho?: number | null;
+}): Promise<EstimacionTrozado> {
+  const { carniceriaId, especie, unidades, pesadas, kgPorUnidadDicho } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const desc = descriptor(especie);
+  const codigoOrigen = desc.codigoProductoUnidad;
+  if (!codigoOrigen) return { ok: false, mensaje: "Esa especie no se troza por unidades." };
+
+  const { data: origen } = await supabaseAdmin
+    .from("productos")
+    .select("id")
+    .eq("carniceria_id", carniceriaId)
+    .eq("codigo", codigoOrigen)
+    .maybeSingle();
+  if (!origen) return { ok: false, mensaje: `No encontré "${codigoOrigen}" en tu catálogo.` };
+
+  // Los mismos pollos que después va a trozar `trozar` (FEFO).
+  const { data: piezas } = await supabaseAdmin
+    .from("piezas_stock")
+    .select("kg_restantes")
+    .eq("carniceria_id", carniceriaId)
+    .eq("producto_id", origen.id)
+    .eq("estado", "disponible")
+    .gt("kg_restantes", 0)
+    .order("vence_at", { ascending: true, nullsFirst: false })
+    .order("ingresada_at", { ascending: true })
+    .limit(unidades);
+
+  const enStock = (piezas ?? []).length;
+  if (enStock < unidades) {
+    return {
+      ok: false,
+      mensaje:
+        enStock === 0
+          ? "No tengo pollos enteros en stock para trozar. ¿Cargaste el cajón?"
+          : `Tengo ${enStock} ${enStock === 1 ? "pollo entero" : "pollos enteros"} en stock y me dijiste que trozaste ${unidades}. ¿Cuántos fueron?`,
+    };
+  }
+
+  const kgEntrada = redondear(
+    kgPorUnidadDicho && kgPorUnidadDicho > 0
+      ? unidades * kgPorUnidadDicho
+      : (piezas ?? []).reduce((suma, p) => suma + Number(p.kg_restantes), 0),
+    3
+  );
+
+  const { data: tabla } = await supabaseAdmin
+    .from("tablas_rendimiento")
+    .select("id, pct_merma")
+    .eq("carniceria_id", carniceriaId)
+    .eq("especie", especie)
+    .eq("uso", "precarga_trozado")
+    .is("vigente_hasta", null)
+    .order("version", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!tabla) {
+    return { ok: false, mensaje: "Todavía no tengo la tabla de trozado del pollo, así que no puedo calcular las presas." };
+  }
+
+  const { data: cortes } = await supabaseAdmin
+    .from("rendimiento_cortes")
+    .select("pct_central, productos(codigo, nombre_display, alias_display)")
+    .eq("tabla_id", tabla.id);
+
+  const filas = ((cortes ?? []) as unknown as {
+    pct_central: number;
+    productos: { codigo: string; nombre_display: string; alias_display: string | null } | null;
+  }[])
+    .filter((f) => f.productos !== null)
+    .map((f) => ({
+      codigo: f.productos!.codigo,
+      nombre: f.productos!.alias_display ?? f.productos!.nombre_display,
+      pct: Number(f.pct_central),
+    }));
+
+  const pesadasPorCodigo = new Map(pesadas.filter((p) => p.kg > 0).map((p) => [p.codigo, p.kg]));
+  const totalPesado = [...pesadasPorCodigo.values()].reduce((a, b) => a + b, 0);
+
+  if (totalPesado > kgEntrada * 1.02) {
+    return {
+      ok: false,
+      mensaje: `Lo que pesaste suma ${redondear(totalPesado, 2)} kg y los ${unidades} pollos pesaban ${redondear(kgEntrada, 2)} kg. ¿Revisás los pesos?`,
+    };
+  }
+
+  const disponible = kgEntrada * (1 - Number(tabla.pct_merma ?? 0) / 100);
+  const conocidas = filas.filter((f) => pesadasPorCodigo.has(f.codigo));
+  const pctConocido = conocidas.reduce((suma, f) => suma + f.pct, 0);
+  const pctTotal = filas.reduce((suma, f) => suma + f.pct, 0) || 100;
+
+  // Cuánto vale "un punto de tabla" en ESTE trozado.
+  const valorPunto =
+    conocidas.length > 0 && pctConocido > 0
+      ? conocidas.reduce((suma, f) => suma + pesadasPorCodigo.get(f.codigo)!, 0) / pctConocido
+      : disponible / pctTotal;
+
+  const estimadas = filas
+    .filter((f) => !pesadasPorCodigo.has(f.codigo))
+    .map((f) => ({ ...f, kg: valorPunto * f.pct }));
+
+  // El tope: lo pesado es real; si no entra, se achica lo estimado.
+  const sumaEstimada = estimadas.reduce((suma, f) => suma + f.kg, 0);
+  const lugar = Math.max(0, disponible - totalPesado);
+  const factor = sumaEstimada > lugar && sumaEstimada > 0 ? lugar / sumaEstimada : 1;
+
+  const nombrePorCodigo = new Map(filas.map((f) => [f.codigo, f.nombre]));
+  const salidas: SalidaEstimada[] = [
+    ...[...pesadasPorCodigo.entries()].map(([codigo, kg]) => ({
+      codigo,
+      nombre: nombrePorCodigo.get(codigo) ?? codigo,
+      kg: redondear(kg, 3),
+      estimado: false,
+    })),
+    ...estimadas
+      .map((f) => ({ codigo: f.codigo, nombre: f.nombre, kg: redondear(f.kg * factor, 3), estimado: true }))
+      .filter((f) => f.kg > 0)
+      .sort((a, b) => b.kg - a.kg),
+  ];
+
+  const kgSalida = salidas.reduce((suma, f) => suma + f.kg, 0);
+
+  // Si hubo que achicar mucho las estimadas, la pesada no cierra con lo que el
+  // sistema cree que pesaban los pollos: casi seguro los pollos eran más
+  // grandes que el promedio del cajón. Se dice, para que lo corrija si quiere.
+  const aviso =
+    factor < 0.85 && !(kgPorUnidadDicho && kgPorUnidadDicho > 0)
+      ? `Ojo: lo que pesaste es mucho para ${unidades} ${unidades === 1 ? "pollo" : "pollos"} de ${redondear(kgEntrada / unidades, 2)} kg. Si eran más grandes, decime cuánto pesaba cada uno y recalculo.`
+      : undefined;
+
+  return {
+    ok: true,
+    unidades,
+    kgEntrada,
+    salidas,
+    mermaKg: redondear(Math.max(0, kgEntrada - kgSalida), 3),
+    ...(aviso ? { aviso } : {}),
+  };
+}
+
+/**
+ * Ejecuta un trozado estimado: si el carnicero dijo cuánto pesaba cada pollo,
+ * primero se les pone ese peso real a las piezas (reemplaza al estimado, nunca
+ * se suma), y después se troza con las presas pesadas y calculadas.
+ */
+export async function trozarConEstimacion(params: {
+  carniceriaId: string;
+  especie: Especie;
+  unidades: number;
+  salidas: SalidaEstimada[];
+  kgPorUnidadDicho?: number | null;
+}): Promise<{ ok: boolean; mensaje: string }> {
+  const { carniceriaId, especie, unidades, salidas, kgPorUnidadDicho } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const codigoOrigen = descriptor(especie).codigoProductoUnidad;
+
+  if (kgPorUnidadDicho && kgPorUnidadDicho > 0 && codigoOrigen) {
+    const { data: origen } = await supabaseAdmin
+      .from("productos")
+      .select("id")
+      .eq("carniceria_id", carniceriaId)
+      .eq("codigo", codigoOrigen)
+      .maybeSingle();
+    if (origen) {
+      const { data: piezas } = await supabaseAdmin
+        .from("piezas_stock")
+        .select("id")
+        .eq("carniceria_id", carniceriaId)
+        .eq("producto_id", origen.id)
+        .eq("estado", "disponible")
+        .gt("kg_restantes", 0)
+        .order("vence_at", { ascending: true, nullsFirst: false })
+        .order("ingresada_at", { ascending: true })
+        .limit(unidades);
+      for (const pieza of piezas ?? []) {
+        await pesarPieza({ carniceriaId, piezaId: pieza.id as string, kgReales: kgPorUnidadDicho });
+      }
+    }
+  }
+
+  const resultado = await trozar({
+    carniceriaId,
+    especie,
+    unidades,
+    salidas: salidas.map((s) => ({
+      codigo: s.codigo,
+      kg: s.kg,
+      estimado: s.estimado,
+      esSubproducto: s.codigo === "piel_de_pollo" || s.codigo === "carcasa_de_pollo",
+    })),
+  });
+
+  return { ok: resultado.ok, mensaje: resultado.mensaje };
+}
+
+// ============================================================
+// Cuánto pesa UNA unidad de un producto (para vender por unidad)
+// ============================================================
+//
+// Pedido del fundador (22/09/2026): "que cada corte o pieza se pueda vender
+// como unidad también, manejando estimados por unidad". El cliente dice "3
+// pata muslo", no "1,5 kg de pata y muslo", y el bot le contestaba "¿me lo
+// decís en kilos?".
+//
+// De dónde sale el peso de una unidad, en este orden (el primero que haya):
+//
+//   1. El que cargó la carnicería en el catálogo (`peso_aproximado_unidad_kg`).
+//      Es el mejor dato: lo puso alguien que pesa esa milanesa todos los días.
+//   2. Pollo entero: el peso promedio REAL de los pollos que hay en stock (sale
+//      del cajón: 20 kg / cabezas, corregido por cada venta pesada).
+//   3. Presas de pollo: el pollo promedio × el % de la presa en la tabla de
+//      trozado ÷ cuántas trae cada pollo (2 pechugas, 2 pata y muslo...).
+//      "3 pata muslo" de pollos de 2,5 kg = 3 × (2,5 × 40,5 % ÷ 2) ≈ 1,5 kg.
+//   4. Nada: se devuelve null y el bot pide el dato en kilos. No se inventa un
+//      peso que nadie cargó (regla 1). Se carga una vez en el catálogo y listo.
+
+export type PesoPorUnidad = { kg: number; fuente: "catalogo" | "stock" | "tabla" };
+
+/**
+ * Devuelve una función que estima el peso de una unidad de cada producto.
+ * Hace las consultas una sola vez por llamada (se reusa en todo el pedido).
+ */
+export function estimadorPorUnidad(
+  carniceriaId: string
+): (producto: { id: string; codigo: string; peso_aproximado_unidad_kg: number | null }) => Promise<PesoPorUnidad | null> {
+  let polloPromedio: Promise<number | null> | null = null;
+  let tablaPollo: Promise<{ merma: number; pct: Map<string, number> } | null> | null = null;
+
+  const pesoDelPollo = () => {
+    polloPromedio ??= (async () => {
+      const supabaseAdmin = getSupabaseAdmin();
+      const codigo = descriptor("aviar").codigoProductoUnidad ?? "pollo_entero";
+      const { data } = await supabaseAdmin
+        .from("piezas_stock")
+        .select("kg_restantes, productos!inner(codigo)")
+        .eq("carniceria_id", carniceriaId)
+        .eq("productos.codigo", codigo)
+        .eq("estado", "disponible")
+        .gt("kg_restantes", 0)
+        .limit(50);
+      const lista = (data ?? []) as unknown as { kg_restantes: number }[];
+      if (lista.length > 0) {
+        return redondear(lista.reduce((s, p) => s + Number(p.kg_restantes), 0) / lista.length, 3);
+      }
+      // Sin pollos en stock: el último cajón que entró.
+      const { data: cajon } = await supabaseAdmin
+        .from("recepciones_lote")
+        .select("peso_recibido_kg, unidades")
+        .eq("carniceria_id", carniceriaId)
+        .eq("especie", "aviar")
+        .gt("unidades", 0)
+        .order("fecha", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (cajon && Number(cajon.unidades) > 0) {
+        return redondear(Number(cajon.peso_recibido_kg) / Number(cajon.unidades), 3);
+      }
+      return null;
+    })();
+    return polloPromedio;
+  };
+
+  const tabla = () => {
+    tablaPollo ??= (async () => {
+      const supabaseAdmin = getSupabaseAdmin();
+      const { data: t } = await supabaseAdmin
+        .from("tablas_rendimiento")
+        .select("id, pct_merma")
+        .eq("carniceria_id", carniceriaId)
+        .eq("especie", "aviar")
+        .eq("uso", "precarga_trozado")
+        .is("vigente_hasta", null)
+        .order("version", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!t) return null;
+      const { data: cortes } = await supabaseAdmin
+        .from("rendimiento_cortes")
+        .select("pct_central, productos(codigo)")
+        .eq("tabla_id", t.id);
+      const pct = new Map<string, number>();
+      for (const c of (cortes ?? []) as unknown as { pct_central: number; productos: { codigo: string } | null }[]) {
+        if (c.productos) pct.set(c.productos.codigo, Number(c.pct_central));
+      }
+      return { merma: Number(t.pct_merma ?? 0), pct };
+    })();
+    return tablaPollo;
+  };
+
+  return async (producto) => {
+    if (producto.peso_aproximado_unidad_kg != null && producto.peso_aproximado_unidad_kg > 0) {
+      return { kg: Number(producto.peso_aproximado_unidad_kg), fuente: "catalogo" };
+    }
+
+    if (producto.codigo === descriptor("aviar").codigoProductoUnidad) {
+      const kg = await pesoDelPollo();
+      return kg ? { kg, fuente: "stock" } : null;
+    }
+
+    const porAve = UNIDADES_POR_AVE[producto.codigo];
+    if (porAve) {
+      const [ave, t] = await Promise.all([pesoDelPollo(), tabla()]);
+      const pct = t?.pct.get(producto.codigo);
+      if (ave && t && pct) {
+        return { kg: redondear((ave * (1 - t.merma / 100) * (pct / 100)) / porAve, 3), fuente: "tabla" };
+      }
+    }
+
+    return null;
+  };
+}
+
 /**
  * Trozar PARA LA VITRINA: se cierran N piezas enteras y nacen las presas.
  *
@@ -798,7 +1172,7 @@ export async function trozar(params: {
         recepcion_lote_id: loteId,
         kg_iniciales: redondear(s.kg, 3),
         kg_restantes: redondear(s.kg, 3),
-        confianza: "pesado",
+        confianza: s.estimado ? "estimado" : "pesado",
         es_subproducto: s.esSubproducto ?? false,
         estado: "disponible",
         vence_at: vencimientoDesde(
@@ -1354,6 +1728,82 @@ async function asegurarPiezaDeArrastre(carniceriaId: string, productoId: string)
     // 'estimado': nadie sabe hoy de dónde salió ese número.
     confianza: "estimado",
   });
+}
+
+// ============================================================
+// Devolver el stock de un pedido (se cancela o se cambia)
+// ============================================================
+//
+// Un pedido aprobado ya descontó su stock (movimientos 'venta' con su
+// pedido_id). Si el cliente lo cancela o lo cambia, esos kilos tienen que
+// VOLVER a las mismas piezas de donde salieron. Antes no volvían: cancelar un
+// pedido aprobado dejaba el stock descontado para siempre (la especificación,
+// 10.2, pide expresamente liberarlo).
+//
+// Se anota como una 'venta' negativa y no se borra la original: así el
+// historial muestra las dos cosas (se vendió, se devolvió) y el balance del
+// lote queda bien sin tocar nada del pasado.
+
+export async function devolverStockDePedido(params: {
+  carniceriaId: string;
+  pedidoId: string;
+  causa: string;
+}): Promise<number> {
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: movimientos } = await supabaseAdmin
+    .from("movimientos_stock")
+    .select("pieza_id, recepcion_lote_id, kg")
+    .eq("carniceria_id", params.carniceriaId)
+    .eq("pedido_id", params.pedidoId)
+    .eq("tipo", "venta");
+
+  // Neto por pieza: si ya se devolvió una vez, no se devuelve dos veces.
+  const netoPorPieza = new Map<string, { kg: number; lote: string | null }>();
+  for (const m of movimientos ?? []) {
+    if (!m.pieza_id) continue;
+    const actual = netoPorPieza.get(m.pieza_id as string) ?? { kg: 0, lote: (m.recepcion_lote_id as string | null) ?? null };
+    actual.kg = redondear(actual.kg + Number(m.kg), 3);
+    netoPorPieza.set(m.pieza_id as string, actual);
+  }
+
+  const productos = new Set<string>();
+  let total = 0;
+
+  for (const [piezaId, { kg, lote }] of netoPorPieza) {
+    if (kg <= 0) continue;
+    const { data: pieza } = await supabaseAdmin
+      .from("piezas_stock")
+      .select("kg_restantes, producto_id")
+      .eq("id", piezaId)
+      .maybeSingle();
+    if (!pieza) continue;
+
+    await supabaseAdmin
+      .from("piezas_stock")
+      .update({
+        kg_restantes: redondear(Number(pieza.kg_restantes) + kg, 3),
+        estado: "disponible",
+        agotada_at: null,
+      })
+      .eq("id", piezaId);
+
+    await supabaseAdmin.from("movimientos_stock").insert({
+      carniceria_id: params.carniceriaId,
+      pieza_id: piezaId,
+      recepcion_lote_id: lote,
+      tipo: "venta",
+      kg: -kg,
+      causa: params.causa,
+      pedido_id: params.pedidoId,
+    });
+
+    productos.add(pieza.producto_id as string);
+    total = redondear(total + kg, 3);
+  }
+
+  for (const productoId of productos) await recalcularStock(productoId);
+  return total;
 }
 
 // ============================================================

@@ -214,9 +214,8 @@ Ejemplos:
         aclaracion con la pregunta de la picada, y en items_parciales mandá LAS DOS mitades (el vacío completo,
         la picada con accion ingreso, cantidad 3 y sin producto_codigo).
   "con 5 kilos de nalga hice milanesas" -> nalga baja 5 (t1) + milanesa ingreso 5 (t1).
-  "trocé pollo y saqué 6 pechugas que pesaron 2,700"
-     -> pechuga ingreso 2.7 (t1) + pollo entero baja (t1). Del pollo entero falta CUÁNTOS: preguntalo
-        (info_faltante "¿Cuántos pollos trozaste?"), con las dos mitades en items_parciales.
+  (El TROZADO DE POLLO no llega acá: lo resuelve otro módulo que calcula todas las presas. Si igual te llega,
+  NUNCA preguntes "cuánto pesó el resto del pollo": eso lo calcula el sistema.)
 Reglas de las transformaciones:
   - NUNCA pongas "baja" en el producto que SALIÓ: la picada, las milanesas, las pechugas SUBEN. El que baja
     es el que se usó. Un signo cambiado acá es el peor error posible: resta lo que se hizo y deja intacto lo

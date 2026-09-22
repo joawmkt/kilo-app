@@ -26,7 +26,7 @@ import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt } from
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { esCarniceroAutorizado } from "./quienEs";
-import { consumirDeProducto } from "./lotes";
+import { consumirDeProducto, devolverStockDePedido, estimadorPorUnidad } from "./lotes";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -55,6 +55,13 @@ export type ItemGuardadoPedido = {
    * pieza de stock se consume — ver `preparacion.ts`.
    */
   preparacion?: string | null;
+  /**
+   * Si el cliente lo pidió POR UNIDAD ("3 pata muslo"), cuántas unidades. La
+   * `cantidad` sigue en kilos (es lo que descuenta el stock); esto es para
+   * mostrarle al cliente y al carnicero lo que se pidió de verdad:
+   * "Pata y muslo: 3 u. (~1,5 kg)".
+   */
+  unidades_cliente?: number | null;
   // Precio de lista congelado al aprobar. Se guarda acá y no se recalcula
   // después: si mañana sube el precio del asado, el pedido de ayer no cambia
   // de valor retroactivamente. ESTIMATIVO — el total real se define al pesar.
@@ -198,16 +205,53 @@ async function obtenerPedidoPendienteCliente(
   };
 }
 
-function convertirACantidadReal(producto: Producto, cantidad: number, unidadCliente: string): number | null {
+function esPedidoPorUnidad(unidadCliente: string): boolean {
   const u = normalizarTexto(unidadCliente);
-  const esPorPieza =
-    u.includes("unidad") || ["u", "pieza", "piezas", "milanesa", "milanesas"].includes(u);
+  return (
+    u.includes("unidad") ||
+    ["u", "un", "pieza", "piezas", "milanesa", "milanesas", "presa", "presas", "pollo", "pollos"].includes(u)
+  );
+}
 
-  if (producto.unidad === "kg" && esPorPieza) {
-    if (producto.peso_aproximado_unidad_kg == null) return null;
-    return Number((cantidad * producto.peso_aproximado_unidad_kg).toFixed(3));
+/**
+ * Pasa lo que pidió el cliente a la unidad real del producto.
+ *
+ * Si el producto va por kilo y el cliente lo pidió por unidad, se usa el peso
+ * estimado de UNA unidad (ver `estimadorPorUnidad` en lotes.ts: catálogo,
+ * stock real o tabla de trozado). `null` solo si de verdad nadie sabe cuánto
+ * pesa una unidad de eso.
+ */
+async function convertirACantidadReal(
+  producto: Producto,
+  cantidad: number,
+  unidadCliente: string,
+  estimar: ReturnType<typeof estimadorPorUnidad>
+): Promise<{ kg: number; unidades: number | null } | null> {
+  if (producto.unidad === "kg" && esPedidoPorUnidad(unidadCliente)) {
+    const peso = await estimar(producto);
+    if (!peso) return null;
+    return { kg: Number((cantidad * peso.kg).toFixed(3)), unidades: cantidad };
   }
-  return cantidad;
+  return { kg: cantidad, unidades: null };
+}
+
+/**
+ * Cómo se muestra una cantidad: "3 u. (~1,52 kg)", "2 bolsas", "1,5kg".
+ * Antes salía "Carbon: 2bolsa" y "Pata y muslo: 3kg" cuando pidió 3 unidades.
+ */
+function mostrarCantidad(item: ItemGuardadoPedido): string {
+  const n = (x: number) => x.toLocaleString("es-AR", { maximumFractionDigits: 2 });
+  if (item.unidades_cliente) return ` ${n(item.unidades_cliente)} u. (~${n(item.cantidad)} kg)`;
+  if (item.unidad === "kg") return ` ${n(item.cantidad)} kg`;
+  const plural = item.cantidad === 1 ? item.unidad : item.unidad.endsWith("a") || item.unidad.endsWith("o") ? `${item.unidad}s` : `${item.unidad}es`;
+  return ` ${n(item.cantidad)} ${plural}`;
+}
+
+/** Para volver a armar un pedido con lo que pidió el cliente (unidades si fueron unidades). */
+function comoLoPidio(item: ItemGuardadoPedido): { cantidad: number; unidad: string } {
+  return item.unidades_cliente
+    ? { cantidad: item.unidades_cliente, unidad: "unidad" }
+    : { cantidad: item.cantidad, unidad: item.unidad };
 }
 
 // ============================================================
@@ -408,7 +452,7 @@ function mensajeResumenPedidoParaCarnicero(params: {
   const quien = clienteNombre ? `${clienteNombre} (${clienteTelefono})` : clienteTelefono;
   const lineas = items.map(
     (item) =>
-      `- ${item.nombre_display}: ${item.cantidad}${item.unidad}${etiquetaPreparacion(item.preparacion)}`
+      `- ${item.nombre_display}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
   );
   return [
     `🧾 Pedido nuevo de ${quien}`,
@@ -497,6 +541,9 @@ async function armarYGuardarPedido(params: {
   const descartadosSinAlternativa: string[] = [];
   const idsYaUsados = new Set<string>();
 
+  // Una sola vez por pedido: el peso por unidad de lo que se pida por unidad.
+  const estimar = estimadorPorUnidad(carniceriaId);
+
   for (const item of itemsPedidos) {
     const producto = catalogo.porCodigo.get(item.producto_codigo);
     if (!producto) {
@@ -504,11 +551,14 @@ async function armarYGuardarPedido(params: {
       return `Perdón, no reconocí uno de los productos que pediste ("${item.producto_codigo}"). ¿Podés decirlo de otra forma?`;
     }
 
-    const cantidadReal = convertirACantidadReal(producto, item.cantidad, item.unidad);
-    if (cantidadReal === null) {
+    const convertida = await convertirACantidadReal(producto, item.cantidad, item.unidad, estimar);
+    if (convertida === null) {
       await guardar({ transcripcion: texto, updated_at: ahora });
-      return `¿Podés decirme "${producto.nombre_display}" en kilos en vez de unidades? Todavía no tengo el equivalente para ese producto.`;
+      // Solo llega acá si nadie cargó cuánto pesa una unidad de este producto
+      // (se carga una vez en Catálogo → "Peso por unidad").
+      return `De ${producto.nombre_display} todavía no tengo cargado cuánto pesa cada una. ¿Me decís más o menos cuántos kilos querés?`;
     }
+    const cantidadReal = convertida.kg;
 
     idsYaUsados.add(producto.id);
 
@@ -524,6 +574,7 @@ async function armarYGuardarPedido(params: {
         unidad: producto.unidad,
         disponible: true,
         preparacion: detectarPreparacion(texto),
+        unidades_cliente: convertida.unidades,
       });
       continue;
     }
@@ -722,7 +773,7 @@ function resumenParaConfirmar(params: {
   const { items, horaRetiroIso, avisoDescartados } = params;
   const lineas = items.map(
     (item) =>
-      `- ${item.nombre_display}: ${item.cantidad}${item.unidad}${etiquetaPreparacion(item.preparacion)}`
+      `- ${item.nombre_display}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
   );
   return [
     `${avisoDescartados}Entonces te preparo:`,
@@ -1139,7 +1190,7 @@ async function procesarResultado(params: {
     const codigosEnParciales = new Set(itemsParciales.map((i) => i.producto_codigo).filter(Boolean));
     for (const item of itemsActualesPrevios) {
       if (!codigosEnParciales.has(item.producto_codigo)) {
-        itemsParciales = [...itemsParciales, { producto_codigo: item.producto_codigo, cantidad: item.cantidad, unidad: item.unidad }];
+        itemsParciales = [...itemsParciales, { producto_codigo: item.producto_codigo, ...comoLoPidio(item) }];
       }
     }
   }
@@ -1148,7 +1199,7 @@ async function procesarResultado(params: {
     const codigosCubiertos = new Set(resultado.items.map((i) => i.producto_codigo));
     const itemsFaltantes: ItemPedido[] = (itemsActualesPrevios ?? [])
       .filter((i) => !codigosCubiertos.has(i.producto_codigo))
-      .map((i) => ({ producto_codigo: i.producto_codigo, cantidad: i.cantidad, unidad: i.unidad, confidence: 1 }));
+      .map((i) => ({ producto_codigo: i.producto_codigo, ...comoLoPidio(i), confidence: 1 }));
 
     return await armarYGuardarPedido({
       carniceriaId,
@@ -1691,6 +1742,88 @@ function preguntarCualPedido(pedidos: PedidoConfirmado[], accion: string): strin
  * (10.3); uno confirmado se cancela y se le avisa al carnicero, porque él ya
  * lo tenía en la lista de lo que iba a preparar (10.2).
  */
+/**
+ * El cliente cambia un pedido que ya estaba aprobado.
+ *
+ * Lo que pide la especificación (8 y 49), paso por paso:
+ *   1. se devuelve el stock que había descontado la versión aprobada;
+ *   2. se crea una versión nueva (la vieja ya no se puede aprobar);
+ *   3. se le avisa al carnicero (regla 4);
+ *   4. el pedido vuelve a armarse con la lista nueva: verifica stock, ofrece
+ *      sustitutos si falta algo, muestra el resumen, el cliente confirma y va
+ *      al carnicero para aprobar de nuevo.
+ * El paso 4 es el mismo camino de siempre (`armarYGuardarPedido`): no hay una
+ * segunda forma de armar un pedido.
+ */
+async function modificarPedidoConfirmado(params: {
+  carniceriaId: string;
+  telefono: string;
+  clienteId: string;
+  clienteNombre: string | null;
+  mensajeWhatsappId: string;
+  pedido: PedidoConfirmado;
+  items: ItemPedido[];
+  horaRetiroIso?: string;
+  catalogo: CatalogoCarniceria;
+  texto: string;
+}): Promise<string> {
+  const { carniceriaId, telefono, clienteId, clienteNombre, mensajeWhatsappId, pedido, items, horaRetiroIso, catalogo, texto } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  // Se "toma" el pedido con el estado como condición: si justo lo estaban
+  // marcando retirado, no se lo reabre.
+  const { data: tomado } = await supabaseAdmin
+    .from("pedidos")
+    .update({ estado: "pendiente_aclaracion", interpretacion: null, pregunta_pendiente: null, updated_at: new Date().toISOString() })
+    .eq("id", pedido.id)
+    .in("estado", ESTADOS_CON_STOCK_DESCONTADO)
+    .select("id")
+    .maybeSingle();
+
+  if (!tomado) return "Ese pedido ya no se puede cambiar (puede que ya lo hayan entregado). Si necesitás algo, contame 🙌";
+
+  await devolverStockDePedido({ carniceriaId, pedidoId: pedido.id, causa: "Devolución: el cliente cambió el pedido" });
+
+  const version = await nuevaVersion({
+    pedidoId: pedido.id,
+    carniceriaId,
+    motivo: "version_invalidada",
+    actor: "cliente",
+    descripcion: "El cliente pidió cambiar un pedido que ya estaba aprobado.",
+    detalle: { antes: pedido.items },
+  });
+
+  const antes = pedido.items.map((i) => i.nombre_display).join(", ");
+  await crearAviso({
+    carniceriaId,
+    tipo: "pedido_modificado",
+    titulo: "Un cliente cambió un pedido aprobado",
+    cuerpo: `${clienteNombre ?? "Un cliente"} quiere cambiar su pedido (${antes}). Te llega la versión nueva para aprobar; la anterior ya no vale.`,
+    enlace: `/panel/pedidos/${pedido.id}`,
+    entidadTipo: "pedido",
+    entidadId: pedido.id,
+    claveUnicidad: `pedido_modificado:${pedido.id}:${version ?? ""}`,
+  });
+
+  return await armarYGuardarPedido({
+    carniceriaId,
+    telefono,
+    clienteId,
+    clienteNombre,
+    mensajeWhatsappId,
+    pedidoId: pedido.id,
+    catalogo,
+    itemsPedidos: items,
+    horaRetiroIso,
+    texto,
+    // Ya se le ofreció el complementario la primera vez.
+    recomendacionYaHecha: true,
+  });
+}
+
+/** Estados en los que el pedido ya descontó su stock (se aprobó). */
+const ESTADOS_CON_STOCK_DESCONTADO = ["aprobado", "en_espera"];
+
 async function cancelarPedido(params: {
   carniceriaId: string;
   pedidoId: string;
@@ -1698,6 +1831,12 @@ async function cancelarPedido(params: {
   avisarAlCarnicero: boolean;
 }): Promise<string> {
   const { carniceriaId, pedidoId, clienteNombre, avisarAlCarnicero } = params;
+
+  const { data: antes } = await getSupabaseAdmin()
+    .from("pedidos")
+    .select("estado")
+    .eq("id", pedidoId)
+    .maybeSingle();
 
   const { data: actualizado } = await getSupabaseAdmin()
     .from("pedidos")
@@ -1715,6 +1854,12 @@ async function cancelarPedido(params: {
 
   if (!actualizado) {
     return "Ese pedido ya no se puede cancelar. Si necesitás algo, contame y lo vemos 🙌";
+  }
+
+  // Especificación 10.2: si ya estaba aprobado, el stock ya se había
+  // descontado y tiene que volver. Antes quedaba descontado para siempre.
+  if (antes && ESTADOS_CON_STOCK_DESCONTADO.includes(antes.estado as string)) {
+    await devolverStockDePedido({ carniceriaId, pedidoId, causa: "Devolución: el cliente canceló el pedido" });
   }
 
   await registrarEvento({
@@ -1921,8 +2066,7 @@ async function procesarMensajeDeCliente(params: {
     ? {
         itemsActuales: pedidoActivo.items.map((i) => ({
           producto_codigo: i.producto_codigo,
-          cantidad: i.cantidad,
-          unidad: i.unidad,
+          ...comoLoPidio(i),
           confidence: 1,
         })),
         preguntaPendiente: pedidoActivo.pregunta_pendiente ?? undefined,
@@ -1940,13 +2084,71 @@ async function procesarMensajeDeCliente(params: {
   // Los últimos mensajes tal cual se dijeron: la red para que el bot no se
   // olvide de lo que el cliente ya contestó (ver historial.ts).
   const historial = await historialReciente({ carniceriaId, telefono, quien: "Cliente" });
-  const resultado = await interpretarMensajePedido(
+
+  // Si no hay un pedido armándose pero sí uno CONFIRMADO, se le muestra a la
+  // IA: sin esto, "quiero sacar el vacío" se leía como un pedido NUEVO de
+  // vacío (y encima preguntaba para cuántas personas era el asado). Bug del
+  // 22/09/2026.
+  const confirmados = pedidoActivo ? [] : await obtenerPedidosConfirmados(carniceriaId, telefono);
+  const confirmadoParaContexto = confirmados[0]
+    ? {
+        items: confirmados[0].items.map((i) => ({ producto_codigo: i.producto_codigo, ...comoLoPidio(i) })),
+        horaRetiroIso: confirmados[0].hora_retiro,
+      }
+    : undefined;
+
+  const interpretado = await interpretarMensajePedido(
     texto,
     bloquePromos ? `${catalogo.promptCatalogo}\n\n${bloquePromos}` : catalogo.promptCatalogo,
     ahoraArgentinaIso(),
     contexto,
-    historial
+    historial,
+    confirmadoParaContexto
   );
+
+  // ------------------------------------------------------------
+  // Cambiar un pedido YA CONFIRMADO (especificación, secciones 8 y 49)
+  // ------------------------------------------------------------
+  if (interpretado.tipo === "modificacion" && !pedidoActivo) {
+    if (confirmados.length === 0) {
+      return "No tenés ningún pedido confirmado para cambiar. Si querés armar uno, contame qué necesitás 🙌";
+    }
+    if (confirmados.length > 1) {
+      // Sección 1.4: con dos pedidos en pie, se pregunta cuál.
+      return preguntarCualPedido(confirmados, "cambiar");
+    }
+    const pedido = confirmados[0];
+
+    // "Quiero cambiar mi pedido", sin decir qué: se le muestra lo que tiene.
+    // No se toca nada todavía (si después no cambia nada, el pedido sigue
+    // aprobado como estaba).
+    if (!interpretado.items) {
+      const lineas = pedido.items.map((i) => `- ${i.nombre_display}:${mostrarCantidad(i)}`);
+      return `${interpretado.pregunta ?? "Dale, ¿qué querés cambiar?"}\n\nTu pedido es:\n${lineas.join("\n")}`;
+    }
+
+    return await modificarPedidoConfirmado({
+      carniceriaId,
+      telefono,
+      clienteId: cliente.id,
+      clienteNombre: cliente.nombre,
+      mensajeWhatsappId,
+      pedido,
+      items: interpretado.items,
+      horaRetiroIso: interpretado.horaRetiroIso ?? pedido.hora_retiro ?? undefined,
+      catalogo,
+      texto,
+    });
+  }
+
+  // Con un pedido armándose, "sacá el vacío" es un cambio más del mismo
+  // pedido: se lo trata como pedido completo (ya viene la lista entera).
+  const resultado: ResultadoInterpretacionPedido =
+    interpretado.tipo === "modificacion"
+      ? interpretado.items
+        ? { tipo: "pedido", items: interpretado.items, ...(interpretado.horaRetiroIso ? { horaRetiroIso: interpretado.horaRetiroIso } : {}) }
+        : { tipo: "no_entendido" }
+      : interpretado;
 
   // ------------------------------------------------------------
   // Cancelación (sección 10)

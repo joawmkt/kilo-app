@@ -15,6 +15,7 @@ import {
   accionBorrarProducto,
   accionCrearProducto,
   accionGuardarAlias,
+  accionGuardarPesoUnidad,
   accionQuitarSinonimo,
   accionResolverColision,
   type ResultadoCatalogo,
@@ -174,6 +175,10 @@ function FilaProducto({
   const [nuevoSinonimo, setNuevoSinonimo] = useState("");
   const [editandoAlias, setEditandoAlias] = useState(false);
   const [alias, setAlias] = useState(producto.alias ?? "");
+  const [editandoPeso, setEditandoPeso] = useState(false);
+  const [peso, setPeso] = useState(
+    producto.pesoUnidadKg !== null ? String(producto.pesoUnidadKg).replace(".", ",") : ""
+  );
 
   function correr(accion: (p: null, d: FormData) => Promise<ResultadoCatalogo>, datos: FormData) {
     iniciar(async () => {
@@ -198,6 +203,14 @@ function FilaProducto({
     datos.set("termino", termino);
     setNuevoSinonimo("");
     correr(accionAgregarSinonimo, datos);
+  }
+
+  function guardarPeso() {
+    const datos = new FormData();
+    datos.set("producto_id", producto.id);
+    datos.set("peso", peso);
+    setEditandoPeso(false);
+    correr(accionGuardarPesoUnidad, datos);
   }
 
   function guardarAlias() {
@@ -240,6 +253,9 @@ function FilaProducto({
                   {producto.alias ? `En el sistema: ${producto.nombre} · ` : ""}
                   {nombreDeFamilia(producto.familia)} · {producto.unidad}
                   {producto.tienePadre ? " · sale de otro corte" : ""}
+                  {producto.pesoUnidadKg !== null
+                    ? ` · ~${producto.pesoUnidadKg.toLocaleString("es-AR", { maximumFractionDigits: 3 })} kg por unidad`
+                    : ""}
                 </p>
               </div>
             </div>
@@ -297,6 +313,27 @@ function FilaProducto({
             />
           </div>
 
+          {editandoPeso && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-ink-2">Una unidad pesa unos</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={peso}
+                onChange={(evento) => setPeso(evento.target.value)}
+                placeholder="0,25"
+                className="min-h-10 w-24 rounded-tarjeta border border-border bg-surface px-3 text-right text-sm text-ink"
+              />
+              <span className="text-sm text-ink-2">kg</span>
+              <button type="button" onClick={guardarPeso} className={clasesBoton("principal")} disabled={pendiente}>
+                Guardar
+              </button>
+              <button type="button" onClick={() => setEditandoPeso(false)} className={clasesBoton("secundario")}>
+                Cancelar
+              </button>
+            </div>
+          )}
+
           {editandoAlias ? (
             <div className="flex flex-wrap items-center gap-2">
               <input
@@ -329,6 +366,15 @@ function FilaProducto({
               >
                 {producto.alias ? "Cambiar cómo lo llamás" : "Llamarlo de otra forma"}
               </button>
+              {producto.unidad === "kg" && !editandoPeso && (
+                <button
+                  type="button"
+                  onClick={() => setEditandoPeso(true)}
+                  className="text-sm text-ink-3 underline underline-offset-4 hover:text-ink"
+                >
+                  {producto.pesoUnidadKg !== null ? "Cambiar peso por unidad" : "Venderlo por unidad"}
+                </button>
+              )}
               {producto.esPropio && (
                 <button
                   type="button"

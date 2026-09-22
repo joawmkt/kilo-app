@@ -124,6 +124,43 @@ export async function accionGuardarAlias(
 }
 
 // ------------------------------------------------------------
+// El peso de una unidad (para vender por unidad)
+// ------------------------------------------------------------
+//
+// Con esto el bot entiende "3 milanesas" o "2 bifes" sin pedirle al cliente
+// que lo diga en kilos. El pollo entero y las presas de pollo no lo necesitan:
+// se calculan solos con el stock y la tabla de trozado (ver
+// `estimadorPorUnidad` en lotes.ts). Lo que se carga acá manda sobre eso.
+
+export async function accionGuardarPesoUnidad(
+  _previo: ResultadoCatalogo | null,
+  datos: FormData
+): Promise<ResultadoCatalogo> {
+  const sesion = await requerirSesion();
+  const productoId = String(datos.get("producto_id") ?? "");
+  const crudo = String(datos.get("peso") ?? "").trim().replace(",", ".");
+  const peso = crudo === "" ? null : Number(crudo);
+
+  if (peso !== null && (!Number.isFinite(peso) || peso <= 0 || peso > 20)) {
+    return { ok: false, mensaje: "Poné el peso de UNA unidad en kilos (por ejemplo 0,25)." };
+  }
+
+  const { error } = await getSupabaseAdmin()
+    .from("productos")
+    .update({ peso_aproximado_unidad_kg: peso })
+    .eq("id", productoId)
+    .eq("carniceria_id", sesion.carniceria.id);
+
+  if (error) return { ok: false, mensaje: "No pude guardar el peso." };
+
+  revalidar();
+  return {
+    ok: true,
+    mensaje: peso === null ? "Saqué el peso por unidad." : `Listo: cada unidad pesa unos ${String(peso).replace(".", ",")} kg.`,
+  };
+}
+
+// ------------------------------------------------------------
 // Los sinónimos
 // ------------------------------------------------------------
 

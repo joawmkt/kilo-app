@@ -35,6 +35,8 @@ export type ProductoDelCatalogo = {
   sinonimos: SinonimoDelPanel[];
   /** % que tiene este corte en la tabla de rendimiento vigente, si tiene. */
   pctEnTabla: number | null;
+  /** Cuánto pesa UNA unidad, para venderlo por unidad. Null = no cargado. */
+  pesoUnidadKg: number | null;
 };
 
 type FilaCatalogo = {
@@ -48,6 +50,7 @@ type FilaCatalogo = {
   activo: boolean;
   es_propio: boolean;
   producto_padre_id: string | null;
+  peso_aproximado_unidad_kg: number | string | null;
   producto_sinonimos: { id: string; texto: string }[] | null;
 };
 
@@ -55,7 +58,7 @@ export async function listarCatalogo(supabase: SupabaseClient): Promise<Producto
   const { data, error } = await supabase
     .from("productos")
     .select(
-      "id, codigo, nombre_display, alias_display, familia, especie, unidad, activo, es_propio, producto_padre_id, producto_sinonimos(id, texto)"
+      "id, codigo, nombre_display, alias_display, familia, especie, unidad, activo, es_propio, producto_padre_id, peso_aproximado_unidad_kg, producto_sinonimos(id, texto)"
     )
     .order("nombre_display", { ascending: true });
 
@@ -86,6 +89,7 @@ export async function listarCatalogo(supabase: SupabaseClient): Promise<Producto
     tienePadre: fila.producto_padre_id !== null,
     sinonimos: (fila.producto_sinonimos ?? []).map((s) => ({ id: s.id, texto: s.texto })),
     pctEnTabla: pctPorProducto.get(fila.id) ?? null,
+    pesoUnidadKg: fila.peso_aproximado_unidad_kg === null ? null : Number(fila.peso_aproximado_unidad_kg),
   }));
 }
 

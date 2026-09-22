@@ -51,6 +51,17 @@ const PATRONES_AVIAR = [
   new RegExp(`\\b${NUMERO}\\s+pollos\\b`),
 ];
 
+// El cerdo también se nombra "entero" o contado: "entraron 2 cerdos", "me
+// llegó un chancho", "medio cerdo". Bug del 22/09: "habían entrado dos cerdos"
+// no se reconocía como lote, caía al flujo de stock genérico, y la IA terminó
+// cargando "Pollo entero +2". En la carnicería cada "cerdo" que llega colgado
+// es una media res (o el animal entero, que son dos medias).
+const PATRONES_CERDO_CONTADO = [
+  /\b(\d{1,2}|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+(cerdos?|chanchos?|capones?)\b/,
+  /\bmedio\s+(cerdo|chancho|capon)\b/,
+  /\b(cerdo|chancho|capon)\s+entero\b/,
+];
+
 // "Trocé 3 pollos" o "vendí 2 pollos" NO es un cajón que llegó: es una
 // transformación o una venta. Eso lo resuelve el flujo de stock.
 const NO_ES_LLEGADA_DE_POLLO = /\b(troz|troc|trozo|trocé|vend|saqu|us[eé]|pic[aoé]|cort[eé]|desos)/;
@@ -105,6 +116,7 @@ export function detectarEspecieDeLote(texto: string): Especie | null {
   const t = normalizar(texto);
 
   if (hablaDePollos(t)) return "aviar";
+  if (PATRONES_CERDO_CONTADO.some((p) => p.test(t)) && !NO_ES_LLEGADA_DE_POLLO.test(t)) return "porcino";
   if (EXCLUSIONES.test(t) && !PATRONES_MEDIA_RES[0].test(t)) return null;
   if (!PATRONES_MEDIA_RES.some((p) => p.test(t))) return null;
 

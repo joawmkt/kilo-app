@@ -7,9 +7,12 @@ import { clasificarRespuesta } from "./confirmacion";
 import { finDeHoyArgentina } from "./tiempo";
 import { revisarStockDeProducto } from "./notificaciones";
 import { esCarniceroAutorizado } from "./quienEs";
-import { responderSobreLote, cargarPollosEnteros } from "./flujoLotes";
+import { responderSobreLote, cargarPollosEnteros, probarComoLote } from "./flujoLotes";
 import { mencionaLote } from "./interpretarLote";
-import { moverStock, consumirUnidadesEnteras } from "./lotes";
+import { especieExplicita } from "./deteccionLote";
+import { responderSobreTrozado } from "./flujoTrozado";
+import { hablaDeTrozado } from "./lecturaTrozado";
+import { moverStock, consumirUnidadesEnteras, estimadorPorUnidad } from "./lotes";
 import { descriptor } from "./especies";
 import { variarSiSeRepite } from "./conversacion";
 import { historialReciente } from "./historial";
@@ -36,6 +39,12 @@ type OperacionPendiente = {
   vencida: boolean;
   /** Cuántos mensajes seguidos no se entendieron sobre esta operación. */
   fallos: number;
+  /**
+   * El PRIMER mensaje de esta operación. La transcripción se pisa en cada
+   * turno; esto no. Sirve para entender una respuesta suelta ("48 y 52") en
+   * relación a cómo arrancó la charla ("entraron dos cerdos").
+   */
+  textoInicial: string;
   /** La interpretación sin filtrar: el flujo de media res la mira para saber si esta operación es suya. */
   interpretacionCruda: unknown;
 };
@@ -101,7 +110,7 @@ async function obtenerOperacionPendienteActiva(
   const supabaseAdmin = getSupabaseAdmin();
   const { data, error } = await supabaseAdmin
     .from("operaciones_stock")
-    .select("id, estado, items, pregunta_pendiente, interpretacion, expires_at")
+    .select("id, estado, items, pregunta_pendiente, interpretacion, expires_at, transcripcion")
     .eq("carniceria_id", carniceriaId)
     .eq("telefono", telefono)
     .in("estado", ["pendiente_aclaracion", "pendiente_confirmacion", "pendiente_modificacion"])
@@ -135,7 +144,7 @@ async function obtenerOperacionPendienteActiva(
   // respuesta fue de tipo aclaracion/info_faltante; si el registro es de
   // otro tipo (ej. quedó de una operación vieja) no hay nada que rescatar.
   const interpretacion = data.interpretacion as
-    | { tipo?: string; itemParcial?: ItemParcial; itemsParciales?: ItemParcial[]; fallos?: number }
+    | { tipo?: string; itemParcial?: ItemParcial; itemsParciales?: ItemParcial[]; fallos?: number; textoInicial?: string }
     | null
     | undefined;
   // `itemParcial` (uno solo) es el formato viejo: se sigue leyendo para no
@@ -153,6 +162,7 @@ async function obtenerOperacionPendienteActiva(
     itemsParciales,
     vencida: estaVencida,
     fallos: Number(interpretacion?.fallos ?? 0),
+    textoInicial: interpretacion?.textoInicial ?? ((data as { transcripcion?: string }).transcripcion ?? ""),
     // Cruda, sin filtrar por tipo: el flujo de media res necesita mirarla para
     // reconocer si esta operación es suya.
     interpretacionCruda: data.interpretacion ?? null,
@@ -173,6 +183,7 @@ async function guardarResultado(params: {
   const { carniceriaId, telefono, mensajeWhatsappId, operacionId, resultado, catalogo, texto, previa } = params;
   const supabaseAdmin = getSupabaseAdmin();
   const ahora = new Date().toISOString();
+  const textoInicial = previa?.textoInicial || texto;
 
   async function guardar(cambios: Record<string, unknown>) {
     if (operacionId) {
@@ -223,7 +234,7 @@ async function guardarResultado(params: {
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
-      interpretacion: { ...resultado, pregunta, ...(itemsParciales ? { itemsParciales } : {}), fallos: 0 },
+      interpretacion: { ...resultado, pregunta, ...(itemsParciales ? { itemsParciales } : {}), fallos: 0, textoInicial },
       pregunta_pendiente: pregunta,
       updated_at: ahora,
     });
@@ -232,12 +243,64 @@ async function guardarResultado(params: {
 
   // tipo === "operacion"
   const itemsFinales = rescatarCompletos(resultado.items, previa?.itemsParciales);
+
+  // ------------------------------------------------------------
+  // Guarda de especie (22/09/2026)
+  // ------------------------------------------------------------
+  //
+  // El carnicero habló de cerdo y la IA armó "Pollo entero +2 pollos" (y
+  // después "Pollo entero +53 kg"). Un error así no se puede mandar a
+  // confirmar: si el carnicero no lee con atención, carga pollo que no existe.
+  // Regla sin IA: si en la charla se nombró UN animal y algún producto de la
+  // operación es de OTRO animal, no se arma el resumen: se pregunta.
+  const hablado = especieExplicita(`${textoInicial} ${texto} ${previa?.pregunta_pendiente ?? ""}`);
+  if (hablado) {
+    const choca = itemsFinales
+      .map((i) => catalogo.porCodigo.get(i.producto_codigo))
+      .find((p) => p?.especie && p.especie !== hablado);
+    if (choca) {
+      const animal = hablado === "porcino" ? "cerdo" : hablado === "aviar" ? "pollo" : "vaca";
+      const pregunta = `Me estás hablando de ${animal} y entendí "${choca.nombre_display}", que es otra cosa. ¿Qué corte de ${animal} es, o es una media res entera?`;
+      await guardar({
+        estado: "pendiente_aclaracion",
+        transcripcion: texto,
+        interpretacion: { tipo: "aclaracion", pregunta, fallos: 0, textoInicial },
+        pregunta_pendiente: pregunta,
+        updated_at: ahora,
+      });
+      return pregunta;
+    }
+  }
+
   const itemsResueltos: ItemGuardado[] = [];
+  const estimar = estimadorPorUnidad(carniceriaId);
   for (const item of itemsFinales) {
     const producto = catalogo.porCodigo.get(item.producto_codigo);
     if (!producto) {
       await guardar({ transcripcion: texto, interpretacion: resultado, updated_at: ahora });
       return `Entendí algo, pero no reconocí uno de los productos ("${item.producto_codigo}"). ¿Podés decirlo de otra forma?`;
+    }
+
+    // "Entraron 10 pechugas": el producto va por kilo y lo contó en unidades.
+    // Antes se tomaban como 10 kg. Ahora se pasan a kilos con el peso por
+    // unidad (el mismo estimador que usa el cliente); si no hay, se pregunta.
+    const u = item.unidad.toLowerCase();
+    const contoUnidades = u.startsWith("unidad") || u === "u" || u.startsWith("pieza");
+    if (producto.unidad === "kg" && contoUnidades && !esConteoDeUnidades(item)) {
+      const peso = await estimar(producto);
+      if (!peso) {
+        const pregunta = `¿Cuántos kilos son las ${item.cantidad} de ${producto.nombre_display}? Todavía no tengo cargado cuánto pesa cada una.`;
+        await guardar({
+          estado: "pendiente_aclaracion",
+          transcripcion: texto,
+          interpretacion: { tipo: "info_faltante", pregunta, itemsParciales: itemsFinales.map((i) => (i === item ? { producto_codigo: i.producto_codigo, accion: i.accion } : i)), fallos: 0, textoInicial },
+          pregunta_pendiente: pregunta,
+          updated_at: ahora,
+        });
+        return pregunta;
+      }
+      item.cantidad = Number((item.cantidad * peso.kg).toFixed(3));
+      item.unidad = "kg";
     }
     itemsResueltos.push({
       ...item,
@@ -263,7 +326,7 @@ async function guardarResultado(params: {
   await guardar({
     estado: "pendiente_confirmacion",
     transcripcion: texto,
-    interpretacion: resultado,
+    interpretacion: { ...resultado, textoInicial },
     pregunta_pendiente: null,
     items: itemsResueltos,
     expires_at: finDeHoyArgentina().toISOString(),
@@ -561,6 +624,15 @@ export async function procesarTextoEntrante(params: {
   // Una media res pendiente vive en ESTA misma tabla, a propósito: para el
   // carnicero hay una sola cosa pendiente a la vez, así que su "sí" nunca es
   // ambiguo. Si la operación resulta ser una media res, la maneja su flujo.
+  // Un trozado de pollo pendiente también vive acá (ver flujoTrozado.ts).
+  const respuestaTrozado = await responderSobreTrozado({
+    carniceriaId,
+    telefono,
+    operacion: { id: op.id, interpretacion: op.interpretacionCruda, pregunta_pendiente: op.pregunta_pendiente },
+    texto,
+  });
+  if (respuestaTrozado !== null) return respuestaTrozado;
+
   const respuestaLote = await responderSobreLote({
     carniceriaId,
     operacion: { id: op.id, estado: op.estado, interpretacion: op.interpretacionCruda },
@@ -590,7 +662,32 @@ export async function procesarTextoEntrante(params: {
   // La detección es un regex, no el modelo: cuesta cero y no puede dudar.
   // Y vale para las tres especies: una media res de cerdo o un cajón de pollo
   // tampoco son la respuesta a una pregunta sobre cortes.
-  if (mencionaLote(texto)) {
+  // ------------------------------------------------------------
+  // La charla era de un lote y recién ahora se nota (22/09/2026)
+  // ------------------------------------------------------------
+  //
+  // "Entraron dos cerdos" (sin decir media res) caía acá, la IA preguntaba
+  // "¿cuántos kilos pesan?", el carnicero contestaba "48 y 52"... y ninguno de
+  // los dos mensajes, SOLO, dice "lote". Juntos sí. Si la operación todavía no
+  // tiene nada armado y el primer mensaje más este forman un aviso de lote, se
+  // abandona la operación y se carga como lote, con el texto combinado.
+  const combinado = `${op.textoInicial} ${texto}`.trim();
+  if (
+    !mencionaLote(texto) &&
+    op.textoInicial &&
+    mencionaLote(combinado) &&
+    op.items.length === 0 &&
+    !(op.itemsParciales ?? []).some((i) => i.producto_codigo && i.cantidad)
+  ) {
+    await getSupabaseAdmin()
+      .from("operaciones_stock")
+      .update({ estado: "cancelado", updated_at: new Date().toISOString(), pregunta_pendiente: null })
+      .eq("id", op.id);
+    const comoLote = await probarComoLote({ carniceriaId, telefono, mensajeWhatsappId, texto: combinado });
+    if (comoLote !== null) return comoLote;
+  }
+
+  if (mencionaLote(texto) || hablaDeTrozado(texto)) {
     await getSupabaseAdmin()
       .from("operaciones_stock")
       .update({

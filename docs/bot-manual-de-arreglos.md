@@ -321,6 +321,8 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | Cualquier pregunta contestada mal dos veces | Reformularla, nunca mandar el mismo texto dos veces |
 | "tipo 19" (a "¿a qué hora pasás?") | Tomar las 19:00, no volver a preguntar |
 | "quiero una promo" | Armar el pedido de la promo, no repetir la lista |
+| "son 3 pata muslo" | 3 u. (~kg) sin pedir kilos |
+| Pedido confirmado + "quiero sacar el vacío" | Nueva versión sin vacío, resumen y reaprobación; nunca preguntar personas |
 | "gracias" | No reabrir la venta |
 
 | Como carnicero | Tiene que |
@@ -339,6 +341,9 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | Dos mensajes seguidos que no entiende | La segunda vez, soltar lo pendiente y avisar |
 | Desposte parcial de cerdo (solo matambre) | Suma el matambre, descuenta de la media res, saca matambre de esa media res |
 | Trozado con más kilos de salida que de entrada | No deja guardar |
+| "entraron dos cerdos" → "48 y 52" | Dos medias de cerdo de 48 y 52 kg, nunca pollo |
+| "trocé 3 pollos y saqué 2,700 de pechuga" | Resumen con la pechuga pesada y el resto calculado; al confirmar, todas las presas al stock |
+| "trocé un pollo que pesaba 2,25 kg" | No preguntar cuántos pollos |
 
 ---
 

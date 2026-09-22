@@ -19,6 +19,8 @@ export type Producto = {
   alias_display: string | null;
   /** Todo el vocabulario que mapea a este producto, para poder devolverlo. */
   sinonimos: string[];
+  /** vacuno | porcino | aviar, o null si no aplica (carbón, huevos). */
+  especie: string | null;
 };
 
 export type TerminoAmbiguo = {
@@ -44,6 +46,7 @@ type ProductoRow = {
   es_complementario: boolean;
   peso_aproximado_unidad_kg: number | null;
   alias_display: string | null;
+  especie: string | null;
   producto_sinonimos: { texto: string }[] | null;
 };
 
@@ -59,7 +62,7 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
   const { data: productosData, error: errProductos } = await supabaseAdmin
     .from("productos")
     .select(
-      "id, codigo, nombre_display, familia, unidad, stock_actual, es_complementario, peso_aproximado_unidad_kg, alias_display, producto_sinonimos(texto)"
+      "id, codigo, nombre_display, familia, unidad, stock_actual, es_complementario, peso_aproximado_unidad_kg, alias_display, especie, producto_sinonimos(texto)"
     )
     .eq("carniceria_id", carniceriaId)
     .eq("activo", true);
@@ -96,6 +99,7 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
         fila.peso_aproximado_unidad_kg === null ? null : Number(fila.peso_aproximado_unidad_kg),
       alias_display: fila.alias_display,
       sinonimos,
+      especie: fila.especie ?? null,
     };
     porCodigo.set(producto.codigo, producto);
 
@@ -132,6 +136,11 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
   const promptCatalogo = [
     "PRODUCTOS ACTIVOS (codigo (unidad): nombre y sinónimos reconocidos):",
     ...lineasProductos,
+    "",
+    "POR UNIDAD — cualquier producto se puede pedir contando unidades (\"3 pata muslo\", \"2 pechugas\",",
+    '"un pollo", "4 milanesas"). En ese caso poné cantidad = cuántas unidades y unidad = "unidad", tal',
+    "cual lo dijo: el sistema calcula los kilos. NUNCA conviertas vos a kilos ni le pidas al cliente que",
+    "te lo diga en kilos.",
     "",
     "CÓMO NOMBRAR LOS PRODUCTOS AL CONTESTAR — devolvéle al cliente LA MISMA",
     "palabra que usó él, si es una de las de la lista de arriba. Si pidió",

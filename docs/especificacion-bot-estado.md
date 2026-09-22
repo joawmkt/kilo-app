@@ -358,3 +358,31 @@ olvidar los 3 kg ni la picada especial.
 Nota de la misma fecha: la carpeta local había vuelto al último commit (se perdieron del
 disco pollo/cerdo y los arreglos del 21/09, que nunca se habían subido a GitHub). Se
 restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida.**
+
+### 22/09/2026 (tarde) — Cerdo, trozado por voz, venta por unidad y cambios de pedido
+
+- **Cerdo contado.** "Entraron dos cerdos", "un chancho entero", "medio cerdo" ya son un
+  lote de cerdo (antes caían al flujo genérico y la IA terminaba cargando pollo). Cada
+  "cerdo" de hasta 70 kg es una media; uno de 70 a 140 kg es el animal entero y se carga
+  como dos medias de la mitad, avisándolo en el resumen. Si una charla arrancó en el flujo
+  de stock y recién con la respuesta se nota que era un lote ("dos cerdos" + "48 y 52"),
+  se reencauza como lote con los dos mensajes juntos.
+- **Guarda de especie.** Si en la charla se nombró un animal y la IA arma un producto de
+  otro (cerdo → "Pollo entero"), no se manda a confirmar: se pregunta.
+- **Trozado de pollo por voz (`lecturaTrozado.ts`, `flujoTrozado.ts`, `estimarTrozado`).**
+  "Trocé 3 pollos y saqué 2,700 de pechuga" se lee sin IA. Con las presas pesadas y la tabla
+  de trozado se calculan las demás (cada punto de tabla vale pesado ÷ % de lo pesado), con
+  tope en lo que pesaban los pollos. Se cargan TODAS las presas: las pesadas como 'pesado',
+  las calculadas como 'estimado'. Si dice cuánto pesaba el pollo, ese peso reemplaza al
+  estimado antes de trozar.
+- **Venta por unidad (`estimadorPorUnidad`).** "3 pata muslo" ya no pide kilos: el peso de
+  una unidad sale del catálogo (nuevo botón "Venderlo por unidad"), del peso real de los
+  pollos en stock, o de la tabla de trozado (presas de pollo). El resumen muestra
+  "3 u. (~1,5 kg)". Si no hay ningún dato, se pide en kilos (no se inventa). En la carga por
+  voz, "entraron 10 pechugas" se pasa a kilos con el mismo estimador.
+- **Cambiar un pedido confirmado (secciones 8 y 49).** Nuevo tipo `modificacion` en el
+  intérprete, que ahora ve el pedido confirmado del cliente. "Sacá el vacío" devuelve el
+  stock, crea una versión nueva, avisa al carnicero y vuelve a armar el pedido por el camino
+  de siempre (resumen → confirmación → aprobación). "Quiero cambiar mi pedido" sin detalle
+  muestra el pedido y pregunta qué cambiar, sin tocar nada.
+- **Cancelar un pedido aprobado devuelve el stock** (10.2). Antes quedaba descontado.

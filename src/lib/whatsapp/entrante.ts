@@ -10,6 +10,7 @@ import {
 } from "@/lib/flujoPedidos";
 import { esCarniceroAutorizado } from "@/lib/quienEs";
 import { probarComoLote } from "@/lib/flujoLotes";
+import { probarComoTrozado } from "@/lib/flujoTrozado";
 import { registrarMensaje } from "./conversaciones";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { aFormatoCanonico } from "./telefonos";
@@ -173,6 +174,19 @@ async function enrutar(params: {
         texto: mensaje.texto,
       });
       if (respuestaLote !== null) return respuestaLote;
+
+      // ¿Está contando que trozó pollo? ("trocé 3 pollos y saqué 2,700 de
+      // pechuga"). Se lee sin IA y se calculan las demás presas con la tabla
+      // (ver flujoTrozado.ts). Va antes del flujo de stock genérico por la
+      // misma razón que el lote: trozar no suma kilos, TRANSFORMA pollos
+      // enteros en presas.
+      const respuestaTrozado = await probarComoTrozado({
+        carniceriaId,
+        telefono,
+        mensajeWhatsappId: mensajeId,
+        texto: mensaje.texto,
+      });
+      if (respuestaTrozado !== null) return respuestaTrozado;
 
       // Último recurso: un texto suelto del carnicero se trata como el arranque
       // de una carga de stock, igual que un audio suelto.

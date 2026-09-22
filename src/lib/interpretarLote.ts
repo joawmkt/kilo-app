@@ -47,6 +47,8 @@ export type ResultadoLoteVoz =
        * y la otra de 46"). Si viene, manda sobre pesoKg × cantidad.
        */
       pesosKg: number[] | null;
+      /** Algo que el sistema decidió y el carnicero tiene que ver antes de confirmar. */
+      nota?: string;
       /** Cabezas del cajón. null en las especies que entran por peso. */
       unidades: number | null;
       categoria: string | null;
@@ -162,14 +164,18 @@ cabezas"), poné los dos: peso_kg 20 y cabezas 10.`;
 Tu ÚNICO trabajo acá es sacar el PESO de una media res DE CERDO.
 
 Una media res de cerdo pesa mucho menos que una vacuna: entre 20 y 70 kg
-(el promedio argentino está en unos 42-47 kg). Si el número que escuchás es de
-más de 100, es casi seguro un error de transcripción: preguntá.
+(el promedio argentino está en unos 42-47 kg). El cerdo ENTERO pesa el doble
+(80 a 140 kg): poné ese peso tal cual, el sistema lo parte. Si el número es de
+más de 140, es casi seguro un error de transcripción: preguntá.
 
   "llegó una media res de cerdo de cuarenta y dos" -> peso_kg: 42
   "bajaron dos medias de chancho de 40" -> peso_kg: 40, cantidad: 2
   "me entraron dos medias de cerdo, una de 51 y la otra de 46" -> pesos_kg: [51, 46], cantidad: 2
   "entraron dos medias de cerdo" -> falta_dato, cantidad: 2, pregunta "¿Cuánto pesó cada una?"
-  "entró media res de cerdo" -> falta_dato, pregunta por el peso`;
+  "entró media res de cerdo" -> falta_dato, pregunta por el peso
+  "entraron 2 cerdos, uno de 48 y otro de 52" -> pesos_kg: [48, 52] (el carnicero le dice "cerdo" a cada media)
+  "entraron dos cerdos" -> falta_dato, cantidad: 2, pregunta "¿Cuánto pesó cada uno?"
+  "entró un cerdo entero de 96" -> peso_kg: 96 (el sistema lo parte en dos medias)`;
   }
 
   return `${comun}
@@ -304,36 +310,56 @@ function validar(valor: unknown, especie: Especie, preguntaPorDefecto: string): 
   // preguntar es gratis comparado con cargar stock inventado.
   const [minP, maxP] = desc.rangoPesoKg;
 
-  // Varias piezas de distinto peso: cada una tiene que caer en el rango.
-  const lista = Array.isArray(dato.pesos_kg)
+  const crudos = Array.isArray(dato.pesos_kg)
     ? dato.pesos_kg.filter((n): n is number => typeof n === "number" && Number.isFinite(n))
-    : [];
-  if (lista.length >= 2) {
-    const fuera = lista.find((n) => n < minP || n > maxP);
-    if (fuera !== undefined) {
-      return fallar(`Entendí ${fuera} kg y no me cierra para una ${desc.etiqueta}. ¿Cuánto pesó cada una?`);
+    : typeof dato.peso_kg === "number" && Number.isFinite(dato.peso_kg)
+      ? [dato.peso_kg]
+      : [];
+  if (crudos.length === 0) return fallar();
+
+  // El cerdo ENTERO (dos medias) se nombra igual que la media: "entró un cerdo
+  // de 96". Una media de cerdo de 96 kg no existe, pero un cerdo entero sí: se
+  // lo carga como dos medias de la mitad, y se lo dice en el resumen para que
+  // el carnicero lo vea antes de confirmar.
+  const pesos: number[] = [];
+  let partidos = 0;
+  for (const p of crudos) {
+    if (especie === "porcino" && p > maxP && p <= maxP * 2) {
+      const mitad = Math.round((p / 2) * 1000) / 1000;
+      pesos.push(mitad, mitad);
+      partidos++;
+    } else {
+      pesos.push(p);
     }
-    return {
-      tipo: "lote",
-      especie,
-      pesoKg: lista[0],
-      pesosKg: lista,
-      unidades: null,
-      categoria,
-      proveedor,
-      cantidad: lista.length,
-    };
   }
 
-  const peso = typeof dato.peso_kg === "number" ? dato.peso_kg : lista.length === 1 ? lista[0] : NaN;
-
-  if (!Number.isFinite(peso) || peso < minP || peso > maxP) {
+  const fuera = pesos.find((n) => n < minP || n > maxP);
+  if (fuera !== undefined) {
     return fallar(
-      Number.isFinite(peso)
-        ? `Entendí ${peso} kg y no me cierra para una ${desc.etiqueta}. ¿Cuánto pesó?`
-        : undefined
+      pesos.length > 1
+        ? `Entendí ${fuera} kg y no me cierra para una ${desc.etiqueta}. ¿Cuánto pesó cada una?`
+        : `Entendí ${fuera} kg y no me cierra para una ${desc.etiqueta}. ¿Cuánto pesó?`
     );
   }
 
-  return { tipo: "lote", especie, pesoKg: peso, pesosKg: null, unidades: null, categoria, proveedor, cantidad };
+  const nota =
+    partidos > 0
+      ? `Lo tomé como ${partidos === 1 ? "un cerdo entero" : `${partidos} cerdos enteros`}: lo cargo como medias de la mitad del peso.`
+      : undefined;
+
+  if (pesos.length >= 2) {
+    return {
+      tipo: "lote",
+      especie,
+      pesoKg: pesos[0],
+      pesosKg: pesos,
+      unidades: null,
+      categoria,
+      proveedor,
+      cantidad: pesos.length,
+      ...(nota ? { nota } : {}),
+    };
+  }
+
+  return { tipo: "lote", especie, pesoKg: pesos[0], pesosKg: null, unidades: null, categoria, proveedor, cantidad };
 }

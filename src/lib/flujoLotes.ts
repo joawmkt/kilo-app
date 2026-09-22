@@ -58,6 +58,8 @@ type LotePendiente = {
   cantidad: number;
   /** Mensajes seguidos sin entender sobre este lote. Ver `noEntendido`. */
   fallos?: number;
+  /** Algo que decidió el sistema (ej. "cerdo entero partido en dos"). Se muestra al confirmar. */
+  nota?: string;
 };
 
 type LoteLeido = Extract<ResultadoLoteVoz, { tipo: "lote" }>;
@@ -548,6 +550,7 @@ async function armarPendiente(
     especie: Especie;
     pesoKg: number;
     pesosKg?: number[] | null;
+    nota?: string;
     unidades: number | null;
     categoria: string | null;
     proveedor: string | null;
@@ -583,6 +586,7 @@ async function armarPendiente(
     especie: interpretacion.especie,
     pesoKg,
     ...(pesosKg ? { pesosKg } : {}),
+    ...(interpretacion.nota ? { nota: interpretacion.nota } : {}),
     unidades: interpretacion.unidades,
     categoria,
     categoriaExplicita: interpretacion.categoria !== null,
@@ -728,7 +732,8 @@ function resumenParaConfirmar(pendiente: LotePendiente): string {
     : "";
 
   const laLas = pesos.length === 1 ? "¿La cargo?" : "¿Las cargo?";
-  return `${desc.emoji} ${cuantas}${categoria}${proveedor}.\n${laLas} Respondé *confirmar* o *cancelar*.`;
+  const nota = pendiente.nota ? `\n(${pendiente.nota})` : "";
+  return `${desc.emoji} ${cuantas}${categoria}${proveedor}.${nota}\n${laLas} Respondé *confirmar* o *cancelar*.`;
 }
 
 function normalizarPendiente(interpretacion: Record<string, unknown>): LotePendiente {
@@ -748,6 +753,7 @@ function normalizarPendiente(interpretacion: Record<string, unknown>): LotePendi
       ? { pesosKg: (interpretacion.pesosKg as unknown[]).map(Number) }
       : {}),
     fallos: Number(interpretacion.fallos ?? 0),
+    ...(typeof interpretacion.nota === "string" ? { nota: interpretacion.nota } : {}),
   };
 }
 

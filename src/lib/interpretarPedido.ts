@@ -81,6 +81,11 @@ export type ResultadoInterpretacionPedido =
   // pedido entero. Se detecta por intención y no por la palabra "cancelar":
   // "sacame todo", "dejalo", "al final no" son cancelaciones igual (10.4).
   | { tipo: "cancelacion" }
+  // 22/09/2026 (especificación, secciones 8 y 49): el cliente quiere CAMBIAR un
+  // pedido que ya estaba confirmado ("sacá el vacío", "agregame 1 kg de
+  // chorizo"). `items` es la lista COMPLETA como tiene que quedar; si no dijo
+  // qué cambiar ("quiero cambiar mi pedido"), viene sin items y con pregunta.
+  | { tipo: "modificacion"; items?: ItemPedido[]; horaRetiroIso?: string; pregunta?: string }
   // `horaRetiroIso` también acá (21/09/2026): si la respuesta del modelo vino
   // mal armada pero la hora estaba bien, la hora se conserva. Antes se tiraba
   // todo y el cliente veía "¿A qué hora pasás?" otra vez después de decir "19".
@@ -114,6 +119,12 @@ const TEMAS_CONSULTA: TemaConsulta[] = [
 // no se pierda ningún producto si el cliente completa uno y menciona otro
 // más en el mismo mensaje (ver bug real del 23/08/2026 en el comentario
 // de construirSystemPrompt más abajo).
+/** Un pedido ya confirmado del cliente, para entender "sacá el vacío". */
+export type PedidoConfirmadoContexto = {
+  items: { producto_codigo: string; cantidad: number; unidad: string }[];
+  horaRetiroIso: string | null;
+};
+
 export type ContextoPedidoPendiente = {
   itemsActuales: ItemPedido[];
   preguntaPendiente?: string;
@@ -137,11 +148,13 @@ const TOOL_SCHEMA: Anthropic.Tool = {
     properties: {
       tipo: {
         type: "string",
-        enum: ["saludo", "consulta", "cancelacion", "pedido", "aclaracion", "info_faltante", "no_entendido"],
+        enum: ["saludo", "consulta", "cancelacion", "modificacion", "pedido", "aclaracion", "info_faltante", "no_entendido"],
         description:
           "'saludo' si el mensaje es solo un saludo/apertura sin mencionar ningún producto (ej. 'hola', 'buenas'). " +
           "'consulta' si el cliente PREGUNTA algo en vez de pedir: horarios, dirección, medios de pago, " +
           "promociones, si hacen delivery, o si tenés tal producto ('¿tenés vacío?'). " +
+          "'modificacion' SOLO si hay un PEDIDO CONFIRMADO (ver más abajo) y el cliente quiere cambiarlo: sacar, " +
+          "agregar o cambiar la cantidad de algo ('sacá el vacío', 'agregame chorizo', 'quiero cambiar mi pedido'). " +
           "'cancelacion' si quiere dar de baja TODO el pedido, aunque no use la palabra cancelar " +
           "('sacame todo', 'dejalo', 'al final no', 'olvidate'). Ojo: sacar UN producto de varios NO es " +
           "cancelación, es una modificación. " +
@@ -252,11 +265,33 @@ const TOOL_SCHEMA: Anthropic.Tool = {
   },
 };
 
+function bloquePedidoConfirmado(confirmado?: PedidoConfirmadoContexto): string {
+  if (!confirmado) return "";
+  return `
+
+PEDIDO CONFIRMADO DE ESTE CLIENTE (ya lo aprobó la carnicería, todavía no lo retiró):
+${JSON.stringify(confirmado.items)}${confirmado.horaRetiroIso ? `
+Retiro: ${confirmado.horaRetiroIso}` : ""}
+
+Si el cliente quiere CAMBIAR este pedido (sacar un producto, agregar otro, cambiar una cantidad, reemplazar
+uno por otro), respondé tipo "modificacion" con "items" = la lista COMPLETA de cómo tiene que quedar el pedido
+(los que no cambian, igual; el que saca, afuera; el que agrega, adentro). Ejemplos:
+  - "quiero sacar el vacío" -> modificacion, items = el pedido sin el vacío.
+  - "agregame 1 kilo de chorizo" -> modificacion, items = el pedido + chorizo 1 kg.
+  - "en vez de 2 kg de vacío que sean 3" -> modificacion con el vacío en 3.
+  - "quiero cambiar mi pedido" (sin decir qué) -> modificacion SIN items, con "pregunta" preguntando qué quiere
+    cambiar.
+Sacar un producto de un pedido NO es un pedido nuevo y NO es una pregunta de personas ni de cantidades de
+asado: es una modificación. Si al sacar algo no queda nada, es "cancelacion". Si pide algo claramente NUEVO para
+otro día ("y para mañana quiero..."), eso sí es un pedido nuevo.`;
+}
+
 function construirSystemPrompt(
   promptCatalogo: string,
   ahoraArgentinaIso: string,
   contexto?: ContextoPedidoPendiente,
-  historial = ""
+  historial = "",
+  confirmado?: PedidoConfirmadoContexto
 ): string {
   // Bug real del 23/08/2026: el cliente escribió "quiero vacío y costilla"
   // (dos productos, ninguno con cantidad) y el bot solo preguntó por uno
@@ -356,7 +391,7 @@ Reglas:
   entendió) y tratá el mensaje como lo que sea que corresponda — una consulta, una modificación, una
   cancelación. Un insulto no cambia lo que hay que hacer con el pedido.
 - Si no tiene nada que ver ni con un pedido ni con una consulta, respondé tipo "no_entendido".
-${bloqueContexto}${bloqueHistorial(historial)}
+${bloqueContexto}${bloquePedidoConfirmado(confirmado)}${bloqueHistorial(historial)}
 
 ${promptCatalogo}`;
 }
@@ -367,12 +402,14 @@ export async function interpretarMensajePedido(
   ahoraArgentinaIso: string,
   contexto?: ContextoPedidoPendiente,
   /** Los últimos mensajes de la conversación (ver historial.ts). */
-  historial = ""
+  historial = "",
+  /** El pedido ya confirmado del cliente, si hay uno y no hay otro armándose. */
+  confirmado?: PedidoConfirmadoContexto
 ): Promise<ResultadoInterpretacionPedido> {
   const respuesta = await getClient().messages.create({
     model: modeloPedidos(),
     max_tokens: 1024,
-    system: construirSystemPrompt(promptCatalogo, ahoraArgentinaIso, contexto, historial),
+    system: construirSystemPrompt(promptCatalogo, ahoraArgentinaIso, contexto, historial, confirmado),
     messages: [{ role: "user", content: texto }],
     tools: [TOOL_SCHEMA],
     tool_choice: { type: "tool", name: NOMBRE_HERRAMIENTA },
@@ -497,6 +534,23 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
 
   if (datos.tipo === "cancelacion") {
     return { tipo: "cancelacion" };
+  }
+
+  if (datos.tipo === "modificacion") {
+    const items = Array.isArray(datos.items)
+      ? datos.items.map(validarItem).filter((item): item is ItemPedido => item !== null)
+      : [];
+    const hora = interpretarHoraRetiro(datos.hora_retiro_iso);
+    const pregunta = typeof datos.pregunta === "string" && datos.pregunta.trim() ? datos.pregunta.trim() : undefined;
+    // Una lista de items que vino a medias (alguno mal armado) no se usa: se
+    // pregunta. Mejor una repregunta que cambiarle el pedido mal.
+    const completa = Array.isArray(datos.items) && items.length === datos.items.length;
+    return {
+      tipo: "modificacion",
+      ...(completa && items.length > 0 ? { items } : {}),
+      ...(hora.estado === "valida" ? { horaRetiroIso: hora.iso } : {}),
+      ...(pregunta ? { pregunta } : {}),
+    };
   }
 
   if (datos.tipo === "consulta") {

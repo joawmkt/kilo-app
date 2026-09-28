@@ -1,5 +1,5 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { cargarCatalogo, nombreComoLoPidio, CatalogoCarniceria, Producto } from "./catalogo";
+import { cargarCatalogo, nombreParaCliente, nombreDichoPor, corregirPorNombrePropio, CatalogoCarniceria, Producto } from "./catalogo";
 import { detectarPreparacion, etiquetaPreparacion } from "./preparacion";
 import { descargarAudio, enviarWhatsapp, type ReferenciaMedia } from "./whatsapp";
 import { avisarPedidoPendiente, crearAviso, revisarStockDeProducto } from "./notificaciones";
@@ -18,15 +18,16 @@ import {
 import { clasificarRespuesta } from "./confirmacion";
 import { leerDesglosePersonas } from "./personas";
 import { variarSiSeRepite } from "./conversacion";
-import { leerHoraSuelta } from "./horaRetiro";
+import { extraerHora, resolverHora, validarIso, formatearRetiro } from "./horaRetiro";
+import { cargarAgenda } from "./horarios";
 import { historialReciente } from "./historial";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarSustitutoAutorizado } from "./alternativas";
-import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt } from "./consultas";
+import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt, preguntaPorPeso, MARCA_PIEZA_ENTERA, textoPeso } from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { esCarniceroAutorizado } from "./quienEs";
-import { consumirDeProducto, devolverStockDePedido, estimadorPorUnidad } from "./lotes";
+import { consumirDeProducto, devolverStockDePedido, estimadorPorUnidad, estimadorPiezaEntera } from "./lotes";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -107,11 +108,14 @@ type FaseInterna =
       // hay que dejar al cliente en un bucle por un dato que es una
       // estimación, no un requisito.
       intentosPersonas?: number;
+      /** Ver `PropuestaHora`: una hora que se le propuso y espera un sí. */
+      propuestaHoraIso?: string;
+      propuestaHoraMensaje?: string;
     }
   // `intentos` cuenta cuántas veces seguidas preguntamos la hora sin obtenerla.
   // Sirve para no repetir la misma frase indefinidamente: a la tercera el bot
   // cambia el pedido de dato en vez de sonar como un disco rayado.
-  | { fase: "esperando_hora_retiro"; intentos?: number }
+  | { fase: "esperando_hora_retiro"; intentos?: number; propuestaHoraIso?: string; propuestaHoraMensaje?: string }
   | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] }
   // Especificación, sección 31: el resumen completo ya se le mostró al cliente
   // y estamos esperando que diga que sí. Recién ahí el pedido sale al
@@ -225,12 +229,18 @@ async function convertirACantidadReal(
   producto: Producto,
   cantidad: number,
   unidadCliente: string,
-  estimar: ReturnType<typeof estimadorPorUnidad>
+  estimar: ReturnType<typeof estimadorPorUnidad>,
+  /** Pieza entera (lo que pesó al entrar con la media res): solo si el cliente la pidió entera. */
+  pieza?: { estimar: ReturnType<typeof estimadorPiezaEntera>; permitida: boolean }
 ): Promise<{ kg: number; unidades: number | null } | null> {
   if (producto.unidad === "kg" && esPedidoPorUnidad(unidadCliente)) {
     const peso = await estimar(producto);
-    if (!peso) return null;
-    return { kg: Number((cantidad * peso.kg).toFixed(3)), unidades: cantidad };
+    if (peso) return { kg: Number((cantidad * peso.kg).toFixed(3)), unidades: cantidad };
+    if (pieza?.permitida) {
+      const kgPieza = await pieza.estimar(producto);
+      if (kgPieza) return { kg: Number((cantidad * kgPieza).toFixed(3)), unidades: cantidad };
+    }
+    return null;
   }
   return { kg: cantidad, unidades: null };
 }
@@ -343,11 +353,15 @@ function kgAsadoConPromedio(total: number): number {
 function armarPreguntaRecomendacion(
   catalogo: CatalogoCarniceria,
   items: ItemParcialPedido[],
-  kgObjetivo: number
+  kgObjetivo: number,
+  nombrar: (producto: Producto) => string
 ): string {
   const nombres = items
     .filter((i) => esCategoriaAsado(catalogo, i.producto_codigo))
-    .map((i) => catalogo.porCodigo.get(i.producto_codigo!)?.nombre_display ?? i.producto_codigo)
+    .map((i) => {
+      const producto = catalogo.porCodigo.get(i.producto_codigo!);
+      return producto ? nombrar(producto) : i.producto_codigo;
+    })
     .join(" y ");
   return `Para eso calculamos un total de ${kgObjetivo}kg de asado. ¿Cuánto querés de ${nombres || "cada corte"}, o preferís más de uno que de otro?`;
 }
@@ -360,7 +374,8 @@ function armarPreguntaRecomendacion(
 function resolverUsoDeResto(
   items: ItemParcialPedido[],
   catalogo: CatalogoCarniceria,
-  kgObjetivo: number
+  kgObjetivo: number,
+  nombrar: (producto: Producto) => string
 ): { items: ItemParcialPedido[]; advertencia?: string } {
   const enCategoria = items.filter((i) => esCategoriaAsado(catalogo, i.producto_codigo));
   const pendientesResto = enCategoria.filter((i) => i.usarResto && i.cantidad == null);
@@ -373,7 +388,8 @@ function resolverUsoDeResto(
   const resto = Math.round((kgObjetivo - sumaConocida) * 100) / 100;
 
   if (resto <= 0) {
-    const nombre = catalogo.porCodigo.get(objetivo.producto_codigo!)?.nombre_display ?? objetivo.producto_codigo;
+    const producto = catalogo.porCodigo.get(objetivo.producto_codigo!);
+    const nombre = producto ? nombrar(producto) : objetivo.producto_codigo;
     return {
       items,
       advertencia: `Con lo que ya pediste (${sumaConocida}kg) llegás o pasás el cálculo total (${kgObjetivo}kg de asado). ¿Cuánto de ${nombre} querés igual?`,
@@ -406,6 +422,64 @@ function recomendacionMostradaDeFase(fase: FaseInterna | null | undefined): bool
 
 function intentosHoraDeFase(fase: FaseInterna | null | undefined): number {
   return fase?.fase === "esperando_hora_retiro" ? (fase.intentos ?? 0) : 0;
+}
+
+/**
+ * Una hora que el bot le PROPUSO al cliente porque la que pidió no se podía
+ * ("Las 10 de hoy ya pasaron. ¿Te lo dejo para mañana a las 10?"). Se guarda
+ * en la fase para que un "dale" la acepte. Antes esto no se guardaba y el "sí"
+ * caía en el vacío.
+ */
+type PropuestaHora = { iso: string; mensaje: string };
+
+function propuestaDeFase(fase: FaseInterna | null | undefined): PropuestaHora | undefined {
+  if (fase && (fase.fase === "esperando_hora_retiro" || fase.fase === "esperando_dato_item") && fase.propuestaHoraIso) {
+    return { iso: fase.propuestaHoraIso, mensaje: fase.propuestaHoraMensaje ?? "" };
+  }
+  return undefined;
+}
+
+function camposPropuesta(propuesta: PropuestaHora | undefined): Record<string, string> {
+  return propuesta ? { propuestaHoraIso: propuesta.iso, propuestaHoraMensaje: propuesta.mensaje } : {};
+}
+
+/** Lo que se sabe de la hora después de leer este mensaje. */
+type HoraDelMensaje = { iso?: string; propuesta?: PropuestaHora };
+
+/**
+ * LA hora de este mensaje — un solo lugar decide (ver horaRetiro.ts).
+ *
+ * Orden: 1) lo que dice el texto, leído sin IA; 2) si no dice nada y había una
+ * propuesta, un "sí" la acepta; 3) recién si no hay nada de eso, la hora que
+ * entendió la IA. Las tres pasan por el horario del local.
+ */
+async function horaDelMensaje(params: {
+  carniceriaId: string;
+  texto: string;
+  esperandoHora: boolean;
+  resultado: ResultadoInterpretacionPedido;
+  propuestaPrevia?: PropuestaHora;
+}): Promise<HoraDelMensaje> {
+  const { carniceriaId, texto, esperandoHora, resultado, propuestaPrevia } = params;
+  const ahora = new Date();
+  const agenda = await cargarAgenda(carniceriaId);
+
+  const lectura = extraerHora(texto, { esperandoHora: esperandoHora || Boolean(propuestaPrevia) });
+  let r = lectura ? resolverHora(lectura, ahora, agenda) : null;
+
+  if (!r && propuestaPrevia && clasificarRespuesta(texto) === "confirmar") {
+    return { iso: propuestaPrevia.iso };
+  }
+
+  if (!r) {
+    const delModelo = "horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined;
+    const yaPaso = "horaRetiroYaPasoIso" in resultado ? resultado.horaRetiroYaPasoIso : undefined;
+    if (delModelo) r = validarIso(delModelo, ahora, agenda);
+    else if (yaPaso) r = validarIso(yaPaso, ahora, agenda);
+  }
+
+  if (!r) return {};
+  return r.tipo === "hora" ? { iso: r.iso } : { propuesta: { iso: r.iso, mensaje: r.mensaje } };
 }
 
 function intentosPersonasDeFase(fase: FaseInterna | null | undefined): number {
@@ -457,10 +531,53 @@ function mensajeResumenPedidoParaCarnicero(params: {
   return [
     `🧾 Pedido nuevo de ${quien}`,
     ...lineas,
-    `Retira: ${formatearHoraArgentina(horaRetiro)}hs`,
+    `Retira: ${formatearRetiro(horaRetiro)} hs`,
     "",
     "¿Lo aprobás? Respondé *aprobar* o *rechazar*.",
   ].join("\n");
+}
+
+/**
+ * Devuelve una función que nombra cada producto con LA PALABRA DEL CLIENTE,
+ * mirando toda la charla y no solo el último mensaje (ver `nombreParaCliente`
+ * en catalogo.ts, bug del roast beef del 28/09). Se arma una vez por mensaje:
+ * lee sus mensajes anteriores y cómo figuraba cada producto en el pedido.
+ */
+async function nombradorDelCliente(params: {
+  carniceriaId: string;
+  telefono: string;
+  texto: string;
+  pedidoId?: string;
+}): Promise<(producto: Producto) => string> {
+  return (await contextoDeCharla(params)).nombrar;
+}
+
+/** Lo mismo que `nombradorDelCliente`, más el último mensaje que mandó el bot. */
+async function contextoDeCharla(params: {
+  carniceriaId: string;
+  telefono: string;
+  texto: string;
+  pedidoId?: string;
+}): Promise<{ nombrar: (producto: Producto) => string; ultimoMensajeBot: string }> {
+  const { carniceriaId, telefono, texto, pedidoId } = params;
+  const lineas = (await historialReciente({ carniceriaId, telefono, quien: "Cliente" })).split("\n");
+  const mensajesAnteriores = lineas
+    .filter((linea) => linea.startsWith("Cliente: "))
+    .map((linea) => linea.slice("Cliente: ".length));
+  const ultimoMensajeBot =
+    [...lineas].reverse().find((linea) => linea.startsWith("Bot: "))?.slice("Bot: ".length) ?? "";
+  const nombresPrevios = new Map<string, string>();
+  if (pedidoId) {
+    const { data: previo } = await getSupabaseAdmin().from("pedidos").select("items").eq("id", pedidoId).maybeSingle();
+    for (const it of ((previo?.items ?? []) as ItemGuardadoPedido[])) {
+      if (it?.producto_codigo && it.nombre_display) nombresPrevios.set(it.producto_codigo, it.nombre_display);
+    }
+  }
+  return {
+    ultimoMensajeBot,
+    nombrar: (producto) =>
+      nombreParaCliente(producto, { textoActual: texto, mensajesAnteriores, nombrePrevio: nombresPrevios.get(producto.codigo) }),
+  };
 }
 
 async function armarYGuardarPedido(params: {
@@ -473,7 +590,8 @@ async function armarYGuardarPedido(params: {
   catalogo: CatalogoCarniceria;
   itemsPedidos: ItemPedido[];
   horaRetiroIso?: string;
-  horaRetiroYaPasoIso?: string;
+  /** Una hora que no se pudo y se le propone otra (ver horaDelMensaje). */
+  propuestaHora?: PropuestaHora;
   intentosHoraPrevios?: number;
   texto: string;
   /** Si a este pedido ya se le ofreció un complementario (sección 40). */
@@ -489,7 +607,7 @@ async function armarYGuardarPedido(params: {
     itemsPedidos,
     recomendacionYaHecha,
     horaRetiroIso,
-    horaRetiroYaPasoIso,
+    propuestaHora,
     intentosHoraPrevios = 0,
     texto,
   } = params;
@@ -544,21 +662,45 @@ async function armarYGuardarPedido(params: {
   // Una sola vez por pedido: el peso por unidad de lo que se pida por unidad.
   const estimar = estimadorPorUnidad(carniceriaId);
 
+  // Con qué palabra nombró el cliente cada producto, mirando TODA la charla.
+  const { nombrar, ultimoMensajeBot } = await contextoDeCharla({ carniceriaId, telefono, texto, pedidoId });
+  const estimarPieza = estimadorPiezaEntera(carniceriaId);
+  // ¿"Uno" acá quiere decir una pieza ENTERA? Solo si lo dijo ("entero",
+  // "pieza") o si justo le acabamos de contar cuánto pesa la pieza entera de
+  // ese corte ("dame uno" después de "la pieza entera de matambre pesa 1,5 kg").
+  // Nunca por defecto: "2 bifes de chorizo" no son 2 bifes angostos enteros.
+  const pideEntera = (producto: Producto) =>
+    /\benter[oa]s?\b|\bpiezas?\b/i.test(texto) ||
+    (ultimoMensajeBot.toLowerCase().includes(MARCA_PIEZA_ENTERA) && nombreDichoPor(producto, ultimoMensajeBot) !== null);
+
   for (const item of itemsPedidos) {
-    const producto = catalogo.porCodigo.get(item.producto_codigo);
+    const elegido = catalogo.porCodigo.get(item.producto_codigo);
+    // Nombre propio gana a sinónimo (ver `corregirPorNombrePropio`).
+    const producto = elegido ? corregirPorNombrePropio(catalogo, elegido, texto) : undefined;
     if (!producto) {
-      await guardar({ transcripcion: texto, updated_at: ahora });
+      // La hora se guarda IGUAL: el bug del 25/09 fue que "para las 10 AM" se
+      // perdió porque en el mismo mensaje había un producto que no se reconoció.
+      await guardar({ transcripcion: texto, updated_at: ahora, ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}) });
       return `Perdón, no reconocí uno de los productos que pediste ("${item.producto_codigo}"). ¿Podés decirlo de otra forma?`;
     }
 
-    const convertida = await convertirACantidadReal(producto, item.cantidad, item.unidad, estimar);
+    const convertida = await convertirACantidadReal(producto, item.cantidad, item.unidad, estimar, {
+      estimar: estimarPieza,
+      permitida: pideEntera(producto),
+    });
     if (convertida === null) {
-      await guardar({ transcripcion: texto, updated_at: ahora });
+      await guardar({ transcripcion: texto, updated_at: ahora, ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}) });
       // Solo llega acá si nadie cargó cuánto pesa una unidad de este producto
-      // (se carga una vez en Catálogo → "Peso por unidad").
-      return `De ${producto.nombre_display} todavía no tengo cargado cuánto pesa cada una. ¿Me decís más o menos cuántos kilos querés?`;
+      // (se carga una vez en Catálogo → "Peso por unidad"). Si sabemos cuánto
+      // pesa la pieza entera, se lo contamos: así puede elegir "entera" o kilos.
+      const pieza = await estimarPieza(producto);
+      if (pieza) {
+        return `${MARCA_PIEZA_ENTERA.charAt(0).toUpperCase()}${MARCA_PIEZA_ENTERA.slice(1)} ${nombrar(producto).toLowerCase()} pesa más o menos ${textoPeso(pieza)}. ¿La querés entera o me decís cuántos kilos?`;
+      }
+      return `De ${nombrar(producto)} todavía no tengo cargado cuánto pesa cada una. ¿Me decís más o menos cuántos kilos querés?`;
     }
     const cantidadReal = convertida.kg;
+    const nombre = nombrar(producto);
 
     idsYaUsados.add(producto.id);
 
@@ -566,10 +708,9 @@ async function armarYGuardarPedido(params: {
       itemsResueltos.push({
         producto_id: producto.id,
         producto_codigo: producto.codigo,
-        // Se le contesta con LA MISMA palabra que usó él. Ver
-        // `nombreComoLoPidio` en catalogo.ts: si pidió "aguja" y le
-        // contestamos "Roast beef", no sabe si le entendieron.
-        nombre_display: nombreComoLoPidio(producto, texto),
+        // Se le contesta con LA MISMA palabra que usó él, aunque la haya
+        // dicho dos mensajes atrás. Ver `nombreParaCliente` en catalogo.ts.
+        nombre_display: nombre,
         cantidad: cantidadReal,
         unidad: producto.unidad,
         disponible: true,
@@ -604,14 +745,14 @@ async function armarYGuardarPedido(params: {
       itemsResueltos.push({
         producto_id: producto.id,
         producto_codigo: producto.codigo,
-        nombre_display: nombreComoLoPidio(producto, texto),
+        nombre_display: nombre,
         cantidad: producto.stock_actual,
         unidad: producto.unidad,
         disponible: true,
         preparacion: detectarPreparacion(texto),
       });
       parciales.push({
-        nombre: nombreComoLoPidio(producto, texto),
+        nombre,
         hay: producto.stock_actual,
         faltan: faltante,
         unidad: producto.unidad,
@@ -622,7 +763,7 @@ async function armarYGuardarPedido(params: {
       idsYaUsados.add(sustituto.producto.id);
       sustituciones.push({
         producto_faltante_id: producto.id,
-        producto_faltante_nombre: producto.nombre_display,
+        producto_faltante_nombre: nombre,
         alternativa_id: sustituto.producto.id,
         alternativa_codigo: sustituto.producto.codigo,
         alternativa_nombre: sustituto.producto.nombre_display,
@@ -631,7 +772,7 @@ async function armarYGuardarPedido(params: {
         requierePreguntarUso: sustituto.requierePreguntarUso,
       });
     } else if (!hayAlgo) {
-      descartadosSinAlternativa.push(producto.nombre_display);
+      descartadosSinAlternativa.push(nombre);
     }
   }
 
@@ -667,6 +808,7 @@ async function armarYGuardarPedido(params: {
       items: itemsResueltos, // los ya confirmados; las sustituciones se aplican al confirmar
       pregunta_pendiente: pregunta,
       item_parcial: null,
+      ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
       interpretacion: { fase: "esperando_confirmacion_sustitucion", sustituciones },
       updated_at: ahora,
     });
@@ -692,14 +834,16 @@ async function armarYGuardarPedido(params: {
   // retiro, o ya la tenemos.
   if (!horaRetiroIso) {
     const intentos = intentosHoraPrevios + 1;
-    const pregunta = `${avisoDescartados}${preguntaPorLaHora({ intentos, horaRetiroYaPasoIso })}`;
+    // Si lo que pidió no se podía, se le propone la hora válida más cercana
+    // (y se guarda, así un "dale" la acepta). Si no dijo ninguna, se pregunta.
+    const pregunta = `${avisoDescartados}${propuestaHora ? propuestaHora.mensaje : preguntaPorLaHora({ intentos })}`;
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
       items: itemsResueltos,
       pregunta_pendiente: pregunta,
       item_parcial: null,
-      interpretacion: { fase: "esperando_hora_retiro", intentos },
+      interpretacion: { fase: "esperando_hora_retiro", intentos, ...camposPropuesta(propuestaHora) },
       updated_at: ahora,
     });
     return pregunta;
@@ -732,13 +876,8 @@ async function armarYGuardarPedido(params: {
  *  - Ya preguntamos varias veces sin éxito -> pedimos el dato de otra forma,
  *    con un ejemplo concreto del formato.
  */
-function preguntaPorLaHora(params: { intentos: number; horaRetiroYaPasoIso?: string }): string {
-  const { intentos, horaRetiroYaPasoIso } = params;
-
-  if (horaRetiroYaPasoIso) {
-    const hora = formatearHoraArgentina(new Date(horaRetiroYaPasoIso));
-    return `Las ${hora} de hoy ya pasaron. ¿Te lo dejo para mañana a las ${hora}, o preferís otra hora de hoy?`;
-  }
+function preguntaPorLaHora(params: { intentos: number }): string {
+  const { intentos } = params;
 
   if (intentos >= 3) {
     return "Perdón, sigo sin agarrar el horario. Mandame solo la hora, así: *18:30*. Si es para mañana, escribime *mañana 11:00*.";
@@ -778,7 +917,7 @@ function resumenParaConfirmar(params: {
   return [
     `${avisoDescartados}Entonces te preparo:`,
     ...lineas,
-    `Retiro: ${formatearHoraArgentina(new Date(horaRetiroIso))} hs.`,
+    `Retiro: ${formatearRetiro(new Date(horaRetiroIso))} hs.`,
     "",
     "¿Está bien así?",
   ].join("\n");
@@ -1014,6 +1153,10 @@ async function procesarResultado(params: {
   itemsActualesPrevios?: ItemGuardadoPedido[];
   horaRetiroPrevia?: string;
   intentosHoraPrevios?: number;
+  /** La hora de ESTE mensaje, ya resuelta (ver horaDelMensaje). */
+  horaResuelta?: HoraDelMensaje;
+  /** Una propuesta de hora que había quedado pendiente de un sí. */
+  propuestaHoraPrevia?: PropuestaHora;
   personasPrevias?: InfoPersonas;
   asadoKgObjetivoPrevio?: number;
   recomendacionMostrada?: boolean;
@@ -1038,6 +1181,8 @@ async function procesarResultado(params: {
     itemsActualesPrevios,
     horaRetiroPrevia,
     intentosHoraPrevios,
+    horaResuelta = {},
+    propuestaHoraPrevia,
     preguntaPendientePrevia,
     recomendacionYaHecha,
     personasPrevias,
@@ -1095,13 +1240,20 @@ async function procesarResultado(params: {
     // — nunca se adivina un producto que el cliente no mencionó nunca.
     let productosConsultados = resultado.productosConsultados;
     if (
-      resultado.tema === "sustitutos" &&
+      (resultado.tema === "sustitutos" || resultado.tema === "peso_unidad") &&
       (productosConsultados ?? []).length === 0
     ) {
-      const delContexto = [
-        ...(itemsParcialesPrevios ?? []).map((i) => i.producto_codigo),
-        ...(itemsActualesPrevios ?? []).map((i) => i.producto_codigo),
-      ].filter((c): c is string => Boolean(c));
+      // "¿Cuánto pesa uno?" habla del producto que se le estaba preguntando:
+      // el que todavía no tiene cantidad. Si no hay ninguno así, todos.
+      const sinCantidad = (itemsParcialesPrevios ?? []).filter((i) => i.cantidad == null).map((i) => i.producto_codigo);
+      const delContexto = (
+        resultado.tema === "peso_unidad" && sinCantidad.length > 0
+          ? sinCantidad
+          : [
+              ...(itemsParcialesPrevios ?? []).map((i) => i.producto_codigo),
+              ...(itemsActualesPrevios ?? []).map((i) => i.producto_codigo),
+            ]
+      ).filter((c): c is string => Boolean(c));
       if (delContexto.length > 0) productosConsultados = Array.from(new Set(delContexto));
     }
 
@@ -1110,6 +1262,7 @@ async function procesarResultado(params: {
       tema: resultado.tema,
       catalogo,
       productosConsultados,
+      nombrar: await nombradorDelCliente({ carniceriaId, telefono, texto: params.texto, pedidoId }),
     });
 
     const texto = respuesta ?? respuestaSinDato(resultado.tema);
@@ -1152,23 +1305,13 @@ async function procesarResultado(params: {
     const leido = leerDesglosePersonas(texto, personas.sinGenero ?? personasPrevias?.sinGenero);
     if (leido) personas = combinarPersonas(personas, leido);
   }
-  let horaRetiroIso = ("horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined) ?? horaRetiroPrevia;
-  // La hora que el cliente dijo y ya pasó: no sirve para agendar, pero sí para
-  // contestarle algo que tenga sentido en vez de repetir la pregunta.
-  let horaRetiroYaPasoIso = horaRetiroIso
-    ? undefined
-    : "horaRetiroYaPasoIso" in resultado
-      ? resultado.horaRetiroYaPasoIso
-      : undefined;
+  // La hora ya viene resuelta por `horaDelMensaje` (un solo lugar decide). Si
+  // este mensaje no dijo ninguna, sigue valiendo la que ya estaba aceptada, y
+  // si había una propuesta esperando un sí, sigue esperando.
+  const horaRetiroIso = horaResuelta.iso ?? horaRetiroPrevia;
+  const propuestaHora = horaResuelta.iso ? undefined : horaResuelta.propuesta ?? propuestaHoraPrevia;
+  const extraFase = camposPropuesta(horaRetiroIso ? undefined : propuestaHora);
 
-  // Red de seguridad de la hora (21/09/2026): si la pregunta pendiente era la
-  // hora y el modelo no la trajo, se lee con texto plano ("tipo 19", "a las 7",
-  // "19:30"). Primero el modelo, después esto: nunca al revés.
-  if (!horaRetiroIso && !horaRetiroYaPasoIso && (intentosHoraPrevios ?? 0) > 0) {
-    const leida = leerHoraSuelta(texto);
-    if (leida && !leida.yaPaso) horaRetiroIso = leida.iso;
-    else if (leida) horaRetiroYaPasoIso = leida.iso;
-  }
   let itemsParciales =
     (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante" ? resultado.itemsParciales : undefined) ??
     itemsParcialesPrevios ??
@@ -1212,7 +1355,7 @@ async function procesarResultado(params: {
       itemsPedidos: [...resultado.items, ...itemsFaltantes],
       recomendacionYaHecha,
       horaRetiroIso,
-      horaRetiroYaPasoIso,
+      propuestaHora: horaRetiroIso ? undefined : propuestaHora,
       intentosHoraPrevios,
       texto,
     });
@@ -1227,7 +1370,12 @@ async function procesarResultado(params: {
   // cualquier "el resto" que el cliente haya marcado.
   let advertenciaResto: string | undefined;
   if (asadoKgObjetivoPrevio != null) {
-    const resuelto = resolverUsoDeResto(itemsParciales, catalogo, asadoKgObjetivoPrevio);
+    const resuelto = resolverUsoDeResto(
+      itemsParciales,
+      catalogo,
+      asadoKgObjetivoPrevio,
+      await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId })
+    );
     itemsParciales = resuelto.items;
     advertenciaResto = resuelto.advertencia;
   }
@@ -1239,7 +1387,7 @@ async function procesarResultado(params: {
       pregunta_pendiente: advertenciaResto,
       item_parcial: itemsParciales,
       ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
-      interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: asadoKgObjetivoPrevio, recomendacionMostrada: true },
+      interpretacion: { fase: "esperando_dato_item", personas, asadoKgObjetivo: asadoKgObjetivoPrevio, recomendacionMostrada: true, ...extraFase },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
@@ -1273,7 +1421,7 @@ async function procesarResultado(params: {
       pregunta_pendiente: pregunta,
       item_parcial: itemsParciales,
       ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
-      interpretacion: { fase: "esperando_dato_item", personas, intentosPersonas: intentos },
+      interpretacion: { fase: "esperando_dato_item", personas, intentosPersonas: intentos, ...extraFase },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
     });
@@ -1288,7 +1436,12 @@ async function procesarResultado(params: {
 
   if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
     const pregunta = variarSiSeRepite(
-      armarPreguntaRecomendacion(catalogo, itemsParciales, kgObjetivoActual),
+      armarPreguntaRecomendacion(
+        catalogo,
+        itemsParciales,
+        kgObjetivoActual,
+        await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId })
+      ),
       preguntaPendientePrevia
     );
     await guardar({
@@ -1303,6 +1456,7 @@ async function procesarResultado(params: {
         asadoKgObjetivo: kgObjetivoActual,
         recomendacionMostrada: true,
         intentosPersonas: intentosPersonasPrevios,
+        ...extraFase,
       },
       expires_at: finDeHoyArgentina().toISOString(),
       updated_at: ahora,
@@ -1331,7 +1485,7 @@ async function procesarResultado(params: {
       itemsPedidos: itemsCompletos,
       recomendacionYaHecha,
       horaRetiroIso,
-      horaRetiroYaPasoIso,
+      propuestaHora: horaRetiroIso ? undefined : propuestaHora,
       intentosHoraPrevios,
       texto,
     });
@@ -1367,6 +1521,7 @@ async function procesarResultado(params: {
       asadoKgObjetivo: kgObjetivoActual ?? undefined,
       recomendacionMostrada,
       intentosPersonas: intentosPersonasPrevios,
+      ...extraFase,
     },
     expires_at: finDeHoyArgentina().toISOString(),
     updated_at: ahora,
@@ -1945,16 +2100,13 @@ async function reprogramarPedido(params: {
 
   if (seAdelanta) {
     // Sección 25: no se promete que vaya a estar listo antes.
-    return `Te anoto el cambio para las ${formatearHoraArgentina(horaNueva)} hs. Déjame confirmar que lleguemos con el tiempo y te aviso enseguida 🙌`;
+    return `Te anoto el cambio para ${formatearRetiro(horaNueva)} hs. Déjame confirmar que lleguemos con el tiempo y te aviso enseguida 🙌`;
   }
 
-  return `Listo, te lo dejo para las ${formatearHoraArgentina(horaNueva)} hs. ¡Te esperamos!`;
+  return `Listo, te lo dejo para ${formatearRetiro(horaNueva)} hs. ¡Te esperamos!`;
 }
 
 /** La hora de retiro que trae este resultado, sea cual sea su tipo. */
-function horaRetiroDelResultado(resultado: ResultadoInterpretacionPedido): string | undefined {
-  return "horaRetiroIso" in resultado ? resultado.horaRetiroIso : undefined;
-}
 
 /** ¿El mensaje habla de algún producto, o es solo un dato suelto (una hora)? */
 function mencionaProductos(resultado: ResultadoInterpretacionPedido): boolean {
@@ -2060,6 +2212,52 @@ async function procesarMensajeDeCliente(params: {
     }
   }
 
+  // ------------------------------------------------------------
+  // El cliente contesta una PROPUESTA de hora ("¿te lo dejo para mañana a
+  // las 10?"). Un sí o un no no necesitan a la IA — y la IA, con un "no"
+  // suelto, podía entender que quería cancelar TODO el pedido.
+  // ------------------------------------------------------------
+  const propuestaPrevia = propuestaDeFase(pedidoActivo?.fase);
+  if (pedidoActivo && propuestaPrevia) {
+    const respuesta = clasificarRespuesta(texto);
+    if (respuesta === "confirmar") {
+      return await procesarResultado({
+        carniceriaId,
+        telefono,
+        clienteId: cliente.id,
+        clienteNombre: cliente.nombre,
+        mensajeWhatsappId,
+        pedidoId: pedidoActivo.id,
+        catalogo,
+        resultado: { tipo: "no_entendido" },
+        texto,
+        personasPrevias: personasDeFase(pedidoActivo.fase),
+        asadoKgObjetivoPrevio: asadoKgObjetivoDeFase(pedidoActivo.fase),
+        recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo.fase),
+        intentosPersonasPrevios: intentosPersonasDeFase(pedidoActivo.fase),
+        itemsParcialesPrevios: pedidoActivo.itemsParciales,
+        itemsActualesPrevios: pedidoActivo.items,
+        horaRetiroPrevia: undefined,
+        intentosHoraPrevios: intentosHoraDeFase(pedidoActivo.fase),
+        horaResuelta: { iso: propuestaPrevia.iso },
+        preguntaPendientePrevia: pedidoActivo.pregunta_pendiente ?? null,
+        recomendacionYaHecha: pedidoActivo.recomendacionHecha,
+      });
+    }
+    if (respuesta === "cancelar") {
+      const pregunta = "Dale. ¿A qué hora te queda bien?";
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({
+          pregunta_pendiente: pregunta,
+          interpretacion: { fase: "esperando_hora_retiro", intentos: 1 },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pedidoActivo.id);
+      return pregunta;
+    }
+  }
+
   const asadoKgObjetivoPrevio = asadoKgObjetivoDeFase(pedidoActivo?.fase);
 
   const contexto = pedidoActivo
@@ -2097,7 +2295,7 @@ async function procesarMensajeDeCliente(params: {
       }
     : undefined;
 
-  const interpretado = await interpretarMensajePedido(
+  let interpretado = await interpretarMensajePedido(
     texto,
     bloquePromos ? `${catalogo.promptCatalogo}\n\n${bloquePromos}` : catalogo.promptCatalogo,
     ahoraArgentinaIso(),
@@ -2105,6 +2303,41 @@ async function procesarMensajeDeCliente(params: {
     historial,
     confirmadoParaContexto
   );
+
+  // "¿Cuánto pesa uno generalmente?" es una consulta de peso SIEMPRE, diga lo
+  // que diga la IA (bug del 28/09: contestó "no te entendí"). Detecta el
+  // texto, no la IA (Patrón 3). Si el mismo mensaje además pide algo con
+  // cantidad, se respeta el pedido: el pedido manda.
+  if (
+    preguntaPorPeso(texto) &&
+    interpretado.tipo !== "pedido" &&
+    interpretado.tipo !== "modificacion" &&
+    !(interpretado.tipo === "consulta" && interpretado.tema === "peso_unidad")
+  ) {
+    const nombrados = catalogo.productos.filter((p) => nombreDichoPor(p, texto)).map((p) => p.codigo);
+    interpretado = {
+      tipo: "consulta",
+      tema: "peso_unidad",
+      ...(nombrados.length > 0 ? { productosConsultados: nombrados } : {}),
+    };
+  }
+
+  // La hora de este mensaje, decidida en UN solo lugar (texto primero, IA
+  // después, las dos contra el horario del local). Ver horaDelMensaje.
+  // Un número suelto se toma como hora si se le preguntó la hora, o si está
+  // mirando el resumen (que muestra la hora): "10" contestado a "Retiro:
+  // 22:00 hs. ¿Está bien así?" es una corrección de la hora.
+  const esperandoHora =
+    pedidoActivo?.fase?.fase === "esperando_hora_retiro" ||
+    pedidoActivo?.fase?.fase === "esperando_confirmacion_final" ||
+    /\bhora\b/i.test(pedidoActivo?.pregunta_pendiente ?? "");
+  const horaResuelta = await horaDelMensaje({
+    carniceriaId,
+    texto,
+    esperandoHora,
+    resultado: interpretado,
+    propuestaPrevia,
+  });
 
   // ------------------------------------------------------------
   // Cambiar un pedido YA CONFIRMADO (especificación, secciones 8 y 49)
@@ -2135,7 +2368,7 @@ async function procesarMensajeDeCliente(params: {
       mensajeWhatsappId,
       pedido,
       items: interpretado.items,
-      horaRetiroIso: interpretado.horaRetiroIso ?? pedido.hora_retiro ?? undefined,
+      horaRetiroIso: horaResuelta.iso ?? pedido.hora_retiro ?? undefined,
       catalogo,
       texto,
     });
@@ -2237,9 +2470,13 @@ async function procesarMensajeDeCliente(params: {
   // menciona productos, es un pedido nuevo — la sección 9 permite tener varios
   // para fechas distintas — y sigue el camino normal.
   if (!pedidoActivo) {
-    const horaNueva = horaRetiroDelResultado(resultado);
+    const horaNueva = horaResuelta.iso;
+    // Pidió una hora nueva que no se puede (cerrado, ya pasó): se le propone
+    // la válida más cercana. Si contesta "dale", la IA la ve en el historial.
+    if (!horaNueva && horaResuelta.propuesta && !mencionaProductos(resultado) && confirmados.length === 1) {
+      return horaResuelta.propuesta.mensaje;
+    }
     if (horaNueva && !mencionaProductos(resultado)) {
-      const confirmados = await obtenerPedidosConfirmados(carniceriaId, telefono);
       if (confirmados.length === 1) {
         return await reprogramarPedido({
           carniceriaId,
@@ -2272,6 +2509,8 @@ async function procesarMensajeDeCliente(params: {
     itemsActualesPrevios: pedidoActivo?.items,
     horaRetiroPrevia: pedidoActivo?.hora_retiro ?? undefined,
     intentosHoraPrevios: intentosHoraDeFase(pedidoActivo?.fase),
+    horaResuelta,
+    propuestaHoraPrevia: propuestaPrevia,
     preguntaPendientePrevia: pedidoActivo?.pregunta_pendiente ?? null,
     recomendacionYaHecha: pedidoActivo?.recomendacionHecha ?? false,
   });
@@ -2784,7 +3023,7 @@ function mensajeClientePedidoConfirmado(horaRetiro?: Date): string {
   // Sección 7.1: "alrededor de las X hs" y no "a las X hs" — la hora de
   // retiro orienta la preparación, no es un turno exacto.
   return `¡Listo! Tu pedido está confirmado 🙌 Te esperamos ${
-    horaRetiro ? `alrededor de las ${formatearHoraArgentina(horaRetiro)} hs` : "en el horario que acordamos"
+    horaRetiro ? `${formatearRetiro(horaRetiro).replace(/^(hoy|mañana|el [a-záé]+ [\d/]+) /, "$1 alrededor de las ")} hs` : "en el horario que acordamos"
   } para retirarlo.`;
 }
 

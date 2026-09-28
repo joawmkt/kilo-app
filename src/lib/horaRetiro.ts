@@ -1,167 +1,450 @@
 // ============================================================
-// "tipo 19", "a las 7", "19:30", "mañana a las 10" — leído SIN IA
+// La hora de retiro — decidida por CÓDIGO, no por la IA
 // ============================================================
 //
-// Bug del 21/09/2026:
+// Pedido del fundador (28/09/2026), sin vueltas: "tiene que ser lo más
+// sencillo del bot". Tenía razón. Venía fallando de a una forma por vez:
 //
-//   Bot:     ¿A qué hora pasás a retirarlo?
-//   Cliente: tipo 19
-//   Bot:     ¿A qué hora pasás a retirarlo?
-//   Cliente: 19
-//   Bot:     Perdón, sigo sin agarrar el horario...
+//   - "Quiero que sea para las 10 AM" -> la hora se perdía porque en el mismo
+//     mensaje había un producto que no se reconoció.
+//   - "10 dije" -> no se entendía por la palabra "dije".
+//   - "10." -> no se entendía por el punto.
+//   - "10" a las 19:40 -> se agendaba a las 22:00, con el local cerrado.
 //
-// Dos causas, y las dos se cierran:
+// Cada arreglo anterior tapaba UNA forma. El problema de fondo era que la hora
+// la decidía la IA y el código solo la "respaldaba". Ahora es al revés:
 //
-// 1. Si la respuesta del modelo venía "rara" (un tipo que no correspondía, un
-//    item mal armado), el validador la tiraba ENTERA — y con ella una hora que
-//    estaba perfecta. Eso se arregló en interpretarPedido.ts: una hora válida
-//    nunca se descarta.
-// 2. Cuando la pregunta pendiente ES la hora, la respuesta casi siempre es una
-//    de un puñado de formas contadas. Es el Patrón 3 del manual: eso se lee con
-//    texto plano, sin dudar y sin costo. Este archivo hace eso.
+//   1. `extraerHora` lee la hora del texto, SIN IA, en cualquier mensaje del
+//      cliente (no solo cuando se le preguntó). Tolera relleno ("tipo", "dije",
+//      "más o menos"), puntuación, am/pm, "de la tarde", "mañana", días de la
+//      semana, "en media hora", "mediodía".
+//   2. `resolverHora` decide QUÉ día y hora es, usando el HORARIO DEL LOCAL:
+//      "10" a las 19:40 con el local abierto de 8 a 13 y de 17 a 20:30 no puede
+//      ser las 22 (está cerrado): es mañana a las 10. Y si lo que pidió no se
+//      puede (ya pasó, está cerrado), NO se descarta: se le propone la hora
+//      válida más cercana y se guarda la propuesta, así un "dale" la acepta.
+//   3. Solo si el texto no trae ninguna hora se usa la que haya entendido la IA
+//      (y también se valida contra el horario).
 //
-// Igual que con las personas: NO reemplaza al modelo, lo respalda. Si el
-// modelo trajo la hora, gana el modelo. Si no, se lee acá. Y si el mensaje trae
-// cualquier otra cosa además de la hora ("19, y sumale 2 de chorizo"), esto no
-// lo toca: devuelve null y decide el modelo, que ve el mensaje entero.
+// Todo este archivo es puro (sin base de datos) para poder probarlo solo: el
+// horario del local entra como una función.
 
 const OFFSET_ARGENTINA_HORAS = -3;
 
-const HORAS_ESCRITAS: Record<string, number> = {
+export type FranjaDia = {
+  cerrado: boolean;
+  /** Turnos en minutos desde medianoche: [[480, 780], [1020, 1230]]. */
+  turnos: [number, number][];
+};
+
+/** Horario del local para una fecha "YYYY-MM-DD". `null` = no lo sabemos. */
+export type Agenda = (fecha: string) => FranjaDia | null;
+
+export type LecturaHora = {
+  hora: number;
+  minutos: number;
+  /** "am" / "pm" si lo aclaró (am, pm, de la mañana, de la tarde, de la noche). */
+  franja: "am" | "pm" | null;
+  /** Días desde hoy si lo dijo ("mañana" = 1, "el sábado" = los que falten). */
+  dia: number | null;
+  /** "en media hora": minutos desde ahora. Si viene, manda sobre todo lo demás. */
+  enMinutos: number | null;
+};
+
+const NUMEROS: Record<string, number> = {
   una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8,
   nueve: 9, diez: 10, once: 11, doce: 12, trece: 13, catorce: 14, quince: 15,
   dieciseis: 16, diecisiete: 17, dieciocho: 18, diecinueve: 19, veinte: 20,
   veintiuno: 21, veintidos: 22, veintitres: 23,
 };
 
-// Palabras que acompañan a una hora sin cambiarla.
-const RELLENO = new Set([
-  "tipo", "a", "las", "la", "el", "los", "como", "eso", "de", "para", "paso", "pasaria", "pasare",
-  "voy", "onda", "mas", "o", "menos", "aprox", "aproximadamente", "hs", "h", "hrs", "horas", "hora",
-  "tipo", "tipin", "pongale", "ponele", "calculo", "creo", "que", "por", "ahi", "y", "hoy", "dale",
-  "si", "ok", "bueno", "entre", "tarde", "noche", "manana", "mediodia", "cuarto", "media", "en",
-  "punto", "pm", "am", "te", "lo", "retiro", "busco", "buscarlo", "retirarlo", "paso",
-]);
+const DIAS_SEMANA: Record<string, number> = {
+  domingo: 0, lunes: 1, martes: 2, miercoles: 3, jueves: 4, viernes: 5, sabado: 6,
+};
 
-export type HoraLeida = { iso: string; yaPaso: boolean };
+// Si un número está pegado a una de estas palabras, es una CANTIDAD, no una
+// hora: "2 kilos", "4 choris", "1 bolsa".
+const UNIDADES_DE_CANTIDAD =
+  /^(kg|kgs|kilo|kilos|k|g|gr|grs|gramo|gramos|unidad|unidades|u|docena|docenas|bolsa|bolsas|paquete|paquetes|personas|persona|pollos?|choris?|chorizos?|milanesas?|hombres|mujeres|pibes|somos)$/;
 
 function normalizar(texto: string): string {
   return texto
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
-    .replace(/(\d)\s*(hs|h|hrs)\b/g, "$1 hs")
-    .replace(/[^a-z0-9:.\s]/g, " ")
+    // "19hs" -> "19 hs", "10am" -> "10 am", "7pm" -> "7 pm"
+    .replace(/(\d)(hs|h|hrs|am|pm|a\.m\.|p\.m\.)\b/g, "$1 $2")
+    .replace(/\ba\.m\.?/g, "am")
+    .replace(/\bp\.m\.?/g, "pm")
+    // "19.30" -> "19:30" (solo entre dígitos: "10." es "10")
+    .replace(/(\d{1,2})\.(\d{2})\b/g, "$1:$2")
+    .replace(/[^a-z0-9:\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-/** Fecha y hora de "ahora" en Argentina, como campos sueltos. */
-function ahoraEnArgentina(ahora: Date): { y: number; m: number; d: number; minutos: number } {
+function aNumero(token: string): number | null {
+  if (/^\d{1,2}$/.test(token)) return Number(token);
+  return token in NUMEROS ? NUMEROS[token] : null;
+}
+
+/**
+ * Lee la hora que dijo el cliente, o `null` si no dijo ninguna.
+ *
+ * `esperandoHora`: si la pregunta pendiente era "¿a qué hora pasás?", un número
+ * suelto ("10", "10 dije", "tipo 19") es la hora. Si no se le preguntó la hora,
+ * un número suelto NO alcanza (puede ser una cantidad): hace falta una marca de
+ * hora ("a las", "hs", "am", "19:30", "de la tarde").
+ */
+export function extraerHora(texto: string, opciones: { esperandoHora: boolean }): LecturaHora | null {
+  const t = normalizar(texto);
+  if (!t) return null;
+  const tokens = t.split(" ");
+
+  // ---- Relativa: "en media hora", "en 20 minutos", "en una hora" ----
+  const rel = t.match(/\ben\s+(media hora|un cuarto de hora|(\d{1,3}|una|un|dos|tres)\s+(minutos?|min|horas?|hs))\b/);
+  if (rel) {
+    let minutos: number;
+    if (rel[1] === "media hora") minutos = 30;
+    else if (rel[1] === "un cuarto de hora") minutos = 15;
+    else {
+      const n = /^\d+$/.test(rel[2]) ? Number(rel[2]) : rel[2] === "un" || rel[2] === "una" ? 1 : NUMEROS[rel[2]] ?? 1;
+      minutos = /^h/.test(rel[3]) ? n * 60 : n;
+    }
+    if (minutos > 0 && minutos <= 12 * 60) {
+      return { hora: 0, minutos: 0, franja: null, dia: null, enMinutos: minutos };
+    }
+  }
+
+  // ---- El día ----
+  let dia: number | null = null;
+  if (/\bpasado manana\b/.test(t)) dia = 2;
+  // "mañana" es el DÍA salvo que sea la franja: "de la mañana", "a la mañana",
+  // "por la mañana", "10 de la mañana". "Mañana a la mañana" es las dos cosas.
+  const sinFranjaManana = t.replace(/\b(de|a|por)\s+la\s+manana\b/g, " ");
+  if (dia === null && /\bmanana\b/.test(sinFranjaManana)) dia = 1;
+  if (dia === null && /\bhoy\b/.test(t)) dia = 0;
+  const diaSemana = tokens.find((tok) => tok in DIAS_SEMANA);
+
+  // ---- La franja ----
+  let franja: "am" | "pm" | null = null;
+  if (/\b(am|de la manana|a la manana|por la manana|temprano)\b/.test(t)) franja = "am";
+  if (/\b(pm|de la tarde|a la tarde|por la tarde|de la noche|a la noche|por la noche)\b/.test(t)) franja = "pm";
+
+  // ---- La hora ----
+  let hora: number | null = null;
+  let minutos = 0;
+  let conMarca = false;
+
+  // "19:30"
+  const hhmm = t.match(/\b(\d{1,2}):(\d{2})\b/);
+  if (hhmm) {
+    hora = Number(hhmm[1]);
+    minutos = Number(hhmm[2]);
+    conMarca = true;
+  }
+
+  // "a las 7", "para las 19", "tipo las 8", "a eso de las 10", "las siete"
+  if (hora === null) {
+    const m = t.match(/\b(?:a|para|tipo|como|eso de|a eso de|antes de|despues de|pasadas)?\s*las\s+(\d{1,2}|[a-z]+)\b/);
+    if (m) {
+      const n = aNumero(m[1]);
+      if (n !== null) {
+        hora = n;
+        conMarca = true;
+      }
+    }
+  }
+
+  // "7 hs", "10 am", "8 de la tarde", "7 y media"
+  if (hora === null) {
+    for (let i = 0; i < tokens.length; i++) {
+      const n = aNumero(tokens[i]);
+      if (n === null) continue;
+      const sig = tokens[i + 1] ?? "";
+      const sig2 = `${sig} ${tokens[i + 2] ?? ""}`;
+      if (/^(hs|h|hrs|horas|am|pm)$/.test(sig) || /^de la (manana|tarde|noche)/.test(`${sig2} ${tokens[i + 3] ?? ""}`)) {
+        hora = n;
+        conMarca = true;
+        break;
+      }
+    }
+  }
+
+  if (hora === null && /\bmediodia\b/.test(t)) {
+    hora = 12;
+    conMarca = true;
+  }
+
+  // Número suelto: solo si se le preguntó la hora, y si hay UNO solo que no
+  // sea una cantidad ("2 kilos"). "10", "10 dije", "tipo 19", "diez".
+  if (hora === null && opciones.esperandoHora) {
+    const candidatos: number[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const n = aNumero(tokens[i]);
+      if (n === null) continue;
+      if (UNIDADES_DE_CANTIDAD.test(tokens[i + 1] ?? "")) continue;
+      // "somos 8" es gente, no una hora.
+      if (/^(somos|seremos|seriamos|x|por)$/.test(tokens[i - 1] ?? "")) continue;
+      // "una" suelto casi nunca es una hora ("una molleja").
+      if (tokens[i] === "una" || tokens[i] === "uno") continue;
+      candidatos.push(n);
+    }
+    if (candidatos.length === 1) hora = candidatos[0];
+  }
+
+  if (hora === null) return null;
+
+  // "y media", "y cuarto", "menos cuarto"
+  if (!hhmm) {
+    if (/\by media\b/.test(t)) minutos = 30;
+    else if (/\by cuarto\b/.test(t)) minutos = 15;
+    else if (/\bmenos cuarto\b/.test(t)) {
+      hora = hora - 1;
+      minutos = 45;
+    }
+  }
+
+  if (hora < 0 || hora > 23 || minutos < 0 || minutos > 59) return null;
+  if (!conMarca && !opciones.esperandoHora) return null;
+
+  if (diaSemana !== undefined && dia === null) {
+    dia = -1 - DIAS_SEMANA[diaSemana]; // se resuelve contra "hoy" en resolverHora
+  }
+
+  return { hora, minutos, franja, dia, enMinutos: null };
+}
+
+// ============================================================
+// Resolver: qué día y a qué hora, contra el horario del local
+// ============================================================
+
+export type HoraResuelta =
+  | { tipo: "hora"; iso: string }
+  /** No se puede lo que pidió: se le propone esta hora y se espera un sí. */
+  | { tipo: "propuesta"; iso: string; mensaje: string };
+
+type Base = { y: number; m: number; d: number; diaSemana: number; minutos: number };
+
+function base(ahora: Date): Base {
   const ar = new Date(ahora.getTime() + OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
   return {
     y: ar.getUTCFullYear(),
     m: ar.getUTCMonth() + 1,
     d: ar.getUTCDate(),
+    diaSemana: ar.getUTCDay(),
     minutos: ar.getUTCHours() * 60 + ar.getUTCMinutes(),
   };
 }
 
-function isoArgentina(base: { y: number; m: number; d: number }, diasMas: number, h: number, min: number): string {
-  // Se arma con Date.UTC para que sumar un día cruce bien fin de mes.
-  const utc = new Date(Date.UTC(base.y, base.m - 1, base.d + diasMas, h - OFFSET_ARGENTINA_HORAS, min));
-  return utc.toISOString();
+function fechaDe(b: Base, diasMas: number): string {
+  const f = new Date(Date.UTC(b.y, b.m - 1, b.d + diasMas));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${f.getUTCFullYear()}-${pad(f.getUTCMonth() + 1)}-${pad(f.getUTCDate())}`;
+}
+
+function iso(b: Base, diasMas: number, minutosDelDia: number): string {
+  const h = Math.floor(minutosDelDia / 60);
+  const min = minutosDelDia % 60;
+  return new Date(Date.UTC(b.y, b.m - 1, b.d + diasMas, h - OFFSET_ARGENTINA_HORAS, min)).toISOString();
+}
+
+function hhmmTexto(minutosDelDia: number): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(minutosDelDia / 60))}:${pad(minutosDelDia % 60)}`;
+}
+
+const NOMBRE_DIA = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+function cuando(b: Base, diasMas: number): string {
+  if (diasMas === 0) return "hoy";
+  if (diasMas === 1) return "mañana";
+  return `el ${NOMBRE_DIA[(b.diaSemana + diasMas) % 7]}`;
+}
+
+/** ¿El local está abierto ese día a esa hora? `null` = no sabemos el horario. */
+function abierto(agenda: Agenda, fecha: string, minutos: number): boolean | null {
+  const franja = agenda(fecha);
+  if (!franja) return null;
+  if (franja.cerrado) return false;
+  return franja.turnos.some(([desde, hasta]) => minutos >= desde && minutos <= hasta);
+}
+
+function describirHorario(franja: FranjaDia | null): string {
+  if (!franja || franja.cerrado || franja.turnos.length === 0) return "";
+  return franja.turnos.map(([a, b]) => `de ${hhmmTexto(a)} a ${hhmmTexto(b)}`).join(" y ");
 }
 
 /**
- * La hora de retiro que dijo el cliente, o null si el mensaje no es solo una
- * hora (y entonces decide el modelo).
+ * La primera hora abierta desde (día, minuto) en adelante, dentro de 7 días.
+ * En los días siguientes se intenta primero LA MISMA hora que pidió (si pidió
+ * las 10 y el domingo está cerrado, se ofrece el lunes a las 10, no a las 8).
  */
-export function leerHoraSuelta(texto: string, ahora: Date = new Date()): HoraLeida | null {
-  const t = normalizar(texto);
-  if (!t) return null;
-
-  const tokens = t.split(" ");
-
-  // Todo lo que no sea relleno ni número tiene que no estar: si hay un
-  // producto o cualquier otra cosa, no es una hora suelta.
-  let hora: number | null = null;
-  let minutos = 0;
-
-  for (const token of tokens) {
-    const conMinutos = token.match(/^(\d{1,2})[:.](\d{2})$/);
-    if (conMinutos) {
-      if (hora !== null) return null;
-      hora = Number(conMinutos[1]);
-      minutos = Number(conMinutos[2]);
-      continue;
+function proximaAbierta(agenda: Agenda, b: Base, desdeDia: number, desdeMinuto: number): { dia: number; minuto: number } | null {
+  for (let dia = desdeDia; dia < desdeDia + 7; dia++) {
+    const franja = agenda(fechaDe(b, dia));
+    if (!franja || franja.cerrado) continue;
+    if (dia !== desdeDia && franja.turnos.some(([desde, hasta]) => desdeMinuto >= desde && desdeMinuto <= hasta)) {
+      return { dia, minuto: desdeMinuto };
     }
-    if (/^\d{1,2}$/.test(token)) {
-      if (hora !== null) return null; // dos números: ambiguo, que decida el modelo
-      hora = Number(token);
-      continue;
+    for (const [desde, hasta] of franja.turnos) {
+      const inicio = dia === desdeDia ? Math.max(desde, desdeMinuto) : desde;
+      if (inicio <= hasta) return { dia, minuto: inicio };
     }
-    if (token in HORAS_ESCRITAS) {
-      if (hora !== null) return null;
-      hora = HORAS_ESCRITAS[token];
-      continue;
+  }
+  return null;
+}
+
+/** De las horas candidatas, la que cae dentro del horario de algún día abierto. */
+function candidataRazonable(agenda: Agenda, b: Base, minutos: number[]): number {
+  for (let dia = 0; dia < 7; dia++) {
+    const franja = agenda(fechaDe(b, dia));
+    if (!franja || franja.cerrado) continue;
+    const ok = minutos.find((m) => franja.turnos.some(([desde, hasta]) => m >= desde && m <= hasta));
+    if (ok !== undefined) return ok;
+  }
+  return minutos[0];
+}
+
+/**
+ * Convierte lo que dijo el cliente en una hora concreta, o en una PROPUESTA si
+ * lo que pidió no se puede. Nunca descarta una hora en silencio.
+ */
+export function resolverHora(lectura: LecturaHora, ahora: Date, agenda: Agenda): HoraResuelta {
+  const b = base(ahora);
+  const margen = 5; // minutos de tolerancia hacia atrás
+
+  // ---- Relativa ----
+  if (lectura.enMinutos !== null) {
+    const total = b.minutos + lectura.enMinutos;
+    const dia = Math.floor(total / 1440);
+    const minuto = total % 1440;
+    const ok = abierto(agenda, fechaDe(b, dia), minuto);
+    if (ok !== false) return { tipo: "hora", iso: iso(b, dia, minuto) };
+    return proponer(agenda, b, dia, minuto, `En ${lectura.enMinutos} minutos`);
+  }
+
+  // ---- Qué horas son candidatas ----
+  const h = lectura.hora;
+  let horas: number[];
+  if (lectura.franja === "pm") horas = [h < 12 ? h + 12 : h];
+  else if (lectura.franja === "am") horas = [h === 12 ? 0 : h];
+  else if (h >= 13 || h === 0) horas = [h];
+  else if (h === 12) horas = [12];
+  // 1 a 11 sin aclarar: puede ser de mañana o de tarde. 1 a 6 casi seguro es
+  // de tarde (nadie retira carne a las 3 de la madrugada).
+  else if (h <= 6) horas = [h + 12];
+  else horas = [h, h + 12];
+  const minutosCandidatos = horas.map((x) => x * 60 + lectura.minutos);
+  const ambigua = minutosCandidatos.length > 1;
+
+  // ---- Qué días son candidatos ----
+  let dias: number[];
+  let diaExplicito = false;
+  if (lectura.dia !== null && lectura.dia >= 0) {
+    dias = [lectura.dia];
+    diaExplicito = true;
+  } else if (lectura.dia !== null && lectura.dia < 0) {
+    const objetivo = -1 - lectura.dia;
+    let faltan = (objetivo - b.diaSemana + 7) % 7;
+    // "el sábado" dicho un sábado a la noche es el que viene.
+    if (faltan === 0 && Math.max(...minutosCandidatos) < b.minutos - margen) faltan = 7;
+    dias = [faltan];
+    diaExplicito = true;
+  } else {
+    dias = [0, 1];
+  }
+
+  // ---- Elegir: la primera combinación que sea futura Y con el local abierto ----
+  for (const dia of dias) {
+    // Sin día dicho y con hora NO ambigua (am/pm, 13-23), pasar a mañana solo
+    // no se hace en silencio: se propone.
+    if (!diaExplicito && dia === 1 && !ambigua) break;
+    for (const minuto of minutosCandidatos) {
+      if (dia === 0 && minuto < b.minutos - margen) continue;
+      const ok = abierto(agenda, fechaDe(b, dia), minuto);
+      if (ok === true || ok === null) return { tipo: "hora", iso: iso(b, dia, minuto) };
     }
-    if (!RELLENO.has(token)) return null;
   }
 
-  const dice = (palabra: string) => tokens.includes(palabra);
+  // ---- No se pudo: proponer la más cercana válida ----
+  const primerDia = dias[0];
+  const minutoPedido = candidataRazonable(agenda, b, minutosCandidatos);
+  const yaPaso = primerDia === 0 && minutosCandidatos.every((m) => m < b.minutos - margen);
 
-  if (hora === null) {
-    if (dice("mediodia")) hora = 12;
-    else return null;
+  if (yaPaso) {
+    // "Las 10 de hoy ya pasaron": se propone mañana a la misma hora (si abre).
+    const mismaHora = minutosCandidatos[0];
+    const okManana = abierto(agenda, fechaDe(b, 1), mismaHora);
+    if (okManana !== false) {
+      return {
+        tipo: "propuesta",
+        iso: iso(b, 1, mismaHora),
+        mensaje: `Las ${hhmmTexto(mismaHora)} de hoy ya pasaron. ¿Te lo dejo para mañana a las ${hhmmTexto(mismaHora)}?`,
+      };
+    }
+    return proponer(agenda, b, 0, b.minutos, `Las ${hhmmTexto(mismaHora)} de hoy ya pasaron`);
   }
 
-  if (dice("media") && minutos === 0) minutos = 30;
-  if (dice("cuarto") && minutos === 0) minutos = dice("menos") ? -15 : 15;
-  if (minutos < 0) {
-    hora = hora - 1;
-    minutos = 60 + minutos;
+  return proponer(agenda, b, primerDia, minutoPedido, `${capitalizar(cuando(b, primerDia))} a las ${hhmmTexto(minutoPedido)}`);
+}
+
+function capitalizar(t: string): string {
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+function proponer(agenda: Agenda, b: Base, dia: number, minuto: number, loQuePidio: string): HoraResuelta {
+  const franja = agenda(fechaDe(b, dia));
+  const horario = describirHorario(franja);
+  const motivo =
+    franja?.cerrado || !horario
+      ? `${loQuePidio} no abrimos`
+      : `${loQuePidio} estamos cerrados (${cuando(b, dia)} atendemos ${horario})`;
+
+  // Lo más cerca posible de lo que pidió: el mismo día más tarde, o si no, el
+  // cierre de ese día si todavía no pasó, o si no, la próxima apertura.
+  let elegida = proximaAbierta(agenda, b, dia, Math.max(minuto, dia === 0 ? b.minutos : 0));
+  if (!elegida && franja && !franja.cerrado) {
+    const cierre = Math.max(...franja.turnos.map(([, hasta]) => hasta));
+    if (dia > 0 || cierre >= b.minutos) elegida = { dia, minuto: cierre };
+  }
+  if (!elegida) elegida = proximaAbierta(agenda, b, dia + 1, 0);
+  if (!elegida) {
+    return { tipo: "propuesta", iso: iso(b, dia, minuto), mensaje: `${motivo}. ¿A qué hora te queda bien?` };
   }
 
-  if (hora < 0 || hora > 23 || minutos < 0 || minutos > 59) return null;
-
-  // "mañana" puede ser el día ("mañana a las 10") o la franja ("10 de la
-  // mañana"). Es la franja solo si viene pegada a "de la".
-  const deLaManana = /\bde la manana\b/.test(t);
-  const esParaManana = dice("manana") && !deLaManana;
-  const esTarde = dice("tarde") || dice("noche") || dice("pm");
-
-  if (esTarde && hora < 12) hora += 12;
-
-  const base = ahoraEnArgentina(ahora);
-
-  if (esParaManana) {
-    // Para mañana, un número de 1 a 7 sin aclarar es casi seguro de la tarde
-    // (nadie retira carne a las 3 de la madrugada).
-    if (!esTarde && !deLaManana && hora >= 1 && hora <= 7) hora += 12;
-    return { iso: isoArgentina(base, 1, hora, minutos), yaPaso: false };
+  // Si lo pedido cae después del cierre del día, lo más útil es ofrecer el
+  // cierre de ese mismo día (si todavía llega) antes que mandarlo a mañana.
+  if (franja && !franja.cerrado && elegida.dia !== dia) {
+    const cierre = Math.max(...franja.turnos.map(([, hasta]) => hasta));
+    if (minuto > cierre && (dia > 0 || cierre >= b.minutos + 15)) elegida = { dia, minuto: cierre };
   }
 
-  const pedidoEnMinutos = (h: number) => h * 60 + minutos;
+  return {
+    tipo: "propuesta",
+    iso: iso(b, elegida.dia, elegida.minuto),
+    mensaje: `${motivo}. ¿Te sirve ${cuando(b, elegida.dia)} a las ${hhmmTexto(elegida.minuto)}?`,
+  };
+}
 
-  // 13 a 23, o con franja aclarada: la hora es esa y no hay que adivinar.
-  if (hora >= 13 || esTarde || deLaManana) {
-    const yaPaso = pedidoEnMinutos(hora) < base.minutos - 5;
-    return { iso: isoArgentina(base, 0, hora, minutos), yaPaso };
-  }
-
-  // 1 a 12 sin aclarar: la próxima vez que esa hora pase HOY (8 -> 8:00 si
-  // todavía es de mañana, si no 20:00). Es el mismo criterio que se le pide
-  // al modelo en el prompt.
-  if (pedidoEnMinutos(hora) >= base.minutos - 5) {
-    return { iso: isoArgentina(base, 0, hora, minutos), yaPaso: false };
-  }
-  if (hora < 12 && pedidoEnMinutos(hora + 12) >= base.minutos - 5) {
-    return { iso: isoArgentina(base, 0, hora + 12, minutos), yaPaso: false };
-  }
-  // Ya pasó en las dos versiones: se devuelve igual, marcada, para que el
-  // flujo le pregunte si es para mañana en vez de repetir la pregunta.
-  return { iso: isoArgentina(base, 0, hora, minutos), yaPaso: true };
+/**
+ * Valida una hora que ya viene como ISO (la que entendió la IA, o una guardada):
+ * si el local está abierto, queda; si no, se propone la más cercana.
+ */
+export function validarIso(isoHora: string, ahora: Date, agenda: Agenda): HoraResuelta {
+  const b = base(ahora);
+  const f = new Date(conZonaArgentina(isoHora));
+  if (Number.isNaN(f.getTime())) return { tipo: "propuesta", iso: isoHora, mensaje: "¿A qué hora pasás a retirarlo?" };
+  const ar = new Date(f.getTime() + OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
+  const diasMas = Math.round(
+    (Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate()) - Date.UTC(b.y, b.m - 1, b.d)) / 86400000
+  );
+  const minuto = ar.getUTCHours() * 60 + ar.getUTCMinutes();
+  return resolverHora(
+    { hora: Math.floor(minuto / 60), minutos: minuto % 60, franja: minuto >= 720 ? "pm" : "am", dia: diasMas >= 0 ? diasMas : 0, enMinutos: null },
+    ahora,
+    agenda
+  );
 }
 
 /**
@@ -170,12 +453,25 @@ export function leerHoraSuelta(texto: string, ahora: Date = new Date()): HoraLei
  *
  * Sin esto, `new Date()` lo interpreta en la zona del servidor: en Vercel es
  * UTC (las 19 pasan a ser las 16 de Argentina) y en la compu del fundador es
- * la de su Windows. La misma respuesta del modelo daba horas distintas según
- * dónde corriera el código.
+ * la de su Windows.
  */
-export function conZonaArgentina(iso: string): string {
-  const t = iso.trim();
+export function conZonaArgentina(isoHora: string): string {
+  const t = isoHora.trim();
   if (/([zZ]|[+-]\d{2}:?\d{2})$/.test(t)) return t;
   if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(t)) return `${t}-03:00`;
   return t;
+}
+
+/** "hoy 19:00", "mañana 10:00", "el sábado 03/10 10:00" — para los resúmenes. */
+export function formatearRetiro(fecha: Date, ahora: Date = new Date()): string {
+  const b = base(ahora);
+  const ar = new Date(fecha.getTime() + OFFSET_ARGENTINA_HORAS * 60 * 60 * 1000);
+  const diasMas = Math.round(
+    (Date.UTC(ar.getUTCFullYear(), ar.getUTCMonth(), ar.getUTCDate()) - Date.UTC(b.y, b.m - 1, b.d)) / 86400000
+  );
+  const hora = hhmmTexto(ar.getUTCHours() * 60 + ar.getUTCMinutes());
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (diasMas === 0) return `hoy ${hora}`;
+  if (diasMas === 1) return `mañana ${hora}`;
+  return `el ${NOMBRE_DIA[ar.getUTCDay()]} ${pad(ar.getUTCDate())}/${pad(ar.getUTCMonth() + 1)} ${hora}`;
 }

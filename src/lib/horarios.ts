@@ -117,3 +117,57 @@ export function estaEnLaVentana(minutoActual: number, minutoObjetivo: number | n
   if (minutoObjetivo == null) return false;
   return minutoActual >= minutoObjetivo && minutoActual < minutoObjetivo + toleranciaMinutos;
 }
+
+// ============================================================
+// La agenda para validar la hora de retiro (28/09/2026)
+// ============================================================
+//
+// `horaRetiro.ts` es puro (sin base) para poder probarlo solo, así que recibe
+// el horario como una función. Esta la arma una vez por mensaje: los siete
+// días de la semana más los días especiales de las próximas dos semanas.
+// Si la carnicería no cargó horarios, devuelve siempre `null` ("no sé") y la
+// hora se acepta sin validar — nunca se inventa un horario.
+
+export async function cargarAgenda(
+  carniceriaId: string
+): Promise<(fecha: string) => { cerrado: boolean; turnos: [number, number][] } | null> {
+  const supabaseAdmin = getSupabaseAdmin();
+  const hoy = diaEnArgentina().fecha;
+  const hasta = new Date(new Date(`${hoy}T12:00:00Z`).getTime() + 14 * 86400000).toISOString().slice(0, 10);
+
+  const [{ data: semana }, { data: especiales }] = await Promise.all([
+    supabaseAdmin
+      .from("horarios_atencion")
+      .select("dia_semana, cerrado, turno1_desde, turno1_hasta, turno2_desde, turno2_hasta")
+      .eq("carniceria_id", carniceriaId),
+    supabaseAdmin
+      .from("dias_especiales")
+      .select("fecha, cerrado, turno1_desde, turno1_hasta, turno2_desde, turno2_hasta")
+      .eq("carniceria_id", carniceriaId)
+      .gte("fecha", hoy)
+      .lte("fecha", hasta),
+  ]);
+
+  type Fila = { cerrado: boolean; turno1_desde: string | null; turno1_hasta: string | null; turno2_desde: string | null; turno2_hasta: string | null };
+  const aFranja = (f: Fila) => {
+    const turnos: [number, number][] = [];
+    const t1 = [aMinutos(f.turno1_desde), aMinutos(f.turno1_hasta)];
+    const t2 = [aMinutos(f.turno2_desde), aMinutos(f.turno2_hasta)];
+    if (t1[0] !== null && t1[1] !== null) turnos.push([t1[0], t1[1]]);
+    if (t2[0] !== null && t2[1] !== null) turnos.push([t2[0], t2[1]]);
+    return { cerrado: Boolean(f.cerrado) || turnos.length === 0, turnos };
+  };
+
+  const porDia = new Map<number, ReturnType<typeof aFranja>>();
+  for (const f of (semana ?? []) as (Fila & { dia_semana: number })[]) porDia.set(Number(f.dia_semana), aFranja(f));
+  const porFecha = new Map<string, ReturnType<typeof aFranja>>();
+  for (const f of (especiales ?? []) as (Fila & { fecha: string })[]) porFecha.set(String(f.fecha), aFranja(f));
+
+  if (porDia.size === 0) return () => null;
+
+  return (fecha: string) => {
+    const especial = porFecha.get(fecha);
+    if (especial) return especial;
+    return porDia.get(new Date(`${fecha}T12:00:00Z`).getUTCDay()) ?? null;
+  };
+}

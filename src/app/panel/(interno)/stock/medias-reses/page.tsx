@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { CargarMediaRes, ListaDeLotes, type LoteDelPanel } from "@/components/panel/medias-reses";
-import { EncabezadoPantalla, Tarjeta, clasesBoton } from "@/components/panel/ui";
+import { EncabezadoPantalla, clasesBoton } from "@/components/panel/ui";
 import { IconoMicrofono } from "@/components/panel/iconos";
 
 // Medias reses — la entrada de mercadería, modelada como lo que realmente es.
@@ -16,10 +16,10 @@ import { IconoMicrofono } from "@/components/panel/iconos";
 // vacío que se vendió ayer, si este proveedor manda mejor mercadería que el otro.
 
 export default async function MediasResesPage() {
-  await requerirSesion();
+  const sesion = await requerirSesion();
   const supabase = await getSupabaseServidor();
 
-  const [{ data: lotes }, { data: tablas }] = await Promise.all([
+  const [{ data: lotes }, { data: tablas }, { data: carniceria }] = await Promise.all([
     supabase
       .from("recepciones_lote")
       .select("id, especie, categoria, unidades, proveedor, peso_recibido_kg, peso_facturado_kg, fecha, estado, rinde_real")
@@ -34,7 +34,13 @@ export default async function MediasResesPage() {
       .eq("especie", "vacuno")
       .eq("uso", "explota_lote")
       .is("vigente_hasta", null),
+    // El peso de cajón de esta carnicería: es el que se usa si en el
+    // formulario del pollo no escriben otro (el mismo que usa el bot).
+    supabase.from("carnicerias").select("peso_cajon_pollo_kg").eq("id", sesion.carniceria.id).maybeSingle(),
   ]);
+
+  const pesoCajon = Number(carniceria?.peso_cajon_pollo_kg ?? 0);
+  const pesoCajonPollo = pesoCajon > 0 ? pesoCajon : 20;
 
   const filas = (lotes ?? []) as unknown as FilaLote[];
 
@@ -104,22 +110,9 @@ export default async function MediasResesPage() {
         </p>
       </div>
 
-      {categorias.length === 0 ? (
-        <Tarjeta>
-          <div className="px-4 py-4 sm:px-5">
-            <p className="font-titulo text-sm font-semibold text-ink">
-              Falta la tabla de rendimiento
-            </p>
-            <p className="mt-1 text-sm text-ink-2">
-              Sin la tabla no puedo repartir los kilos en cortes, y prefiero no cargar nada antes que
-              inventar porcentajes. Corré la migración <code>0024_tablas_rendimiento_semilla.sql</code>{" "}
-              en Supabase y volvé a esta pantalla.
-            </p>
-          </div>
-        </Tarjeta>
-      ) : (
-        <CargarMediaRes categorias={categorias} />
-      )}
+      {/* Siempre se muestra: si falta la tabla de vacuno, el formulario lo avisa
+          adentro pero cerdo y pollo (que no usan tabla) se pueden cargar igual. */}
+      <CargarMediaRes categorias={categorias} pesoCajonPollo={pesoCajonPollo} />
 
       <ListaDeLotes lotes={lotesDelPanel} />
     </div>

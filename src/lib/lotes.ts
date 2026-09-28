@@ -1049,6 +1049,59 @@ export function estimadorPorUnidad(
   };
 }
 
+// ============================================================
+// Cuánto pesa una PIEZA ENTERA de un corte (para contestar "¿cuánto pesa uno?")
+// ============================================================
+//
+// Pedido del fundador (28/09/2026): "hay que educar cuánto pesa aprox cada
+// corte por si esa pregunta se da". Caso real: el bot preguntó "¿cuántos kilos
+// de matambre de cerdo querés?", el cliente preguntó "¿cuánto pesa uno
+// generalmente?" y el bot dijo "no te entendí".
+//
+// El dato ya existe y es REAL: cada media res que entra se abre en piezas (un
+// matambre, un lomo, una entraña...) y cada pieza queda guardada con lo que
+// pesó al entrar. El promedio de las últimas es lo que pesa "uno". No se usa
+// nada que no haya entrado por una media res (el stock suelto de carbón o de
+// picada no es "una pieza"), ni subproductos, ni el pollo (sus presas se
+// guardan por tanda, no una por una — para eso está estimadorPorUnidad).
+//
+// OJO: esto es la pieza ENTERA. "2 bifes de chorizo" no son 2 bifes angostos
+// enteros de 3 kg cada uno — por eso este dato NO convierte unidades a kilos
+// solo porque sí; solo cuando el cliente dice "entero" o "pieza" (ver
+// convertirACantidadReal en flujoPedidos.ts).
+
+/** Especies en las que una pieza de lote es "una unidad" del corte. */
+const ESPECIES_CON_PIEZA_ENTERA = new Set(["vacuno", "porcino"]);
+
+export function estimadorPiezaEntera(
+  carniceriaId: string
+): (producto: { id: string; especie: string | null }) => Promise<number | null> {
+  const cache = new Map<string, Promise<number | null>>();
+  return (producto) => {
+    if (!producto.especie || !ESPECIES_CON_PIEZA_ENTERA.has(producto.especie)) return Promise.resolve(null);
+    let promesa = cache.get(producto.id);
+    if (!promesa) {
+      promesa = (async () => {
+        const { data } = await getSupabaseAdmin()
+          .from("piezas_stock")
+          .select("kg_iniciales")
+          .eq("carniceria_id", carniceriaId)
+          .eq("producto_id", producto.id)
+          .eq("es_subproducto", false)
+          .not("recepcion_lote_id", "is", null)
+          .gt("kg_iniciales", 0)
+          .order("created_at", { ascending: false })
+          .limit(30);
+        const pesos = ((data ?? []) as { kg_iniciales: number }[]).map((p) => Number(p.kg_iniciales));
+        if (pesos.length === 0) return null;
+        return redondear(pesos.reduce((a, b) => a + b, 0) / pesos.length, 2);
+      })();
+      cache.set(producto.id, promesa);
+    }
+    return promesa;
+  };
+}
+
 /**
  * Trozar PARA LA VITRINA: se cierran N piezas enteras y nacen las presas.
  *

@@ -386,3 +386,35 @@ restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida
   de siempre (resumen → confirmación → aprobación). "Quiero cambiar mi pedido" sin detalle
   muestra el pedido y pregunta qué cambiar, sin tocar nada.
 - **Cancelar un pedido aprobado devuelve el stock** (10.2). Antes quedaba descontado.
+
+### 28/09/2026 — La hora, decidida por código; el nombre del cliente; peso por corte; carga manual de cerdo y pollo
+
+- **La hora de retiro ya no depende de la IA (`horaRetiro.ts`, sección 42).** Un solo lugar
+  decide (`horaDelMensaje` en flujoPedidos.ts): primero lee el texto sin IA ("10", "10 dije",
+  "10.", "para las 10 AM", "tipo 7", "8 y media", "mañana a las 10", "el sábado a las 9",
+  "en media hora"), y la hora que salga se contrasta SIEMPRE con el horario cargado del local
+  (`cargarAgenda` en horarios.ts, que incluye días especiales). "10" a las 19:39 no es "las
+  22:00 de hoy": es mañana a las 10. Si la hora pedida ya pasó o el local está cerrado, se
+  propone la más cercana en que esté abierto ("Hoy a las 22:00 estamos cerrados (hoy
+  atendemos de 08:00 a 13:00 y de 17:00 a 20:30). ¿Te sirve hoy a las 20:30?") y un "sí"
+  la acepta sin pasar por la IA. La hora ya no se pierde cuando en el mismo mensaje hay un
+  producto que no se reconoció. En los mensajes se muestra "hoy 19:00" / "mañana 10:00" /
+  "el sábado 03/10 09:00", no una fecha cruda. 26 casos probados, incluidos los del log real.
+- **Se le contesta con la palabra del cliente en toda la charla (`nombreParaCliente`).** Si
+  pidió "roast beef" (en esta carnicería es sinónimo de aguja) y después contestó "10", el
+  resumen dice "Roast beef: 10 kg", no "Aguja". El nombre se busca en el mensaje actual, en
+  sus mensajes anteriores y en cómo figuraba en el pedido. **Nombre propio gana a sinónimo**
+  (`corregirPorNombrePropio`): si la IA eligió un producto por un sinónimo y otro producto
+  activo se LLAMA así, se toma el otro (caso real: palomita tiene "chingolo" de sinónimo).
+- **"¿Cuánto pesa uno?" (tema de consulta `peso_unidad`).** Se contesta con datos reales:
+  primero el peso por unidad del catálogo o del pollo en stock, y si no, lo que pesaron las
+  piezas enteras de ese corte al entrar con las medias reses (`estimadorPiezaEntera`: "La
+  pieza entera de matambre de cerdo pesa más o menos 1,5 kg"). Hay un detector sin IA de
+  respaldo (`preguntaPorPeso`) que distingue peso de precio ("¿a cuánto viene?"). La pieza
+  entera solo se usa para convertir unidades a kilos si el cliente dijo "entero/pieza" o si
+  se le acababa de contar ese peso: "2 bifes de chorizo" nunca son 2 bifes angostos enteros.
+- **Carga manual de cerdo y pollo en el panel.** "Lo que entra" ahora deja elegir media res
+  vacuna, media res de cerdo, cerdo entero (dos medias de la mitad) o cajón de pollo
+  (cabezas + peso del cajón, que por defecto es el de la carnicería). Usa el mismo
+  `cargarLote` que el bot.
+

@@ -193,21 +193,107 @@ function normalizar(texto: string): string {
  * tampoco hay, en el nombre del sistema. Nunca devuelve vacío.
  */
 export function nombreComoLoPidio(producto: Producto, textoDelCliente: string): string {
-  const porDefecto = producto.alias_display ?? producto.nombre_display;
-  const texto = normalizar(textoDelCliente);
-  if (!texto) return porDefecto;
+  return nombreDichoPor(producto, textoDelCliente) ?? producto.alias_display ?? producto.nombre_display;
+}
 
-  const candidatos = [producto.alias_display, producto.nombre_display, ...producto.sinonimos].filter(
+/** Las palabras que conoce este producto, sin vacíos. */
+function vocabularioDe(producto: Producto): string[] {
+  return [producto.alias_display, producto.nombre_display, ...producto.sinonimos].filter(
     (valor): valor is string => typeof valor === "string" && valor.trim().length > 0
   );
+}
 
+/** Los nombres PROPIOS del producto (no sus sinónimos). */
+function nombresPropiosDe(producto: Producto): string[] {
+  return [producto.alias_display, producto.nombre_display].filter(
+    (valor): valor is string => typeof valor === "string" && valor.trim().length > 0
+  );
+}
+
+/**
+ * ¿`frase` aparece en `texto` como palabra(s) entera(s)? Así "roast" no se
+ * encuentra adentro de "roaster", pero "pollo" sí dentro de "pollos" (plural).
+ */
+function aparece(texto: string, frase: string): boolean {
+  const t = ` ${normalizar(texto).replace(/[^a-z0-9ñ]+/g, " ")} `;
+  const f = normalizar(frase).replace(/[^a-z0-9ñ]+/g, " ").trim();
+  if (!f) return false;
+  return t.includes(` ${f} `) || t.includes(` ${f}s `) || t.includes(` ${f}es `);
+}
+
+/**
+ * La palabra con la que el cliente nombró este producto en `texto`, o null si
+ * en ese texto no lo nombró. Gana la MÁS LARGA ("pollo entero" antes que "pollo").
+ *
+ * La diferencia con `nombreComoLoPidio` es el null: permite buscar la palabra
+ * en otro lado (mensajes anteriores) cuando el mensaje de ahora no la tiene,
+ * que es justo lo que pasa cuando el cliente contesta solo "10".
+ */
+export function nombreDichoPor(producto: Producto, texto: string): string | null {
+  if (!texto || !texto.trim()) return null;
   let elegido: string | null = null;
-  for (const candidato of candidatos) {
-    const normalizado = normalizar(candidato);
-    if (!normalizado || !texto.includes(normalizado)) continue;
-    if (elegido === null || normalizado.length > normalizar(elegido).length) elegido = candidato;
+  for (const candidato of vocabularioDe(producto)) {
+    if (!aparece(texto, candidato)) continue;
+    if (elegido === null || normalizar(candidato).length > normalizar(elegido).length) elegido = candidato;
   }
-
-  if (elegido === null) return porDefecto;
+  if (elegido === null) return null;
   return elegido.charAt(0).toUpperCase() + elegido.slice(1);
+}
+
+/**
+ * Cómo nombrarle un producto al cliente mirando TODA la charla, no solo el
+ * último mensaje.
+ *
+ * Bug del 28/09: el cliente pidió "roast beef" (en esta carnicería es un
+ * sinónimo de aguja), el bot le preguntó cuántos kilos, él contestó "10" y el
+ * resumen dijo "Aguja: 10 kg". El nombre se buscaba solo en "10", que no nombra
+ * nada, y caía en el nombre del sistema. Regla del fundador: si el cliente
+ * dijo roast beef, se le dice roast beef, sea lo que sea por dentro.
+ *
+ * Orden: 1) lo que dijo en ESTE mensaje; 2) lo que dijo en sus mensajes
+ * anteriores, del más nuevo al más viejo; 3) cómo figuraba ya en su pedido;
+ * 4) el nombre de la carnicería.
+ */
+export function nombreParaCliente(
+  producto: Producto,
+  fuentes: { textoActual: string; mensajesAnteriores?: string[]; nombrePrevio?: string | null }
+): string {
+  const ahora = nombreDichoPor(producto, fuentes.textoActual);
+  if (ahora) return ahora;
+  const anteriores = fuentes.mensajesAnteriores ?? [];
+  for (let i = anteriores.length - 1; i >= 0; i--) {
+    const antes = nombreDichoPor(producto, anteriores[i]);
+    if (antes) return antes;
+  }
+  if (fuentes.nombrePrevio && fuentes.nombrePrevio.trim()) return fuentes.nombrePrevio;
+  return producto.alias_display ?? producto.nombre_display;
+}
+
+/**
+ * "Nombre propio gana a sinónimo".
+ *
+ * Si la IA eligió el producto P porque el cliente usó una palabra que P tiene
+ * como SINÓNIMO, pero en el catálogo activo hay otro producto Q que se LLAMA
+ * exactamente así, el cliente quiso decir Q. Ejemplo real de la base: palomita
+ * tiene "chingolo" como sinónimo y además existe el producto Chingolo; quien
+ * pide "chingolo" quiere chingolo.
+ *
+ * Solo cambia cuando el mensaje no nombra a P por su nombre propio (si dice
+ * "palomita y chingolo" son dos cosas y no se toca nada).
+ */
+export function corregirPorNombrePropio(
+  catalogo: CatalogoCarniceria,
+  producto: Producto,
+  texto: string
+): Producto {
+  if (!texto || !texto.trim()) return producto;
+  if (nombresPropiosDe(producto).some((n) => aparece(texto, n))) return producto;
+  const dicho = nombreDichoPor(producto, texto);
+  if (!dicho) return producto;
+  const clave = normalizar(dicho).trim();
+  for (const otro of catalogo.productos) {
+    if (otro.id === producto.id) continue;
+    if (nombresPropiosDe(otro).some((n) => normalizar(n).trim() === clave)) return otro;
+  }
+  return producto;
 }

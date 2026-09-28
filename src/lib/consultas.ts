@@ -2,6 +2,7 @@ import { getSupabaseAdmin } from "./supabaseAdmin";
 import { CatalogoCarniceria, Producto } from "./catalogo";
 import { listarParaElCliente, mediosPagoHabilitados } from "./mediosPago";
 import { buscarSustitutosConStock } from "./alternativas";
+import { estimadorPiezaEntera, estimadorPorUnidad } from "./lotes";
 
 // ============================================================
 // Atención general — especificación del bot, secciones 1.1 y 15 a 21
@@ -29,6 +30,7 @@ export type TemaConsulta =
   | "delivery"
   | "stock"
   | "sustitutos"
+  | "peso_unidad"
   | "otro";
 
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -273,6 +275,81 @@ function enumerar(nombres: string[]): string {
   return `${nombres.slice(0, -1).join(", ")} o ${nombres[nombres.length - 1]}`;
 }
 
+// ------------------------------------------------------------
+// "¿Cuánto pesa uno?" (28/09/2026)
+// ------------------------------------------------------------
+//
+// El peso sale SIEMPRE de un dato real, en este orden:
+//   1. Lo que pesa una unidad según la carnicería o el pollo promedio del
+//      stock (estimadorPorUnidad: catálogo → pollos → presas).
+//   2. Lo que pesaron las piezas enteras de ese corte al entrar con las
+//      medias reses (estimadorPiezaEntera).
+// Si no hay ninguno de los dos, null → respuestaSinDato. Nunca se inventa.
+
+/** "1,5 kg" o, si es menos de un kilo, "600 g" (redondeado a 50 g: es aproximado). */
+export function textoPeso(kg: number): string {
+  if (kg < 1) return `${Math.max(50, Math.round((kg * 1000) / 50) * 50)} g`;
+  return `${(Math.round(kg * 10) / 10).toLocaleString("es-AR", { maximumFractionDigits: 1 })} kg`;
+}
+
+/** Frase con la que se marca la respuesta: flujoPedidos la busca para saber que "dame una" es una pieza entera. */
+export const MARCA_PIEZA_ENTERA = "la pieza entera de";
+
+async function responderPeso(
+  carniceriaId: string,
+  catalogo: CatalogoCarniceria,
+  codigos: string[],
+  nombrar?: (producto: Producto) => string
+): Promise<string | null> {
+  if (codigos.length === 0) return null;
+  const porUnidad = estimadorPorUnidad(carniceriaId);
+  const porPieza = estimadorPiezaEntera(carniceriaId);
+  const frases: string[] = [];
+
+  for (const codigo of codigos) {
+    const producto = catalogo.porCodigo.get(codigo);
+    if (!producto) continue;
+    const nombre = (nombrar ? nombrar(producto) : producto.alias_display ?? producto.nombre_display).toLowerCase();
+
+    const unidad = await porUnidad(producto);
+    if (unidad) {
+      frases.push(`Cada ${nombre} pesa más o menos ${textoPeso(unidad.kg)}.`);
+      continue;
+    }
+    const pieza = await porPieza(producto);
+    if (pieza) {
+      frases.push(`${capitalizar(MARCA_PIEZA_ENTERA)} ${nombre} pesa más o menos ${textoPeso(pieza)}.`);
+    }
+  }
+
+  if (frases.length === 0) return null;
+  return `${frases.join(" ")} Es aproximado: cada pieza es distinta y al final se cobra lo que pesa.`;
+}
+
+function capitalizar(texto: string): string {
+  return texto.charAt(0).toUpperCase() + texto.slice(1);
+}
+
+/**
+ * Red de seguridad determinística (Patrón 3 del manual): "¿cuánto pesa uno?"
+ * tiene que ser una consulta de peso aunque la IA diga "no entendí". Solo
+ * reconoce preguntas por el PESO de una unidad, no "¿cuánto sale?" (precio).
+ */
+export function preguntaPorPeso(texto: string): boolean {
+  const t = texto
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  // "¿A cuánto viene el kilo?" / "¿cuánto sale?" es PRECIO, no peso.
+  if (/\ba cuanto\b|\bsale\b|\bcuesta\b|\bprecio\b|\$/.test(t)) return false;
+  return (
+    /\bcuanto (pesa|pesan|viene|vienen|trae|traen)\b/.test(t) ||
+    /\bde cuanto (es|son|viene|vienen)\b.*\b(uno|una|cada|pieza|unidad)\b/.test(t) ||
+    /\bcuantos? (kilos?|kg|gramos?) (tiene|tienen|pesa|pesan|trae|traen|viene|vienen)\b/.test(t) ||
+    /\bque (peso|tamano) (tiene|tienen|trae|traen)\b/.test(t)
+  );
+}
+
 async function responderStock(
   carniceriaId: string,
   catalogo: CatalogoCarniceria,
@@ -383,8 +460,10 @@ export async function responderConsulta(params: {
   tema: TemaConsulta;
   catalogo: CatalogoCarniceria;
   productosConsultados?: string[];
+  /** Cómo nombrar cada producto con la palabra del cliente (si no, el nombre de la carnicería). */
+  nombrar?: (producto: Producto) => string;
 }): Promise<string | null> {
-  const { carniceriaId, tema, catalogo, productosConsultados } = params;
+  const { carniceriaId, tema, catalogo, productosConsultados, nombrar } = params;
 
   switch (tema) {
     case "horarios":
@@ -403,6 +482,8 @@ export async function responderConsulta(params: {
       return await responderStock(carniceriaId, catalogo, productosConsultados ?? []);
     case "sustitutos":
       return await responderSustitutos(carniceriaId, catalogo, productosConsultados ?? []);
+    case "peso_unidad":
+      return await responderPeso(carniceriaId, catalogo, productosConsultados ?? [], nombrar);
     default:
       return null;
   }
@@ -422,6 +503,10 @@ export function respuestaSinDato(tema: TemaConsulta): string {
       return "No tengo la dirección a mano para pasártela por acá. ¿Querés que igual te vaya armando el pedido?";
     case "medios_pago":
       return "Eso te lo confirman en el local al momento de pagar. ¿Te preparo algo mientras tanto?";
+    case "peso_unidad":
+      // No hay ningún peso real cargado ni piezas que hayan entrado: no se
+      // inventa un número. Se lo lleva de vuelta a kilos, que siempre sirve.
+      return "Eso varía pieza a pieza y no lo tengo cargado para decírtelo seguro. Si me decís más o menos cuántos kilos querés, te lo preparo.";
     case "sustitutos":
       // Preguntó por "algo parecido" pero no sabemos parecido a QUÉ.
       return "¿Parecido a qué corte? Decime cuál tenías en mente y te digo qué tengo.";

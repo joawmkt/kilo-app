@@ -290,6 +290,36 @@ Y un corolario del Patrón 1 que costó caro: **el stock se cambia por un solo l
 (`moverStock` en lotes.ts). Escribir `productos.stock_actual` directo desde cualquier otro
 lugar es un bug aunque parezca andar: el próximo recálculo lo borra.
 
+### Patrón 6 — Lo que el código puede saber, no se lo pregunta a la IA (la hora)
+
+*Bugs del 22 al 25/09: "10" contestado a las 19:39 terminó como "Retiro 22:00" con el local
+cerrado; "para las 10 AM" se perdió porque en el mismo mensaje había un producto no
+reconocido; "10 dije" y "10." no se entendieron.*
+
+La hora de retiro tiene una cantidad chica de formas de decirse y un árbitro que no se
+discute: el horario del local. Pedirle a la IA que la interprete era sumar una fuente de
+error a algo que el código puede resolver solo. Desde el 28/09:
+
+1. **`horaRetiro.ts` lee la hora del texto, sin IA**, y la IA queda de respaldo.
+2. **Toda hora pasa por el horario del local** (`cargarAgenda`). Nunca se acepta una hora
+   con el local cerrado o que ya pasó: se PROPONE la más cercana, y un "sí" la acepta.
+3. **Una sola función decide** (`horaDelMensaje`) y todos los caminos la usan.
+4. **Ningún `return` temprano puede tirar la hora** que vino en el mismo mensaje.
+
+Si vuelve a fallar una hora: primero agregar el caso a `scripts/probar-hora.mjs`, verlo
+fallar (`node --experimental-strip-types scripts/probar-hora.mjs`), arreglar
+`extraerHora`/`resolverHora`, y correr todos los casos anteriores. No usa la base ni la IA.
+
+### Patrón 7 — El nombre (o cualquier dato) se busca solo en el último mensaje
+
+*Bug del 28/09: pidió "roast beef", contestó "10" y el resumen dijo "Aguja".*
+
+El último mensaje de una charla muchas veces es solo "10", "sí" o "dale". Cualquier cosa
+que se calcule mirando SOLO ese texto (el nombre del producto, la preparación, para cuántos
+es) cae en el valor por defecto. Regla: **lo que el cliente dijo antes sigue valiendo**
+hasta que diga otra cosa. Para el nombre está `nombreParaCliente`; para cualquier dato
+nuevo, hacer lo mismo (mensaje actual → mensajes anteriores → lo guardado → defecto).
+
 ---
 
 ## Cómo probar
@@ -320,6 +350,12 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | El carnicero propone otra hora y el cliente dice "dale" | Cerrar el pedido, **no** volver a mostrar el resumen |
 | Cualquier pregunta contestada mal dos veces | Reformularla, nunca mandar el mismo texto dos veces |
 | "tipo 19" (a "¿a qué hora pasás?") | Tomar las 19:00, no volver a preguntar |
+| "10" a las 19:39 (a "¿a qué hora pasás?") | Mañana a las 10:00, nunca hoy a las 22:00 |
+| "a las 22" con el local cerrando 20:30 | Proponer las 20:30; "sí" lo acepta |
+| "Quiero todo para las 10 AM" con un producto raro | Guardar la hora igual aunque pregunte por el producto |
+| Pide "roast beef", contesta "10" | El resumen dice "Roast beef", no "Aguja" |
+| "¿Cuánto pesa uno generalmente?" | Peso real (catálogo o pieza entera), y repetir la pregunta pendiente |
+| "¿A cuánto viene el kilo?" | NO es peso: es precio |
 | "quiero una promo" | Armar el pedido de la promo, no repetir la lista |
 | "son 3 pata muslo" | 3 u. (~kg) sin pedir kilos |
 | Pedido confirmado + "quiero sacar el vacío" | Nueva versión sin vacío, resumen y reaprobación; nunca preguntar personas |
@@ -399,8 +435,7 @@ De `docs/especificacion-bot-estado.md`, todo chico y ninguno bloqueante:
 
 1. **Pedir el nombre del cliente a las ~2 h** (§4.2). Hoy se toma del perfil de WhatsApp si está.
 2. **Avisar si un sustituto es más caro** (§5.6). Depende de activar precios.
-3. **Proponer horarios válidos al elegir el retiro** (§42). El bot ya conoce los horarios pero no
-   los usa para rechazar una hora con el local cerrado.
+3. ~~Proponer horarios válidos al elegir el retiro (§42)~~ — hecho el 28/09 (Patrón 6).
 4. **Cierre natural de la conversación** (§45). Un "gracias" cae en el intérprete general.
 5. **Peso real al marcar un pedido como retirado.** Es lo que dispara la calibración de la tabla de
    rendimiento (ver `docs/media-res-diseno-final.md`, sección 2).

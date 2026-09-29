@@ -418,3 +418,39 @@ restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida
   (cabezas + peso del cajón, que por defecto es el de la carnicería). Usa el mismo
   `cargarLote` que el bot.
 
+### 29/09/2026 — Más flexible: recomendaciones, errores de tipeo, varias cosas juntas y audios
+
+- **Recomendaciones por ocasión (`recomendaciones.ts`, tema de consulta `recomendacion`).**
+  "¿Qué te queda de asado?", "algo para la parrilla", "¿qué cortes tenés?", "¿qué más me
+  ofrecés?", "¿qué uso para milanesas / vitel toné / un guiso?" ahora se contestan con los
+  cortes que sirven para eso Y tienen stock. La tabla de ocasiones (parrilla, horno,
+  milanesas, olla, plancha, vitel toné, picada, salteado) vive en el código y se cruza con
+  el catálogo real: nunca se ofrece algo que la carnicería no tiene. Sin ocasión, se muestra
+  un pantallazo agrupado y se pregunta para qué lo quiere. Detector sin IA de respaldo
+  (`ocasionPedida`); "quiero 2 kg de vacío para la parrilla" sigue siendo un pedido.
+- **Saludo.** La bienvenida ya no repite "contame qué necesitás" dos veces, sale una sola
+  vez por charla, y un "¡Hola! ¿qué te quedó para la parrilla?" contesta la pregunta con
+  un saludo corto adelante. "Eso te lo confirmo y te aviso" (una promesa que nadie cumplía)
+  se reemplazó por una respuesta honesta que ofrece lo que el bot sí puede hacer.
+- **"Media res" mal escrita (`canonizarLote`).** "mediarres", "mediaree", "media rre",
+  "mediarez", "1/2 res", en mayúsculas o no, se reconocen como media res. Si igual se
+  escapa y la IA de stock arma un producto "media_res", se reencauza como lote con todo lo
+  que dijo junto. "LAS MEDIA RES PESAN 100 102 y 89 KILOS" se lee sin IA.
+- **Un "sí" con comentarios (`porVerboDeAccion` en confirmacion.ts).** "no era tan difícil
+  si cargalo" es un sí: una orden clara (cargalo, confirmalo, mandalo, preparalo) gana
+  aunque venga con otras palabras, salvo que además pida otra cosa (un número, "pero",
+  "sin", "agregale", una especie, una pregunta).
+- **Varias instrucciones en un mensaje (`instrucciones.ts` + cola, migración 0028).**
+  "Llegó una media res de 104, un cajón de pollo de 8 y piqué 5 de nalga" se parte en tres
+  y se atienden de a una: la primera se confirma, y al cerrarla el bot sigue solo con la
+  siguiente. Solo se corta entre cosas de distinto tipo; "entraron 20 de asado y 8 de
+  vacío" sigue siendo una sola carga.
+- **El audio del carnicero va por el mismo camino que el texto.** Antes iba directo a la
+  carga de stock genérica y se salteaba lotes, trozado y la operación pendiente.
+- **La tabla de recomendaciones se edita desde el panel** (Catálogo → *Recomendaciones del
+  bot*, migración 0029). Por ocasión: qué cortes ofrece y en qué orden, y qué va "para
+  acompañar". Muestra el stock de hoy de cada uno y una vista previa de cómo contestaría el
+  bot ahora mismo. Mientras la carnicería no guarde nada, usa la de fábrica; la primera vez
+  que guarda, se copia la de fábrica entera y desde ahí manda la suya. "Volver a la de
+  fábrica" restaura una ocasión.
+

@@ -169,6 +169,7 @@ mensaje, casi siempre es el paso 2 agarrando algo que no era suyo.
 | `src/lib/interpretarPedido.ts` | Al cliente que hace un pedido |
 | `src/lib/interpretarStock.ts` | Al carnicero cargando o corrigiendo mercadería |
 | `src/lib/interpretarMediaRes.ts` | Si avisa que entró una media res, y cuánto pesa |
+| `src/lib/deteccionLote.ts` | Si un texto habla de un lote (media res, cerdo, cajón) — sin IA, tolera errores de tipeo |
 | `src/lib/modelos.ts` | Qué modelo usa cada uno (configurable por variable de entorno) |
 | `src/lib/confirmacion.ts` | "sí/no/modificar" **sin IA**, por lista de palabras |
 | `src/lib/confirmacionPedido.ts` | "aprobar/rechazar" del carnicero, también sin IA |
@@ -187,7 +188,12 @@ mensaje, casi siempre es el paso 2 agarrando algo que no era suyo.
 |---|---|
 | `src/lib/catalogo.ts` | Carga el catálogo y arma el bloque de productos del prompt |
 | `src/lib/alternativas.ts` | Sustitutos, leyendo `sustitutos_autorizados` |
-| `src/lib/consultas.ts` | Horarios, dirección, pagos, promos — siempre desde datos reales |
+| `src/lib/consultas.ts` | Horarios, dirección, pagos, promos, peso por unidad — siempre desde datos reales |
+| `src/lib/recomendaciones.ts` | La tabla de ocasiones DE FÁBRICA (parrilla, horno, milanesas...) y la recomendación con stock real |
+| `src/lib/recomendacionesCarniceria.ts` | La tabla de CADA carnicería (la edita en el panel, Catálogo → Recomendaciones). Decide cuál se usa |
+| `src/lib/horaRetiro.ts` | La hora de retiro, leída sin IA y contrastada con el horario del local |
+| `src/lib/instrucciones.ts` | Parte un mensaje del carnicero en instrucciones de distinto tipo |
+| `src/lib/whatsapp/entrante.ts` | Por dónde entra todo; `atenderCarniceroConCola` atiende las instrucciones de a una |
 | `src/lib/whatsapp/ventana.ts` | La ventana de agrupación de 6 s del cliente |
 | `src/lib/pedidoEventos.ts` | El historial del pedido y el versionado |
 | `src/lib/notificaciones.ts` | Los avisos al carnicero |
@@ -320,6 +326,25 @@ es) cae en el valor por defecto. Regla: **lo que el cliente dijo antes sigue val
 hasta que diga otra cosa. Para el nombre está `nombreParaCliente`; para cualquier dato
 nuevo, hacer lo mismo (mensaje actual → mensajes anteriores → lo guardado → defecto).
 
+### Patrón 8 — Reconocer la forma, no la ortografía (y no trabar por comentarios)
+
+*Bugs del 28/09: "3 mediarres", "3 mediaree" y "3 media rre" no se reconocieron como medias
+reses; "no era tan difícil si cargalo" no se tomó como un sí; "¿qué te queda de asado?" se
+leyó como el corte y no como la comida.*
+
+El carnicero escribe apurado y el cliente habla como habla. Un detector que exige la palabra
+bien escrita, o un mensaje "limpio", es un detector que falla todos los días. Reglas:
+
+1. **Normalizar la FORMA antes de detectar** (`canonizarLote`): letras repetidas, palabras
+   pegadas, mayúsculas. Nunca agregar errores de a uno a una lista.
+2. **Una orden clara gana a los comentarios** (`porVerboDeAccion`), pero nunca si además
+   hay otro pedido en el mismo mensaje (número, "pero", "agregale", una pregunta).
+3. **Si un flujo recibe algo que no es suyo, lo devuelve al que corresponde** (el stock que
+   ve un "producto" media_res lo manda a lotes), en vez de contestar "no reconocí".
+4. **Un mensaje puede traer varias cosas**: se parte por TIPO (`instrucciones.ts`) y se
+   atienden en fila. Nunca el primer flujo que reconoce algo se queda con todo.
+5. **Audio y texto van por el mismo camino.** Si hay dos caminos, uno se queda viejo.
+
 ---
 
 ## Cómo probar
@@ -356,6 +381,13 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | Pide "roast beef", contesta "10" | El resumen dice "Roast beef", no "Aguja" |
 | "¿Cuánto pesa uno generalmente?" | Peso real (catálogo o pieza entera), y repetir la pregunta pendiente |
 | "¿A cuánto viene el kilo?" | NO es peso: es precio |
+| "¿Qué te queda de asado?" / "algo para la parrilla" | Cortes para la parrilla CON stock |
+| "¿Qué cortes tenés?" / "¿qué más me ofrecés?" | Pantallazo por ocasión + "¿para qué lo querés?" |
+| "¡Hola! ¿Qué te quedó para la parrilla?" | Saludo corto + la recomendación, no la bienvenida |
+| "hola" dos veces en la misma charla | La bienvenida larga solo la primera vez |
+| (carnicero) "me entraron 3 mediarres. una de 96, una de 110 y una de 104" | Un lote de 3 medias con sus 3 pesos |
+| (carnicero) "no era tan difícil si cargalo" a "¿Las cargo?" | Cargar |
+| (carnicero) "llegó una media res de 104, un cajón de pollo de 8 y piqué 5 de nalga" | Tres cosas, de a una, sin repetir nada |
 | "quiero una promo" | Armar el pedido de la promo, no repetir la lista |
 | "son 3 pata muslo" | 3 u. (~kg) sin pedir kilos |
 | Pedido confirmado + "quiero sacar el vacío" | Nueva versión sin vacío, resumen y reaprobación; nunca preguntar personas |

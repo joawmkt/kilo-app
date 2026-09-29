@@ -1,3 +1,4 @@
+import type { Ocasion } from "./recomendaciones";
 import Anthropic from "@anthropic-ai/sdk";
 import { modeloPedidos } from "./modelos";
 import { conZonaArgentina } from "./horaRetiro";
@@ -76,7 +77,7 @@ export type ResultadoInterpretacionPedido =
   // la respuesta lo arma src/lib/consultas.ts con datos reales de la
   // carnicería, nunca la IA — si no, inventaría horarios y promociones, que es
   // justo lo que prohíbe la sección 1.3.
-  | { tipo: "consulta"; tema: TemaConsulta; productosConsultados?: string[] }
+  | { tipo: "consulta"; tema: TemaConsulta; productosConsultados?: string[]; ocasion?: Ocasion }
   // Tanda 4 (especificación, sección 10): el cliente quiere dar de baja el
   // pedido entero. Se detecta por intención y no por la palabra "cancelar":
   // "sacame todo", "dejalo", "al final no" son cancelaciones igual (10.4).
@@ -100,6 +101,7 @@ export type TemaConsulta =
   | "stock"
   | "sustitutos"
   | "peso_unidad"
+  | "recomendacion"
   | "otro";
 
 const TEMAS_CONSULTA: TemaConsulta[] = [
@@ -111,8 +113,11 @@ const TEMAS_CONSULTA: TemaConsulta[] = [
   "stock",
   "sustitutos",
   "peso_unidad",
+  "recomendacion",
   "otro",
 ];
+
+const OCASIONES: Ocasion[] = ["parrilla", "horno", "milanesas", "olla", "plancha", "vitel_tone", "picada", "salteado", "general"];
 
 // Contexto de un pedido que se está armando de a poco entre varios mensajes
 // del cliente. `itemsParciales` es la lista COMPLETA de productos
@@ -167,7 +172,7 @@ const TOOL_SCHEMA: Anthropic.Tool = {
       },
       consulta_tema: {
         type: "string",
-        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "sustitutos", "peso_unidad", "otro"],
+        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "sustitutos", "peso_unidad", "recomendacion", "otro"],
         description:
           "Solo si tipo=consulta. De qué está preguntando: 'horarios' (a qué hora abren/cierran, si abren tal " +
           "día), 'direccion' (dónde están, cómo llegar), 'medios_pago' (si toman tarjeta, transferencia, QR), " +
@@ -175,8 +180,19 @@ const TOOL_SCHEMA: Anthropic.Tool = {
           "tienen tal producto disponible, SIN pedirlo todavía), 'sustitutos' (pide un REEMPLAZO o algo " +
           "parecido: '¿tenés algo parecido?', '¿qué me recomendás en lugar de eso?', '¿con qué lo puedo " +
           "cambiar?', '¿y algo similar?'), 'peso_unidad' (cuánto pesa UNO: '¿cuánto pesa uno?', '¿de cuánto " +
-          "viene cada uno?', '¿cuántos kilos trae un matambre?', '¿qué tamaño tiene?'), 'otro' para cualquier otra pregunta. " +
+          "viene cada uno?', '¿cuántos kilos trae un matambre?', '¿qué tamaño tiene?'), 'recomendacion' (quiere " +
+          "que le SUGIERAN qué llevar: '¿qué te queda de asado?' — asado como comida, no como corte —, '¿qué " +
+          "tenés para la parrilla?', 'algo para el horno', '¿qué cortes tenés?', '¿qué más me ofrecés?', '¿qué " +
+          "me recomendás para milanesas / vitel toné / un guiso?'), 'otro' para cualquier otra pregunta. " +
           "NO inventes la respuesta: el sistema la arma con los datos reales de la carnicería.",
+      },
+      ocasion: {
+        type: "string",
+        enum: ["parrilla", "horno", "milanesas", "olla", "plancha", "vitel_tone", "picada", "salteado", "general"],
+        description:
+          "Solo si consulta_tema='recomendacion'. Para qué lo quiere: parrilla (asado, asar), horno, milanesas, " +
+          "olla (guiso, puchero, estofado, locro, disco), plancha (bifes, sartén), vitel_tone, picada " +
+          "(hamburguesas, empanadas, albóndigas, salsa), salteado (wok, fajitas). 'general' si no dijo para qué.",
       },
       productos_consultados: {
         type: "array",
@@ -374,7 +390,13 @@ Reglas:
 - Extraé "personas" si el cliente mencionó para cuánta gente es el pedido (ver descripción del campo) — esto
   puede venir junto con productos ("asado para 4, quiero vacío y costilla") o solo. Nunca inventes un número
   de personas que no se mencionó.
-- Si el mensaje es solo un saludo sin pedir nada todavía, respondé tipo "saludo".
+- Respondé tipo "saludo" SOLO si el mensaje es únicamente un saludo ("hola", "buenas", "¿cómo andás?").
+  Si además pregunta o pide algo ("¡Hola! ¿Qué te quedó para la parrilla?"), clasificá ESO e ignorá el
+  saludo: el sistema saluda solo.
+- Si el cliente quiere que le RECOMIENDES qué llevar ("¿qué te queda de asado?", "algo para la parrilla",
+  "¿qué cortes tenés?", "¿qué más me ofrecés?", "¿qué uso para milanesas?"), es tipo "consulta" con tema
+  "recomendacion" y la "ocasion". "Asado" dicho así ("de asado", "para un asado") es la COMIDA, no el corte:
+  es ocasión "parrilla". NUNCA armes vos la lista de cortes: el sistema la arma con lo que hay en stock.
 - Si el cliente PREGUNTA algo en vez de pedir (horarios, dónde están, si toman tarjeta, si hay promos, si
   hacen delivery, o si tenés tal corte), respondé tipo "consulta" con "consulta_tema". NUNCA escribas vos la
   respuesta ni inventes horarios, direcciones, promociones ni medios de pago: el sistema los busca en los
@@ -567,10 +589,12 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
     const productos = Array.isArray(datos.productos_consultados)
       ? datos.productos_consultados.filter((c): c is string => typeof c === "string" && c.trim().length > 0)
       : [];
+    const ocasion = OCASIONES.includes(datos.ocasion as Ocasion) ? (datos.ocasion as Ocasion) : undefined;
     return {
       tipo: "consulta",
       tema,
       ...(productos.length > 0 ? { productosConsultados: productos } : {}),
+      ...(tema === "recomendacion" ? { ocasion: ocasion ?? "general" } : {}),
     };
   }
 

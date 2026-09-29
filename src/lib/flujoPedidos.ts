@@ -21,6 +21,7 @@ import { variarSiSeRepite } from "./conversacion";
 import { extraerHora, resolverHora, validarIso, formatearRetiro } from "./horaRetiro";
 import { cargarAgenda } from "./horarios";
 import { historialReciente } from "./historial";
+import { ocasionPedida } from "./recomendaciones";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarSustitutoAutorizado } from "./alternativas";
 import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt, preguntaPorPeso, MARCA_PIEZA_ENTERA, textoPeso } from "./consultas";
@@ -499,21 +500,31 @@ function intentosPersonasDeFase(fase: FaseInterna | null | undefined): number {
 // recortada hasta que esas consultas existan de verdad (Tanda 2 del estado de
 // implementación): la propia especificación aplica ese criterio con los
 // precios — no prometer una función que hoy está desactivada.
+// El saludo es SOLO saludo: el "contame qué necesitás" lo dice el
+// complemento, una vez. Bug del 28/09: salía "¿Cómo andás? Contame qué
+// necesitás. / Contame qué necesitás y te lo dejo preparado...".
 const SALUDOS_CLIENTE_CONOCIDO = [
-  "¡Hola, {nombre}! 👋 Qué bueno tenerte de nuevo. ¿En qué te podemos ayudar hoy?",
-  "¡Buenas, {nombre}! 👋 ¿Cómo andás? Contame qué necesitás.",
-  "¡Hola, {nombre}! ¿Todo bien? 👋 Decime qué necesitás y te doy una mano.",
+  "¡Hola, {nombre}! 👋 Qué bueno tenerte de nuevo.",
+  "¡Buenas, {nombre}! 👋 ¿Cómo andás?",
+  "¡Hola, {nombre}! 👋 ¿Todo bien?",
 ];
 
-function mensajeBienvenida(nombre: string | null): string {
-  const complemento = "Contame qué necesitás y te lo dejo preparado para que pases a retirarlo. También podés mandarme un audio.";
+const COMPLEMENTO_BIENVENIDA =
+  "Contame qué necesitás y te lo dejo preparado para que pases a retirarlo. También podés mandarme un audio.";
 
+function mensajeBienvenida(nombre: string | null): string {
   if (nombre) {
     const variante = SALUDOS_CLIENTE_CONOCIDO[Math.floor(Math.random() * SALUDOS_CLIENTE_CONOCIDO.length)];
-    return `${variante.replace("{nombre}", nombre)}\n\n${complemento}`;
+    return `${variante.replace("{nombre}", nombre)}\n\n${COMPLEMENTO_BIENVENIDA}`;
   }
 
-  return `¡Hola! 👋 ¿Cómo andás? ¿En qué te podemos ayudar?\n\n${complemento}`;
+  return `¡Hola! 👋 ¿Cómo andás?\n\n${COMPLEMENTO_BIENVENIDA}`;
+}
+
+/** "Hola! ...", "Buenas, ...", "Buen día ..." al principio del mensaje. */
+function empiezaConSaludo(texto: string): boolean {
+  const t = texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  return /^(hola+|holis|buenas+|buen dia|buenos dias|buenas tardes|buenas noches|que tal|como (andas|va|estas))\b/.test(t);
 }
 
 function mensajeResumenPedidoParaCarnicero(params: {
@@ -1219,8 +1230,12 @@ async function procesarResultado(params: {
   }
 
   if (resultado.tipo === "saludo") {
-    if (!pedidoId) return mensajeBienvenida(clienteNombre);
-    return "Te escucho, contame qué necesitás.";
+    // La bienvenida larga, una sola vez. Si ya se la mandamos hace un rato,
+    // repetirla es lo que hace sonar al bot como un contestador (Patrón 4).
+    const historial = await historialReciente({ carniceriaId, telefono, quien: "Cliente" });
+    const yaDioLaBienvenida = historial.includes(COMPLEMENTO_BIENVENIDA.slice(0, 30));
+    if (!pedidoId && !yaDioLaBienvenida) return mensajeBienvenida(clienteNombre);
+    return "Te escucho 🙂 Decime qué necesitás, o si querés te cuento qué tengo hoy para la parrilla, el horno o para milanesas.";
   }
 
   // Consulta (especificación, secciones 1.1 y 15-21).
@@ -1263,9 +1278,15 @@ async function procesarResultado(params: {
       catalogo,
       productosConsultados,
       nombrar: await nombradorDelCliente({ carniceriaId, telefono, texto: params.texto, pedidoId }),
+      ocasion: resultado.ocasion,
     });
 
-    const texto = respuesta ?? respuestaSinDato(resultado.tema);
+    // "¡Hola! ¿Qué te quedó para la parrilla?": se saluda UNA línea y se
+    // contesta la pregunta. Antes se contestaba solo con la bienvenida y la
+    // pregunta quedaba sin responder.
+    const saludo =
+      !pedidoId && empiezaConSaludo(params.texto) ? `¡Hola${clienteNombre ? `, ${clienteNombre}` : ""}! 👋 ` : "";
+    const texto = `${saludo}${respuesta ?? respuestaSinDato(resultado.tema)}`;
 
     // Si había una pregunta pendiente del pedido, se la repite al final: si no,
     // el cliente contesta la consulta y ya nadie se acuerda de dónde íbamos.
@@ -2320,6 +2341,42 @@ async function procesarMensajeDeCliente(params: {
       tema: "peso_unidad",
       ...(nombrados.length > 0 ? { productosConsultados: nombrados } : {}),
     };
+  }
+
+  // "¿Qué te queda de asado?", "algo para la parrilla", "¿qué cortes tenés?":
+  // está pidiendo que le RECOMIENDEN (bug del 28/09: el bot contestó "Sí,
+  // tenemos Asado", la bienvenida dos veces, y "eso te lo confirmo y te
+  // aviso"). El detector de texto manda sobre la IA (Patrón 3), salvo que la
+  // IA haya encontrado algo más concreto: un pedido, productos puntuales
+  // ("¿tenés matambre? ¿costilla?"), o una consulta de otro tema (horarios,
+  // promos, dirección...).
+  const ocasion = preguntaPorPeso(texto) ? null : ocasionPedida(texto);
+  if (ocasion) {
+    const tieneProductos =
+      (interpretado.tipo === "aclaracion" || interpretado.tipo === "info_faltante") &&
+      (interpretado.itemsParciales ?? []).some((i) => i.producto_codigo);
+    const consultaDeProductosPuntuales =
+      interpretado.tipo === "consulta" &&
+      interpretado.tema === "stock" &&
+      ocasion === "general" &&
+      (interpretado.productosConsultados ?? []).length > 0;
+    const otroTema =
+      interpretado.tipo === "consulta" && !["stock", "otro", "recomendacion"].includes(interpretado.tema);
+    const puedePisar =
+      ["saludo", "consulta", "no_entendido", "aclaracion", "info_faltante"].includes(interpretado.tipo) &&
+      !tieneProductos &&
+      !consultaDeProductosPuntuales &&
+      !otroTema;
+    if (puedePisar) {
+      const ocasionDeLaIA =
+        interpretado.tipo === "consulta" && interpretado.tema === "recomendacion" ? interpretado.ocasion : undefined;
+      interpretado = {
+        tipo: "consulta",
+        tema: "recomendacion",
+        // Si el texto dice para qué ("parrilla"), gana el texto; si no, lo que haya visto la IA.
+        ocasion: ocasion !== "general" ? ocasion : ocasionDeLaIA ?? "general",
+      };
+    }
   }
 
   // La hora de este mensaje, decidida en UN solo lugar (texto primero, IA

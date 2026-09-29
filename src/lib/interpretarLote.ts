@@ -68,7 +68,7 @@ export type ResultadoLoteVoz =
 // del carnicero que no tenga nada que ver, que es la enorme mayoría.
 
 export { detectarEspecieDeLote, mencionaLote, especieExplicita } from "./deteccionLote";
-import { detectarEspecieDeLote } from "./deteccionLote";
+import { detectarEspecieDeLote, canonizarLote } from "./deteccionLote";
 
 // ============================================================
 // El modelo: saca el número
@@ -201,6 +201,8 @@ export async function interpretarLote(
   texto: string,
   especieForzada?: Especie
 ): Promise<ResultadoLoteVoz> {
+  // "3 mediarres" → "3 medias reses": el modelo también ve la forma limpia.
+  texto = canonizarLote(texto);
   const especie = especieForzada ?? detectarEspecieDeLote(texto);
   if (!especie) return { tipo: "no_es_lote" };
 

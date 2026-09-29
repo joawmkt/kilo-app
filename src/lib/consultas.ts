@@ -3,6 +3,8 @@ import { CatalogoCarniceria, Producto } from "./catalogo";
 import { listarParaElCliente, mediosPagoHabilitados } from "./mediosPago";
 import { buscarSustitutosConStock } from "./alternativas";
 import { estimadorPiezaEntera, estimadorPorUnidad } from "./lotes";
+import { armarRecomendacion, sinNadaParaOcasion, type Ocasion } from "./recomendaciones";
+import { cargarTablaOcasiones } from "./recomendacionesCarniceria";
 
 // ============================================================
 // Atención general — especificación del bot, secciones 1.1 y 15 a 21
@@ -31,6 +33,7 @@ export type TemaConsulta =
   | "stock"
   | "sustitutos"
   | "peso_unidad"
+  | "recomendacion"
   | "otro";
 
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -370,10 +373,13 @@ async function responderStock(
   if (hay.length === 0 && noHay.length === 0) return null;
 
   const partes: string[] = [];
-  if (hay.length > 0) partes.push(`Sí, tenemos ${hay.join(", ")}.`);
+  // "Sí, tenemos matambre, costilla y vacío." (antes: "Matambre, Costilla, Vacío").
+  const conY = (nombres: string[]) =>
+    nombres.length <= 1 ? nombres[0] ?? "" : `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`;
+  if (hay.length > 0) partes.push(`Sí, tenemos ${conY(hay.map((n) => n.toLowerCase()))}.`);
 
   if (noHay.length > 0) {
-    const nombres = noHay.map((p) => p.nombre_display);
+    const nombres = noHay.map((p) => p.nombre_display.toLowerCase());
     partes.push(
       hay.length > 0
         ? `De ${nombres.join(", ")} no me queda en este momento.`
@@ -462,8 +468,10 @@ export async function responderConsulta(params: {
   productosConsultados?: string[];
   /** Cómo nombrar cada producto con la palabra del cliente (si no, el nombre de la carnicería). */
   nombrar?: (producto: Producto) => string;
+  /** Para qué lo quiere, si pidió una recomendación. */
+  ocasion?: Ocasion;
 }): Promise<string | null> {
-  const { carniceriaId, tema, catalogo, productosConsultados, nombrar } = params;
+  const { carniceriaId, tema, catalogo, productosConsultados, nombrar, ocasion } = params;
 
   switch (tema) {
     case "horarios":
@@ -484,6 +492,14 @@ export async function responderConsulta(params: {
       return await responderSustitutos(carniceriaId, catalogo, productosConsultados ?? []);
     case "peso_unidad":
       return await responderPeso(carniceriaId, catalogo, productosConsultados ?? [], nombrar);
+    case "recomendacion": {
+      // Siempre contesta algo cierto: la lista con stock real, o que para eso
+      // no queda nada (y se le ofrece lo demás). Nunca un "te aviso".
+      // La tabla es la que armó ESTE carnicero en el panel (o la de fábrica).
+      const o = ocasion ?? "general";
+      const tabla = await cargarTablaOcasiones(carniceriaId);
+      return armarRecomendacion({ ocasion: o, porCodigo: catalogo.porCodigo, nombrar, tabla }) ?? sinNadaParaOcasion(o);
+    }
     default:
       return null;
   }
@@ -511,6 +527,9 @@ export function respuestaSinDato(tema: TemaConsulta): string {
       // Preguntó por "algo parecido" pero no sabemos parecido a QUÉ.
       return "¿Parecido a qué corte? Decime cuál tenías en mente y te digo qué tengo.";
     default:
-      return "Eso te lo confirmo bien y te aviso. ¿Te puedo ayudar con algo más mientras tanto?";
+      // Antes decía "eso te lo confirmo y te aviso": una promesa que nadie iba a
+      // cumplir (no hay seguimiento automático). Se dice la verdad y se ofrece
+      // lo que el bot SÍ puede hacer.
+      return "Eso no te lo sé responder por acá. Si querés, te cuento qué tengo hoy para la parrilla, el horno o para milanesas, o te armo un pedido.";
   }
 }

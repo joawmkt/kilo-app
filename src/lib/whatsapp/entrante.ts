@@ -1,8 +1,10 @@
 import {
-  procesarAudioDeStock,
   procesarTextoDeStock,
   procesarTextoEntrante,
+  transcribirAudioDeCarnicero,
 } from "@/lib/flujoStock";
+import { partirInstrucciones } from "@/lib/instrucciones";
+import { cargarCatalogo, nombreDichoPor } from "@/lib/catalogo";
 import {
   procesarDecisionCarnicero,
   procesarTextoDePedido,
@@ -133,78 +135,20 @@ async function enrutar(params: {
     // contestarle sería puro ruido en el mostrador. La sección 34 habla del
     // cliente, que es quien escribe de a pedacitos.
     await marcarProcesado(mensajeId);
+
+    // Audio y texto van por el MISMO camino: el audio se transcribe y listo.
+    let texto = mensaje.texto ?? null;
     if (mensaje.tipo === "audio" && mensaje.media) {
-      return await procesarAudioDeStock({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        media: mensaje.media,
-      });
+      const transcripcion = await transcribirAudioDeCarnicero({ carniceriaId, telefono, media: mensaje.media });
+      if (!transcripcion) return null;
+      if (!transcripcion.ok) return transcripcion.mensaje;
+      // Queda en el hilo como texto: así el historial (y el panel) lo ven.
+      await guardarTranscripcion(mensajeId, transcripcion.texto);
+      texto = transcripcion.texto;
     }
+    if (!texto) return null;
 
-    if (mensaje.texto) {
-      // Prioridad: si hay una operación de stock pendiente, el texto es sobre
-      // ESA (comportamiento sin cambios desde la Etapa 2). Solo si no hay nada
-      // de stock pendiente se prueba si es una decisión sobre un pedido.
-      const respuestaStock = await procesarTextoEntrante({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        texto: mensaje.texto,
-      });
-      if (respuestaStock !== null) return respuestaStock;
-
-      const respuestaDecision = await procesarDecisionCarnicero({
-        carniceriaId,
-        carniceroTelefono: telefono,
-        texto: mensaje.texto,
-      });
-      if (respuestaDecision !== null) return respuestaDecision;
-
-      // ¿Está avisando que entró mercadería (media res, media res de cerdo o
-      // cajón de pollo)? Va ANTES del flujo de stock
-      // genérico porque son dos operaciones distintas: una carga de stock SUMA
-      // kilos a un producto, una media res TRANSFORMA (entra una pieza grande y
-      // salen 28 cortes, hueso, grasa y merma). Si esto devuelve null, el
-      // mensaje sigue de largo y no se pierde nada.
-      const respuestaLote = await probarComoLote({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        texto: mensaje.texto,
-      });
-      if (respuestaLote !== null) return respuestaLote;
-
-      // ¿Está contando que trozó pollo? ("trocé 3 pollos y saqué 2,700 de
-      // pechuga"). Se lee sin IA y se calculan las demás presas con la tabla
-      // (ver flujoTrozado.ts). Va antes del flujo de stock genérico por la
-      // misma razón que el lote: trozar no suma kilos, TRANSFORMA pollos
-      // enteros en presas.
-      const respuestaTrozado = await probarComoTrozado({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        texto: mensaje.texto,
-      });
-      if (respuestaTrozado !== null) return respuestaTrozado;
-
-      // Último recurso: un texto suelto del carnicero se trata como el arranque
-      // de una carga de stock, igual que un audio suelto.
-      //
-      // Antes esto vivía SOLO en el simulador, y esa diferencia era una trampa:
-      // el simulador contestaba cosas que WhatsApp de verdad ignoraba, así que
-      // probar acá no probaba lo mismo que iba a pasar allá. Ahora es un solo
-      // camino. De paso, un carnicero que escribe "entraron 20 kilos de asado"
-      // en vez de mandar el audio ya no queda sin respuesta.
-      return await procesarTextoDeStock({
-        carniceriaId,
-        telefono,
-        mensajeWhatsappId: mensajeId,
-        texto: mensaje.texto,
-      });
-    }
-
-    return null;
+    return await atenderCarniceroConCola({ carniceriaId, telefono, mensajeId, texto });
   }
 
   // ------------------------------------------------------------
@@ -259,3 +203,138 @@ async function botEnPausa(conversacionId: string): Promise<boolean> {
   const hasta = data?.bot_pausado_hasta as string | null | undefined;
   return Boolean(hasta && new Date(hasta) > new Date());
 }
+
+
+// ============================================================
+// El carnicero: una instrucción a la vez, sin perder ninguna
+// ============================================================
+
+/**
+ * Todo lo que el bot sabe hacer con UNA instrucción del carnicero, en orden de
+ * prioridad. Es el mismo orden de siempre; solo se sacó a una función para
+ * poder llamarlo una vez por instrucción.
+ */
+async function atenderInstruccionDeCarnicero(params: {
+  carniceriaId: string;
+  telefono: string;
+  mensajeId: string;
+  texto: string;
+}): Promise<string | null> {
+  const { carniceriaId, telefono, mensajeId, texto } = params;
+
+  // Prioridad: si hay una operación de stock pendiente, el texto es sobre
+  // ESA (comportamiento sin cambios desde la Etapa 2). Solo si no hay nada
+  // de stock pendiente se prueba si es una decisión sobre un pedido.
+  const respuestaStock = await procesarTextoEntrante({ carniceriaId, telefono, mensajeWhatsappId: mensajeId, texto });
+  if (respuestaStock !== null) return respuestaStock;
+
+  const respuestaDecision = await procesarDecisionCarnicero({ carniceriaId, carniceroTelefono: telefono, texto });
+  if (respuestaDecision !== null) return respuestaDecision;
+
+  // ¿Está avisando que entró mercadería (media res, media res de cerdo o cajón
+  // de pollo)? Va ANTES del flujo de stock genérico porque son dos operaciones
+  // distintas: una carga de stock SUMA kilos a un producto, una media res
+  // TRANSFORMA (entra una pieza grande y salen 28 cortes, hueso, grasa y
+  // merma). Si esto devuelve null, el mensaje sigue de largo y no se pierde.
+  const respuestaLote = await probarComoLote({ carniceriaId, telefono, mensajeWhatsappId: mensajeId, texto });
+  if (respuestaLote !== null) return respuestaLote;
+
+  // ¿Está contando que trozó pollo? ("trocé 3 pollos y saqué 2,700 de
+  // pechuga"). Va antes del stock genérico por la misma razón que el lote:
+  // trozar no suma kilos, TRANSFORMA pollos enteros en presas.
+  const respuestaTrozado = await probarComoTrozado({ carniceriaId, telefono, mensajeWhatsappId: mensajeId, texto });
+  if (respuestaTrozado !== null) return respuestaTrozado;
+
+  // Último recurso: se trata como el arranque de una carga de stock. Un
+  // carnicero que escribe "entraron 20 kilos de asado" no queda sin respuesta.
+  return await procesarTextoDeStock({ carniceriaId, telefono, mensajeWhatsappId: mensajeId, texto });
+}
+
+type PendienteConCola = { id: string; cola: string[] };
+
+async function pendienteConCola(carniceriaId: string, telefono: string): Promise<PendienteConCola | null> {
+  const { data } = await getSupabaseAdmin()
+    .from("operaciones_stock")
+    .select("id, cola_instrucciones")
+    .eq("carniceria_id", carniceriaId)
+    .eq("telefono", telefono)
+    .in("estado", ["pendiente_aclaracion", "pendiente_confirmacion", "pendiente_modificacion"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  return { id: data.id as string, cola: ((data.cola_instrucciones as string[] | null) ?? []).filter(Boolean) };
+}
+
+/**
+ * Varias instrucciones en un mismo mensaje (29/09/2026).
+ *
+ * "Llegó una media res de 104, un cajón de pollo de 8 y piqué 5 de nalga" son
+ * tres trabajos, y el bot solo puede tener UNO pendiente a la vez (así el "sí"
+ * del carnicero nunca es ambiguo). Entonces:
+ *   1. se parte el mensaje (`partirInstrucciones`),
+ *   2. se atiende la primera,
+ *   3. las demás esperan en la fila de la operación que quedó pendiente
+ *      (columna `cola_instrucciones`, migración 0028),
+ *   4. cuando esa operación se cierra (la confirmó o la canceló), en el MISMO
+ *      mensaje de respuesta se arranca con la siguiente.
+ * El carnicero nunca tiene que repetir nada.
+ */
+async function atenderCarniceroConCola(params: {
+  carniceriaId: string;
+  telefono: string;
+  mensajeId: string;
+  texto: string;
+  heredada?: string[];
+  vuelta?: number;
+}): Promise<string | null> {
+  const { carniceriaId, telefono, mensajeId, texto, heredada = [], vuelta = 0 } = params;
+
+  const antes = await pendienteConCola(carniceriaId, telefono);
+
+  // El catálogo solo se carga si el mensaje tiene más de un pedazo posible.
+  let instrucciones = partirInstrucciones(texto);
+  if (instrucciones.length === 1 && /[,.;\n]|\s(y|e|despues|después|ademas|además|tambien|también)\s/i.test(texto)) {
+    try {
+      const catalogo = await cargarCatalogo(carniceriaId);
+      instrucciones = partirInstrucciones(texto, (pedazo) => catalogo.productos.some((p) => nombreDichoPor(p, pedazo)));
+    } catch {
+      // Sin catálogo se parte igual, solo que sin reconocer productos sueltos.
+    }
+  }
+  const [primera, ...resto] = instrucciones.length > 0 ? instrucciones : [texto];
+
+  const respuesta = await atenderInstruccionDeCarnicero({ carniceriaId, telefono, mensajeId, texto: primera });
+
+  const despues = await pendienteConCola(carniceriaId, telefono);
+  const sigueLaMisma = antes !== null && despues !== null && antes.id === despues.id;
+  const cola = sigueLaMisma
+    ? [...antes.cola, ...resto, ...heredada]
+    : [...resto, ...(antes ? antes.cola : []), ...heredada];
+
+  if (cola.length === 0) return respuesta;
+
+  if (despues) {
+    // Algo quedó esperando respuesta: la fila espera con ello.
+    await getSupabaseAdmin().from("operaciones_stock").update({ cola_instrucciones: cola }).eq("id", despues.id);
+    const aviso =
+      resto.length > 0
+        ? `\n\n(Anoté también lo otro que me dijiste; lo vemos apenas cerremos esto: ${cola.map((c) => `«${c}»`).join(", ")}.)`
+        : "";
+    return `${respuesta ?? ""}${aviso}`.trim() || null;
+  }
+
+  // No quedó nada pendiente: se sigue con la próxima de la fila ahora mismo.
+  if (vuelta >= 5) return respuesta;
+  const [siguiente, ...demas] = cola;
+  const respuestaSiguiente = await atenderCarniceroConCola({
+    carniceriaId,
+    telefono,
+    mensajeId,
+    texto: siguiente,
+    heredada: demas,
+    vuelta: vuelta + 1,
+  });
+  return [respuesta, respuestaSiguiente].filter((r): r is string => Boolean(r && r.trim())).join("\n\n—\n\n") || null;
+}
+

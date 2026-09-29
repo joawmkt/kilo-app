@@ -222,7 +222,9 @@ async function guardarResultado(params: {
     // Sin operación previa NO se crea una fila: antes se guardaba una operación
     // "pendiente_aclaracion" vacía por un mensaje que no se entendió, y esa fila
     // fantasma se tragaba el mensaje siguiente (Patrón 2 del manual).
-    return `No relacioné "${texto}" con una actualización de stock. ¿Podés decirlo de otra forma? Por ejemplo: *entraron 20 kilos de asado* o *piqué 3 kilos de vacío*.`;
+    // Sin repetirle su propio mensaje entre comillas (suena a máquina) y con
+    // ejemplos de las TRES cosas que puede avisar, no solo de stock suelto.
+    return "Perdón, no te entendí 🙈 ¿Me lo decís de otra forma? Por ejemplo: *llegaron 2 medias reses de 100 y 104*, *entró un cajón de pollo de 8* o *piqué 3 kilos de vacío*.";
   }
 
   if (resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante") {
@@ -272,13 +274,34 @@ async function guardarResultado(params: {
     }
   }
 
+  // Red de seguridad (29/09): si la IA armó un "producto" que no existe y que
+  // en realidad es mercadería entera ("media_res", "cajon_de_pollo",
+  // "cerdo"), esto era un LOTE que se escapó del detector. Bug del 28/09: "me
+  // llegaron 3 media rre" + "100 102 y 89" terminó en "no reconocí el
+  // producto media_res". Se abandona la operación y se carga como lote, con
+  // todo lo que dijo junto.
+  const pareceLote = itemsFinales.some(
+    (i) => !catalogo.porCodigo.has(i.producto_codigo) && /media|res\b|reses|cajon|cerdo|chancho|capon/.test(i.producto_codigo)
+  );
+  if (pareceLote) {
+    const combinado = textoInicial !== texto ? `${textoInicial} ${texto}` : texto;
+    if (operacionId) {
+      await supabaseAdmin
+        .from("operaciones_stock")
+        .update({ estado: "cancelado", updated_at: ahora, pregunta_pendiente: null })
+        .eq("id", operacionId);
+    }
+    const comoLote = await probarComoLote({ carniceriaId, telefono, mensajeWhatsappId, texto: combinado });
+    if (comoLote !== null) return comoLote;
+  }
+
   const itemsResueltos: ItemGuardado[] = [];
   const estimar = estimadorPorUnidad(carniceriaId);
   for (const item of itemsFinales) {
     const producto = catalogo.porCodigo.get(item.producto_codigo);
     if (!producto) {
       await guardar({ transcripcion: texto, interpretacion: resultado, updated_at: ahora });
-      return `Entendí algo, pero no reconocí uno de los productos ("${item.producto_codigo}"). ¿Podés decirlo de otra forma?`;
+      return `Entendí algo, pero no reconocí uno de los productos ("${item.producto_codigo.replace(/_/g, " ")}"). ¿Me lo decís con otro nombre?`;
     }
 
     // "Entraron 10 pechugas": el producto va por kilo y lo contó en unidades.
@@ -542,6 +565,35 @@ export async function procesarAudioDeStock(params: {
   }
 
   return await procesarTextoDeStock({ carniceriaId, telefono, mensajeWhatsappId, texto: transcripcion });
+}
+
+/**
+ * Solo la transcripción del audio del carnicero, sin interpretarlo.
+ *
+ * Bug encontrado el 29/09/2026: el AUDIO del carnicero iba directo a la carga
+ * de stock genérica (`procesarAudioDeStock`), salteándose todo lo demás: una
+ * operación pendiente ("sí" dicho en audio), los lotes ("llegó una media res")
+ * y el trozado. El texto escrito sí pasaba por esos caminos. Ahora el audio se
+ * transcribe acá y el texto sigue EXACTAMENTE el mismo camino que si lo
+ * hubiera escrito (ver `atenderCarniceroConCola` en whatsapp/entrante.ts).
+ *
+ * Devuelve null si el número no es de un carnicero autorizado.
+ */
+export async function transcribirAudioDeCarnicero(params: {
+  carniceriaId: string;
+  telefono: string;
+  media: ReferenciaMedia;
+}): Promise<{ ok: true; texto: string } | { ok: false; mensaje: string } | null> {
+  if (await bloqueadoPorNoSerCarnicero(params.carniceriaId, params.telefono)) return null;
+  try {
+    const audio = await descargarAudio(params.media);
+    const texto = (await transcribirAudio(audio)).trim();
+    if (!texto) return { ok: false, mensaje: "El audio me llegó vacío o no se entendió nada. ¿Podés repetirlo?" };
+    return { ok: true, texto };
+  } catch (err) {
+    console.error("Error descargando/transcribiendo audio", err);
+    return { ok: false, mensaje: "No pude escuchar bien ese audio. ¿Podés grabarlo de nuevo?" };
+  }
 }
 
 /**

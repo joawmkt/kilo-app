@@ -2,7 +2,8 @@ import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseServidor } from "@/lib/supabaseServidor";
 import { listarCatalogo } from "@/lib/panel/catalogo";
 import { CatalogoEditor } from "@/components/panel/catalogo-editor";
-import { EncabezadoPantalla, Tarjeta, EstadoVacio } from "@/components/panel/ui";
+import Link from "next/link";
+import { EncabezadoPantalla, Tarjeta, EstadoVacio, clasesBoton } from "@/components/panel/ui";
 
 // El catálogo — qué vende esta carnicería y cómo lo llaman acá.
 //
@@ -28,6 +29,12 @@ export default async function CatalogoPage() {
       <EncabezadoPantalla
         titulo="Catálogo"
         descripcion={`Tildá lo que vendés y agregá cómo lo llaman en tu barrio. ${activos} de ${productos.length} activos.`}
+        accion={
+          // Qué recomienda el bot para la parrilla, el horno, milanesas...
+          <Link href="/panel/catalogo/recomendaciones" className={clasesBoton("secundario")}>
+            Recomendaciones del bot
+          </Link>
+        }
       />
 
       <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3">

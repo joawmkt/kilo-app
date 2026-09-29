@@ -36,7 +36,7 @@ const EXCLUSIONES = /\bmedias?\s+(docena|hora|horas|tarde|manana|kilo|kilos|pila
 const PATRONES_MEDIA_RES = [
   /\bmedias?\s+(res|rez|reses|reces)\b/,
   /\bmedias?\s+(de\s+)?(vaca|novillo|novillito|vaquillona|ternera|ternero|cerdo|chancho|capon)\b/,
-  /\b(una|la|otra|dos|tres|cuatro|unas|las)\s+medias?\b(?!\s+(docena|hora|horas|tarde|manana|kilo|kilos|pila|mano|horma|bolsa))/,
+  /\b(\d{1,2}|una|la|otra|dos|tres|cuatro|cinco|seis|unas|las)\s+medias?\b(?!\s+(docena|hora|horas|tarde|manana|kilo|kilos|pila|mano|horma|bolsa))/,
 ];
 
 // El pollo: por cajón, o contado por cabezas ("entraron 8 pollos").
@@ -72,10 +72,40 @@ const PALABRAS_AVIAR = /\b(pollo|pollos|aviar|gallina)\b/;
 const PALABRAS_VACUNO = /\b(vaca|vacas|vacun[oa]s?|novillo|novillos|novillito|vaquillona|ternera|ternero|vacuna)\b/;
 
 function normalizar(texto: string): string {
-  return texto
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "");
+  return canonizarLote(
+    texto
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+  );
+}
+
+// ------------------------------------------------------------
+// Errores de tipeo y formas de decir "media res" (29/09/2026)
+// ------------------------------------------------------------
+//
+// Bug del 28/09: "me entraron 3 mediaree", "3 mediarres" y "3 media rre" no se
+// reconocieron como medias reses. El detector buscaba "media res" bien
+// escrito, y el carnicero escribe apurado, con los dedos fríos y el corrector
+// del celular en contra. Resultado: "No relacioné... ¿podés decirlo de otra
+// forma?", que es exactamente lo que no puede pasar.
+//
+// En vez de agregar cada error a mano (nunca se termina), se reconoce la
+// FORMA: "medi" + a/o + (s) + (espacio o nada) + r + e... con letras repetidas
+// o no. Todas esas variantes se reescriben como "media res" antes de detectar
+// nada, así el resto del código ve siempre la misma palabra.
+//
+//   mediarres, mediares, mediaree, mediarez, media rre, media rez, medias rreses,
+//   1/2 res, media ress  ->  "media res" / "medias reses"
+const MEDIA_RES_TORCIDA = /\b(1\/2|medi[ao](s?))\s*r+e+(?:[szc]+e*[sz]*)?\b/gi;
+
+/**
+ * Reescribe las formas torcidas de "media res" a la forma de siempre. Es
+ * pública porque el intérprete de lotes también la usa antes de mandarle el
+ * texto al modelo.
+ */
+export function canonizarLote(texto: string): string {
+  return texto.replace(MEDIA_RES_TORCIDA, (_todo, _prefijo, plural) => (plural ? "medias reses" : "media res"));
 }
 
 function hablaDePollos(t: string): boolean {
@@ -155,7 +185,12 @@ export function anunciaLlegada(texto: string): boolean {
  */
 export function leerListaDePesos(texto: string): number[] | null {
   const t = normalizar(texto)
-    .replace(/\b(kg|kgs|kilos?|k|y|la|una|otra|de|el|primera|segunda|cada|pesaron|peso|pesan)\b/g, " ")
+    // Palabras que acompañan a los pesos sin cambiar nada: "LAS MEDIA RES PESAN
+    // 100 102 y 89 KILOS" es una lista de pesos igual que "100 102 y 89".
+    .replace(
+      /\b(kg|kgs|kilos?|k|y|e|la|las|una|unas|otra|de|el|primera|segunda|tercera|cada|pesaron|peso|pesan|pesa|pesaba|pesaban|son|eran|fueron|media|medias|res|reses)\b/g,
+      " "
+    )
     .replace(/[;/]/g, " ")
     .trim();
 

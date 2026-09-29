@@ -234,7 +234,8 @@ export type IntencionExplicita = "confirmar" | "cancelar" | "modificar" | null;
  */
 export function clasificarRespuesta(texto: string): IntencionExplicita {
   const tokens = tokenizar(texto);
-  if (tokens.length === 0 || tokens.length > MAXIMO_PALABRAS) return null;
+  if (tokens.length === 0) return null;
+  if (tokens.length > MAXIMO_PALABRAS) return porVerboDeAccion(tokens, texto);
 
   let confirmar = 0;
   let cancelar = 0;
@@ -252,8 +253,10 @@ export function clasificarRespuesta(texto: string): IntencionExplicita {
         i += 1;
         continue;
       }
-      // Cualquier otra palabra desconocida = hay contenido real. A la IA.
-      return null;
+      // Una palabra desconocida = puede haber contenido real. Antes acá se
+      // cortaba y se mandaba a la IA. Ahora primero se mira si hay una ORDEN
+      // clara ("cargalo", "confirmalo") — ver `porVerboDeAccion`.
+      return porVerboDeAccion(tokens, texto);
     }
 
     if (frase.clase === "confirmar") confirmar++;
@@ -272,6 +275,71 @@ export function clasificarRespuesta(texto: string): IntencionExplicita {
   if (modificar > 0) return "modificar";
   if (cancelar > 0) return "cancelar";
   if (confirmar > 0) return "confirmar";
+  return null;
+}
+
+// ------------------------------------------------------------
+// Segunda pasada: una ORDEN clara gana aunque venga con comentarios
+// ------------------------------------------------------------
+//
+// Bug del 28/09: el bot preguntó "¿Las cargo?" y el carnicero contestó "no era
+// tan difícil si cargalo". La regla estricta de arriba (una palabra
+// desconocida = a la IA) lo mandó a la IA, que tampoco lo entendió, y el bot
+// dijo "No te entendí". Cualquier persona lee eso como un sí: el comentario es
+// para el bot, la orden es "cargalo".
+//
+// Por eso, cuando sobran palabras, se busca un VERBO DE ACCIÓN inequívoco
+// (cargalo, confirmalo, mandalo, preparalo... o su contrario: no lo cargues,
+// cancelalo). Si hay uno solo de un lado, gana ese lado. Pero se vuelve a la
+// IA si hay cualquier señal de que además está pidiendo OTRA cosa:
+//   - un número ("cargalo pero eran 12 kilos"),
+//   - un "pero / salvo / sin / agregale / sacá / cambiá / además / también"
+//     ("confirmalo pero sin el vacío", "dale y agregale chorizo"),
+//   - una pregunta ("dale, ¿tenés vacío?").
+// Así un comentario suelto no traba, y una corrección nunca se pierde.
+
+const VERBOS_CONFIRMAR = new Set([
+  "cargalo", "cargala", "cargalos", "cargalas", "carga", "cargar", "cargamelo", "cargamela",
+  "confirmalo", "confirmala", "confirmo", "confirmado", "confirmar", "confirma",
+  "mandalo", "mandala", "mandale", "hacelo", "hacela", "metele", "adelante", "procede",
+  "registralo", "anotalo", "anotala", "guardalo", "subilo", "dale",
+  "preparalo", "preparala", "preparamelo", "preparamela", "armalo", "armamelo", "armala",
+  "reservalo", "reservamelo", "separalo", "separamelo",
+]);
+
+// Frases de cancelación inequívocas (en tokens). "no" suelto NO está: en "no
+// era tan difícil, sí, cargalo" el "no" es parte del comentario.
+const FRASES_CANCELAR_FUERTES = [
+  ["no", "lo", "cargues"], ["no", "la", "cargues"], ["no", "las", "cargues"], ["no", "los", "cargues"],
+  ["no", "cargues"], ["no", "lo", "hagas"], ["no", "lo", "mandes"], ["no", "lo", "confirmes"],
+  ["cancelalo"], ["cancelala"], ["cancela"], ["cancelar"], ["cancelo"], ["anulalo"], ["anula"],
+  ["borralo"], ["olvidate"], ["olvidalo"], ["dejalo"], ["dejala"],
+];
+
+// Si aparece alguna de estas, además de confirmar/cancelar está pidiendo otra
+// cosa: se manda a la IA con el contexto.
+const SENAL_DE_OTRO_PEDIDO =
+  /^(pero|aunque|salvo|excepto|menos|sin|como|agreg\w*|suma\w*|sum\w*|pone\w*|pon[eé]\w*|saca\w*|quita\w*|cambi\w*|reemplaz\w*|ademas|tambien|otro|otra|otros|otras|mas|tenes|tienen|hay|queda|quedo|cerdo|chancho|vaca|vacuna|novillo|novillito|vaquillona|ternera|pollo|pollos)$/;
+
+function contieneFrase(tokens: string[], frase: string[]): boolean {
+  for (let i = 0; i + frase.length <= tokens.length; i++) {
+    if (frase.every((t, j) => tokens[i + j] === t)) return true;
+  }
+  return false;
+}
+
+function porVerboDeAccion(tokens: string[], textoOriginal: string): IntencionExplicita {
+  if (tokens.length > 20) return null;
+  // Una pregunta nunca es solo un sí: "dale, ¿tenés vacío?" la ve la IA.
+  if (textoOriginal.includes("?")) return null;
+  if (tokens.some((t) => /\d/.test(t))) return null;
+  if (tokens.some((t) => SENAL_DE_OTRO_PEDIDO.test(t))) return null;
+
+  const confirma = tokens.some((t) => VERBOS_CONFIRMAR.has(t));
+  const cancela = FRASES_CANCELAR_FUERTES.some((f) => contieneFrase(tokens, f));
+
+  if (confirma && !cancela) return "confirmar";
+  if (cancela && !confirma) return "cancelar";
   return null;
 }
 

@@ -1,7 +1,8 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { clasificarRespuesta } from "./confirmacion";
 import { interpretarLote, detectarEspecieDeLote, type ResultadoLoteVoz } from "./interpretarLote";
-import { especieExplicita, anunciaLlegada, leerListaDePesos } from "./deteccionLote";
+import { especieExplicita, anunciaLlegada, leerListaDePesos, leerEnteros, numeroEnPalabra } from "./deteccionLote";
+import { elegir, FRASES } from "./tono";
 import { variarSiSeRepite } from "./conversacion";
 import { cargarLote } from "./lotes";
 import { descriptor, type CategoriaAnimal, type Especie } from "./especies";
@@ -52,6 +53,11 @@ type LotePendiente = {
    */
   pesosKg?: number[];
   unidades: number | null;
+  /**
+   * Cabezas de CADA cajón, cuando no son todos iguales ("uno de 9 y otro de
+   * 8"). Si no está, todos los cajones traen `unidades`.
+   */
+  unidadesPorLote?: number[];
   categoria: CategoriaAnimal | string | null;
   categoriaExplicita: boolean;
   proveedor: string | null;
@@ -285,8 +291,29 @@ export async function responderSobreLote(params: {
     // Primero sin modelo: si la respuesta es solo números ("51 y 46",
     // "104,6", "49500"), se leen directo. El modelo recién si trae palabras.
     let nueva: ResultadoLoteVoz | null = null;
+    let unidadesPorLote: number[] | undefined;
+
+    // Las cabezas del cajón, sin modelo: "9", "9 cabezas", "nueve", "uno de 9
+    // y otro de 8". Bug del 30/09: "me entraron 2 cajones" + "9 cabezas" cargó
+    // UN solo cajón, porque la respuesta se leía como si fuera de uno.
+    const enteros = interpretacion.esperando === "cabezas" ? leerEnteros(texto) : null;
+    if (enteros && enteros.every((n) => n > 0 && n <= 60)) {
+      const cantidad = enteros.length > 1 ? enteros.length : cantidadEsperada;
+      if (enteros.length > 1) unidadesPorLote = enteros;
+      nueva = {
+        tipo: "lote",
+        especie,
+        pesoKg: 0, // el del cajón de la carnicería (lo pone armarPendiente)
+        pesosKg: null,
+        unidades: enteros[0],
+        categoria: null,
+        proveedor: null,
+        cantidad,
+      };
+    }
+
     const numeros = leerListaDePesos(texto);
-    if (numeros && interpretacion.esperando === "peso") {
+    if (!nueva && numeros && interpretacion.esperando === "peso") {
       const [minP, maxP] = desc.rangoPesoKg;
       if (numeros.every((n) => n >= minP && n <= maxP)) {
         nueva = {
@@ -308,9 +335,16 @@ export async function responderSobreLote(params: {
       const cuantas = cantidadEsperada > 1 ? `llegaron ${cantidadEsperada} ` : "llegó una ";
       const preludio =
         desc.unidadEntrada === "cajon"
-          ? "llegó un cajón de pollo de "
+          ? cantidadEsperada > 1
+            ? `llegaron ${cantidadEsperada} cajones de pollo de `
+            : "llegó un cajón de pollo de "
           : `${cuantas}${cantidadEsperada > 1 ? desc.etiqueta.replace("media res", "medias reses") : desc.etiqueta} de `;
       nueva = await interpretarLote(`${preludio}${texto}`, especie);
+      // Lo que ya se sabía no se pierde: si dijo "2 cajones" y ahora solo dice
+      // las cabezas, siguen siendo 2 cajones.
+      if (nueva.tipo === "lote" && nueva.cantidad < cantidadEsperada && !(nueva.pesosKg && nueva.pesosKg.length > 1)) {
+        nueva = { ...nueva, cantidad: cantidadEsperada };
+      }
     }
 
     if (nueva.tipo !== "lote") {
@@ -338,7 +372,7 @@ export async function responderSobreLote(params: {
       });
     }
 
-    return await pasarAConfirmacion(carniceriaId, operacion.id, nueva, texto);
+    return await pasarAConfirmacion(carniceriaId, operacion.id, { ...nueva, unidadesPorLote }, texto);
   }
 
   // ------------------------------------------------------------
@@ -497,7 +531,7 @@ function especieDeRespuestaCorta(texto: string): Especie | null {
 async function pasarAConfirmacion(
   carniceriaId: string,
   operacionId: string,
-  leido: LoteLeido,
+  leido: LoteLeido & { unidadesPorLote?: number[] },
   texto: string
 ): Promise<string> {
   const pendiente = await armarPendiente(carniceriaId, leido);
@@ -552,6 +586,7 @@ async function armarPendiente(
     pesosKg?: number[] | null;
     nota?: string;
     unidades: number | null;
+    unidadesPorLote?: number[];
     categoria: string | null;
     proveedor: string | null;
     cantidad: number;
@@ -588,11 +623,118 @@ async function armarPendiente(
     ...(pesosKg ? { pesosKg } : {}),
     ...(interpretacion.nota ? { nota: interpretacion.nota } : {}),
     unidades: interpretacion.unidades,
+    ...(interpretacion.unidadesPorLote && interpretacion.unidadesPorLote.length > 1
+      ? { unidadesPorLote: interpretacion.unidadesPorLote }
+      : {}),
     categoria,
     categoriaExplicita: interpretacion.categoria !== null,
     proveedor: interpretacion.proveedor,
-    cantidad: pesosKg ? pesosKg.length : interpretacion.cantidad,
+    cantidad: pesosKg
+      ? pesosKg.length
+      : interpretacion.unidadesPorLote && interpretacion.unidadesPorLote.length > 1
+        ? interpretacion.unidadesPorLote.length
+        : interpretacion.cantidad,
   };
+}
+
+// ============================================================
+// "Eran dos cajones": corregir la CANTIDAD de lo que se acaba de cargar
+// ============================================================
+//
+// Bug del 30/09: el carnicero cargó un cajón de 9 pollos y después dijo "eran
+// dos cajones". El bot lo tomó como mercadería NUEVA y cargó dos cajones más
+// (27 pollos en vez de 18). "Eran dos" no es que llegaron dos más: es que de
+// lo que acaba de cargar, le faltó uno.
+//
+// Se reconoce por la forma ("eran / fueron / en realidad / me faltó ... N")
+// y SOLO si lo último que se cargó, hace poco, fue un lote. Se propone cargar
+// la diferencia con los mismos datos (mismo peso de cajón, mismas cabezas) y
+// se pide un sí, como siempre.
+
+const PISTA_CORRECCION = /\b(eran|fueron|en realidad|en total|me falto|falto|faltaba|te falto|faltaron|era otro|es otro|son)\b/;
+const MENCIONA_LOTE = /\b(cajon|cajones|media|medias|res|reses|cerdo|cerdos|chancho|chanchos|pollo|pollos)\b/;
+
+export async function probarCorreccionDeLote(params: {
+  carniceriaId: string;
+  telefono: string;
+  texto: string;
+}): Promise<string | null> {
+  const { carniceriaId, telefono, texto } = params;
+  const t = texto.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (!PISTA_CORRECCION.test(t)) return null;
+
+  // Lo último que se cargó: tiene que ser un lote, y de hace menos de 2 horas.
+  const hace2h = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const { data: ultima } = await getSupabaseAdmin()
+    .from("operaciones_stock")
+    .select("id, interpretacion, updated_at")
+    .eq("carniceria_id", carniceriaId)
+    .eq("telefono", telefono)
+    .eq("estado", "ejecutado")
+    .gte("updated_at", hace2h)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const interp = (ultima?.interpretacion ?? null) as Record<string, unknown> | null;
+  if (!interp || (interp.tipo !== MARCA && interp.tipo !== MARCA_VIEJA)) return null;
+
+  // Si nombra algo, tiene que ser un lote (no "eran 3 kilos de vacío").
+  const palabras = t.replace(/[^a-z0-9ñ\s]/g, " ").split(/\s+/).filter(Boolean);
+  const nombraOtraCosa = palabras.some((p) => p.length > 3 && !MENCIONA_LOTE.test(p) && !PISTA_CORRECCION.test(p) && numeroEnPalabra(p) === null && !/^(realidad|total|otro|otra|cargar|cargaste|cargado|solo|mas|que|uno|una|dije|decia|habia|habian|llegaron|entraron)$/.test(p));
+  if (nombraOtraCosa) return null;
+
+  const cargada = normalizarPendiente(interp);
+  const cargadas = pesosDe(cargada).length;
+  const numero = palabras.map(numeroEnPalabra).find((n): n is number => n !== null && n > 0 && n <= 20);
+  const dijoOtro = /\b(otro|otra|uno mas|una mas)\b/.test(t);
+  const total = numero ?? (dijoOtro ? cargadas + 1 : null);
+  if (!total) return null;
+
+  const desc = descriptor(cargada.especie);
+  const cosa = desc.unidadEntrada === "cajon" ? (cargadas === 1 ? "cajón" : "cajones") : cargadas === 1 ? desc.etiqueta : plural(desc.etiqueta);
+
+  if (total <= cargadas) {
+    return `Ya tengo cargad${desc.unidadEntrada === "cajon" ? "os" : "as"} ${cargadas} ${cosa}. Si se me fue uno de más, sacalo desde el panel (Stock → Lo que entra) y listo.`;
+  }
+
+  const faltan = total - cargadas;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  if (desc.unidadEntrada === "cajon") {
+    const nuevo: LotePendiente = {
+      ...cargada,
+      cantidad: faltan,
+      pesosKg: undefined,
+      unidadesPorLote: undefined,
+      unidades: cargada.unidadesPorLote?.[cargada.unidadesPorLote.length - 1] ?? cargada.unidades,
+      fallos: 0,
+    };
+    await supabaseAdmin.from("operaciones_stock").insert({
+      carniceria_id: carniceriaId,
+      telefono,
+      estado: "pendiente_confirmacion",
+      transcripcion: texto,
+      interpretacion: nuevo,
+      items: [],
+      expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+    });
+    const aviso = faltan === 1 ? "Tenés razón, me faltó uno." : `Tenés razón, me faltaron ${faltan}.`;
+    return `${aviso} Cargo ${faltan === 1 ? "otro igual" : `${faltan} más iguales`}:\n${resumenParaConfirmar(nuevo)}`;
+  }
+
+  // Medias reses: el peso de las que faltan no se sabe, se pregunta.
+  const pregunta =
+    faltan === 1 ? `Tenés razón, me faltó una. ¿Cuánto pesa la otra ${desc.etiqueta}?` : `Tenés razón, me faltaron ${faltan}. ¿Cuánto pesa cada una?`;
+  await supabaseAdmin.from("operaciones_stock").insert({
+    carniceria_id: carniceriaId,
+    telefono,
+    estado: "pendiente_aclaracion",
+    transcripcion: texto,
+    interpretacion: { tipo: MARCA, especie: cargada.especie, esperando: "peso", cantidad: faltan, especieSupuesta: false },
+    pregunta_pendiente: pregunta,
+    items: [],
+  });
+  return pregunta;
 }
 
 /** Un peso por pieza a cargar, sea cual sea el formato en que vino. */
@@ -616,13 +758,14 @@ async function ejecutar(params: {
   // Varios lotes del mismo tamaño se cargan como LOTES SEPARADOS, no como uno
   // de peso doble. Cada uno tiene su propio rinde y su propio descuadre:
   // promediarlos perdería justo lo que hace útil el módulo.
-  for (const peso of pesosDe(pendiente)) {
+  const pesos = pesosDe(pendiente);
+  for (let i = 0; i < pesos.length; i++) {
     const resultado = await cargarLote({
       carniceriaId,
       especie: pendiente.especie,
       categoria: pendiente.categoria,
-      pesoRecibidoKg: peso,
-      unidades: pendiente.unidades,
+      pesoRecibidoKg: pesos[i],
+      unidades: pendiente.unidadesPorLote?.[i] ?? pendiente.unidades,
       proveedor: pendiente.proveedor,
     });
 
@@ -640,30 +783,21 @@ async function ejecutar(params: {
 
   if (esperaDesposte) {
     return (
-      `Listo 👍 Cargué ${describirCantidad(pendiente)}.\n\n` +
-      `Cuando la despostes, decime los pesos de cada corte y te armo el stock. ` +
-      `No te apures: con los primeros 10 despostes ya voy a saber cuánto te rinde a vos.`
+      `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}.\n\n` +
+      `Cuando la despostes, pasame los pesos de cada corte y te armo el stock.`
     );
   }
 
   if (desc.unidadEntrada === "cajon") {
-    const kgPorUnidad = pendiente.unidades
-      ? Math.round((pendiente.pesoKg / pendiente.unidades) * 1000) / 1000
-      : 0;
     const vence = desc.vidaUtilDiasPorDefecto
       ? `\nOjo que el pollo dura poco: te aviso cuando falten 2 días para que se pase.`
       : "";
-    return (
-      `Listo 👍 Cargué ${describirCantidad(pendiente)}.\n` +
-      `Te quedaron ${piezasTotales} pollos de ${formatearKg(kgPorUnidad)} kg cada uno.${vence}`
-    );
+    return `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} pollos en total.${vence}`;
   }
 
   return (
-    `Listo 👍 Cargué ${describirCantidad(pendiente)}.\n` +
-    `Te quedaron ${piezasTotales} cortes estimados, ${formatearKg(kgTotales)} kg vendibles.\n\n` +
-    `Cuando vayas despostando, si me decís los pesos reales afino las cuentas. ` +
-    `Y cuando se te termine un corte, avisame y lo pongo en cero.`
+    `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} cortes estimados, ${formatearKg(kgTotales)} kg vendibles.\n\n` +
+    `Si después me pasás los pesos reales del desposte, afino las cuentas.`
   );
 }
 
@@ -680,14 +814,22 @@ async function cerrar(operacionId: string, estado: "ejecutado" | "cancelado"): P
     .eq("id", operacionId);
 }
 
+function cabezasDe(pendiente: LotePendiente): number[] {
+  const n = Math.max(1, pendiente.cantidad);
+  if (pendiente.unidadesPorLote && pendiente.unidadesPorLote.length === n) return pendiente.unidadesPorLote;
+  return Array.from({ length: n }, () => pendiente.unidades ?? 0);
+}
+
 function describirCantidad(pendiente: LotePendiente): string {
   const desc = descriptor(pendiente.especie);
 
   if (desc.unidadEntrada === "cajon") {
-    const uno = `el cajón de ${formatearKg(pendiente.pesoKg)} kg con ${pendiente.unidades} cabezas`;
-    return pendiente.cantidad === 1
-      ? uno
-      : `los ${pendiente.cantidad} cajones de ${pendiente.unidades} cabezas`;
+    const cabezas = cabezasDe(pendiente);
+    if (cabezas.length === 1) return `el cajón de ${formatearKg(pendiente.pesoKg)} kg con ${cabezas[0]} pollos`;
+    const iguales = cabezas.every((c) => c === cabezas[0]);
+    return iguales
+      ? `los ${cabezas.length} cajones de ${formatearKg(pendiente.pesoKg)} kg con ${cabezas[0]} pollos cada uno`
+      : `los ${cabezas.length} cajones (${cabezas.join(" y ")} pollos)`;
   }
 
   const pesos = pesosDe(pendiente);
@@ -699,18 +841,20 @@ function resumenParaConfirmar(pendiente: LotePendiente): string {
   const desc = descriptor(pendiente.especie);
   const proveedor = pendiente.proveedor ? `, de ${pendiente.proveedor}` : "";
 
+  // Sin "Respondé *confirmar* o *cancelar*": suena a contestador, y el bot
+  // entiende un "sí", "dale", "cargalo" o un 👍 igual (confirmacion.ts).
   if (desc.unidadEntrada === "cajon") {
-    const kgPorUnidad = pendiente.unidades
-      ? Math.round((pendiente.pesoKg / pendiente.unidades) * 1000) / 1000
-      : 0;
+    const cabezas = cabezasDe(pendiente);
+    const kgPorPollo = (c: number) => (c ? formatearKg(Math.round((pendiente.pesoKg / c) * 1000) / 1000) : "?");
+    const iguales = cabezas.every((c) => c === cabezas[0]);
     const cuantos =
-      pendiente.cantidad === 1
-        ? `Cajón de *${formatearKg(pendiente.pesoKg)} kg* con *${pendiente.unidades}* pollos`
-        : `*${pendiente.cantidad}* cajones de *${formatearKg(pendiente.pesoKg)} kg* con *${pendiente.unidades}* pollos cada uno`;
-    return (
-      `${desc.emoji} ${cuantos} de ${formatearKg(kgPorUnidad)} kg cada uno${proveedor}.\n` +
-      `¿Lo cargo? Respondé *confirmar* o *cancelar*.`
-    );
+      cabezas.length === 1
+        ? `Cajón de *${formatearKg(pendiente.pesoKg)} kg* con *${cabezas[0]}* pollos (de ${kgPorPollo(cabezas[0])} kg cada uno)`
+        : iguales
+          ? `*${cabezas.length}* cajones de *${formatearKg(pendiente.pesoKg)} kg* con *${cabezas[0]}* pollos cada uno (de ${kgPorPollo(cabezas[0])} kg)`
+          : `*${cabezas.length}* cajones de *${formatearKg(pendiente.pesoKg)} kg*: ${cabezas.map((c) => `*${c}* pollos`).join(" y ")}`;
+    const pregunta = cabezas.length === 1 ? elegir(FRASES.cargarCajon) : elegir(FRASES.cargarCajones);
+    return `${desc.emoji} ${cuantos}${proveedor}.\n${pregunta}`;
   }
 
   const pesos = pesosDe(pendiente);
@@ -731,9 +875,9 @@ function resumenParaConfirmar(pendiente: LotePendiente): string {
       : ` como ${pendiente.categoria} (si no es, o si es de cerdo, decime)`
     : "";
 
-  const laLas = pesos.length === 1 ? "¿La cargo?" : "¿Las cargo?";
+  const laLas = pesos.length === 1 ? elegir(FRASES.cargarUno) : elegir(FRASES.cargarVarias);
   const nota = pendiente.nota ? `\n(${pendiente.nota})` : "";
-  return `${desc.emoji} ${cuantas}${categoria}${proveedor}.${nota}\n${laLas} Respondé *confirmar* o *cancelar*.`;
+  return `${desc.emoji} ${cuantas}${categoria}${proveedor}.${nota}\n${laLas}`;
 }
 
 function normalizarPendiente(interpretacion: Record<string, unknown>): LotePendiente {
@@ -751,6 +895,9 @@ function normalizarPendiente(interpretacion: Record<string, unknown>): LotePendi
     cantidad: Number(interpretacion.cantidad ?? 1),
     ...(Array.isArray(interpretacion.pesosKg) && interpretacion.pesosKg.length > 1
       ? { pesosKg: (interpretacion.pesosKg as unknown[]).map(Number) }
+      : {}),
+    ...(Array.isArray(interpretacion.unidadesPorLote) && interpretacion.unidadesPorLote.length > 1
+      ? { unidadesPorLote: (interpretacion.unidadesPorLote as unknown[]).map(Number) }
       : {}),
     fallos: Number(interpretacion.fallos ?? 0),
     ...(typeof interpretacion.nota === "string" ? { nota: interpretacion.nota } : {}),

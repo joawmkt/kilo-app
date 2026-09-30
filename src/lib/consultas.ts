@@ -1,10 +1,11 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { CatalogoCarniceria, Producto } from "./catalogo";
 import { listarParaElCliente, mediosPagoHabilitados } from "./mediosPago";
-import { buscarSustitutosConStock } from "./alternativas";
+import { buscarSustitutosConStock, opcionesDeReemplazo } from "./alternativas";
 import { estimadorPiezaEntera, estimadorPorUnidad } from "./lotes";
 import { armarRecomendacion, sinNadaParaOcasion, type Ocasion } from "./recomendaciones";
 import { cargarTablaOcasiones } from "./recomendacionesCarniceria";
+import { cierreDeConsulta } from "./tono";
 
 // ============================================================
 // Atención general — especificación del bot, secciones 1.1 y 15 a 21
@@ -399,9 +400,9 @@ async function responderStock(
     }
   }
 
-  partes.push("¿Te preparo algo?");
-
-  return partes.join(" ");
+  // Antes terminaba SIEMPRE con "¿Te preparo algo?": el fundador lo marcó como
+  // insoportable. Ahora a veces se ofrece, a veces no (tono.ts).
+  return `${partes.join(" ")}${cierreDeConsulta(false)}`;
 }
 
 /**
@@ -434,18 +435,28 @@ async function responderSustitutos(
       continue;
     }
 
-    const alternativas = await sustitutosDisponibles(carniceriaId, catalogo, producto, yaExcluidos);
-    if (alternativas.length > 0) {
-      partes.push(`En lugar de ${producto.nombre_display} te puedo dar ${enumerar(alternativas)}.`);
+    // Primero los sustitutos autorizados; si no hay, otros cortes de la misma
+    // ocasión que armó la carnicería (alternativas.ts, 30/09/2026). Bug real:
+    // "¿qué otra cosa puede ser?" → "no tengo nada parecido" dos veces,
+    // habiendo matambre y entraña para la parrilla.
+    const opciones = await opcionesDeReemplazo({ carniceriaId, catalogo, productoFaltante: producto, excluidos: yaExcluidos });
+    const nombre = producto.nombre_display.toLowerCase();
+    if (opciones.productos.length > 0) {
+      opciones.productos.forEach((p) => yaExcluidos.add(p.id));
+      const nombres = opciones.productos.map((p) => (p.alias_display ?? p.nombre_display).toLowerCase());
+      partes.push(
+        opciones.fuente === "ocasion"
+          ? `En lugar de ${nombre} te puedo dar ${enumerar(nombres)}, que también van ${opciones.paraQue ?? "bien"}. ¿Cuál te pongo?`
+          : `En lugar de ${nombre} te puedo dar ${enumerar(nombres)}. ¿Cuál te pongo?`
+      );
     } else {
-      // Sección 1.3: si no hay un reemplazo autorizado CON stock, no se
-      // inventa uno parecido "porque también es carne vacuna".
-      partes.push(`Para reemplazar ${producto.nombre_display} no tengo nada parecido en este momento.`);
+      // Sección 1.3: nunca se inventa un reemplazo que la carnicería no
+      // autorizó ni tiene en sus listas.
+      partes.push(`Para reemplazar ${nombre} no tengo nada parecido en este momento.`);
     }
   }
 
   if (partes.length === 0) return null;
-  partes.push("¿Te preparo algo?");
   return partes.join(" ");
 }
 
@@ -518,7 +529,7 @@ export function respuestaSinDato(tema: TemaConsulta): string {
     case "direccion":
       return "No tengo la dirección a mano para pasártela por acá. ¿Querés que igual te vaya armando el pedido?";
     case "medios_pago":
-      return "Eso te lo confirman en el local al momento de pagar. ¿Te preparo algo mientras tanto?";
+      return "Eso te lo confirman en el local al momento de pagar.";
     case "peso_unidad":
       // No hay ningún peso real cargado ni piezas que hayan entrado: no se
       // inventa un número. Se lo lleva de vuelta a kilos, que siempre sirve.

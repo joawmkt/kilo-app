@@ -18,9 +18,9 @@
 // flujoLotes). Vive acá, en un archivo sin dependencias, para que haya una sola
 // versión.
 const ENTRADAS_REFORMULACION = [
-  "Perdón, no te llegué a entender 🙈 ",
-  "Disculpame, se me escapó. ",
-  "Uy, sigo sin agarrarlo. ",
+  "Perdón, no te agarré bien 🙈 ",
+  "Uy, se me pasó. ",
+  "Disculpá, me perdí. ",
 ];
 
 /**

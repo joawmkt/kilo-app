@@ -108,7 +108,16 @@ export function canonizarLote(texto: string): string {
   return texto.replace(MEDIA_RES_TORCIDA, (_todo, _prefijo, plural) => (plural ? "medias reses" : "media res"));
 }
 
+// "Me entraron 2 cajones", "eran dos cajones": en una carnicería el cajón
+// que LLEGA es de pollo (el carbón viene en bolsas, la verdura no se carga
+// acá). Bug del 30/09: "eran dos cajones" no se reconoció como pollo y la IA
+// de stock cargó "Pollo entero +9 pollos" dos veces, sin cajón ni peso.
+// Solo cuando no nombra otra cosa que venga en cajón.
+const CAJON_SUELTO = /\bcaj(on|ones)\b/;
+const OTRA_COSA_EN_CAJON = /\b(huevos?|maples?|verduras?|frutas?|gaseosas?|cervezas?|bebidas?|vinos?|carbon|lena|sal)\b/;
+
 function hablaDePollos(t: string): boolean {
+  if (CAJON_SUELTO.test(t) && !OTRA_COSA_EN_CAJON.test(t) && !NO_ES_LLEGADA_DE_POLLO.test(t)) return true;
   if (!PATRONES_AVIAR.some((p) => p.test(t))) return false;
   // El cajón siempre es una llegada. El "8 pollos" suelto solo si no hay un
   // verbo que lo convierta en otra cosa.
@@ -209,3 +218,44 @@ export function leerListaDePesos(texto: string): number[] | null {
 
   return numeros.length > 0 ? numeros : null;
 }
+
+// ------------------------------------------------------------
+// Un número suelto: "9", "9 cabezas", "de nueve", "doce"
+// ------------------------------------------------------------
+
+const NUMEROS_EN_PALABRAS: Record<string, number> = {
+  un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9,
+  diez: 10, once: 11, doce: 12, trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
+  dieciocho: 18, diecinueve: 19, veinte: 20, veinticinco: 25, treinta: 30,
+};
+
+/** Un número entero en palabras o cifras ("dos", "2"), o null. */
+export function numeroEnPalabra(palabra: string): number | null {
+  const t = normalizar(palabra).trim();
+  if (/^\d{1,3}$/.test(t)) return Number(t);
+  return NUMEROS_EN_PALABRAS[t] ?? null;
+}
+
+/**
+ * Los números ENTEROS de una respuesta corta ("9", "9 cabezas", "de nueve",
+ * "uno de 9 y otro de 8"), o null si trae otra cosa que no sea eso. Para las
+ * cabezas de un cajón: ahí no hay decimales ni gramos.
+ */
+export function leerEnteros(texto: string): number[] | null {
+  const t = normalizar(texto)
+    .replace(/\b(cabezas?|pollos?|unidades?|u|de|y|e|el|la|uno|una|otro|otra|primero|segundo|cada|son|eran|trae|traen|tiene|tienen|cajon|cajones)\b/g, (m) =>
+      m === "uno" || m === "una" ? m : " "
+    )
+    .replace(/[,;.]/g, " ")
+    .trim();
+  if (!t) return null;
+  const numeros: number[] = [];
+  for (const palabra of t.split(/\s+/)) {
+    if (palabra === "uno" || palabra === "una") continue; // "uno de 9": el uno no es un número acá
+    const n = numeroEnPalabra(palabra);
+    if (n === null) return null;
+    numeros.push(n);
+  }
+  return numeros.length > 0 ? numeros : null;
+}
+

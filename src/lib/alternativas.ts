@@ -1,5 +1,7 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
 import { CatalogoCarniceria, Producto } from "./catalogo";
+import { cargarTablaOcasiones } from "./recomendacionesCarniceria";
+import { OCASIONES_CONCRETAS, tituloDeOcasion, type OcasionConcreta } from "./recomendaciones";
 
 // ============================================================
 // Sustitutos cuando falta un corte — especificación, sección 5
@@ -125,3 +127,84 @@ export async function buscarSustitutoAutorizado(params: {
   const opciones = await buscarSustitutosConStock(params);
   return opciones[0] ?? null;
 }
+
+// ============================================================
+// Qué ofrecer cuando algo se terminó (30/09/2026)
+// ============================================================
+//
+// Bug del 30/09: el carnicero avisó que no había vacío, el bot le preguntó al
+// cliente "¿querés que lo reemplace por otra cosa parecida?", el cliente dijo
+// "sí, ¿qué otra cosa puede ser?" y el bot contestó DOS veces "para
+// reemplazar vacío no tengo nada parecido". Había matambre, entraña, tapa de
+// asado... todo para la parrilla y con stock. El fundador: "el bot debe
+// poder RESOLVER situaciones como esta".
+//
+// En orden:
+//   1. Los sustitutos AUTORIZADOS con stock (la tabla de sustitutos, como
+//      siempre — esos son "lo mismo" para esta carnicería).
+//   2. Si no hay ninguno: los otros cortes de la MISMA OCASIÓN que la
+//      carnicería armó en el panel (Catálogo → Recomendaciones), con stock.
+//      No se dice que son "lo mismo": se ofrecen como lo que son, otros cortes
+//      que también van a la parrilla (o al horno...). Esa tabla la decide el
+//      carnicero, así que no es un reemplazo inventado (regla 1).
+// Nunca algo sin stock, nunca el mismo producto.
+
+export type OpcionesDeReemplazo = {
+  productos: Producto[];
+  /** "sustitutos" = la tabla de sustitutos; "ocasion" = otros cortes de la misma ocasión. */
+  fuente: "sustitutos" | "ocasion" | "ninguna";
+  ocasion?: OcasionConcreta;
+  /** "para la parrilla", "para el horno"... si la fuente es la ocasión. */
+  paraQue?: string;
+};
+
+export async function opcionesDeReemplazo(params: {
+  carniceriaId: string;
+  catalogo: CatalogoCarniceria;
+  productoFaltante: Producto;
+  cantidadNecesaria?: number;
+  excluidos?: Set<string>;
+  maximo?: number;
+}): Promise<OpcionesDeReemplazo> {
+  const { carniceriaId, catalogo, productoFaltante, cantidadNecesaria = 0, maximo = 3 } = params;
+  const excluidos = new Set(params.excluidos ?? []);
+  excluidos.add(productoFaltante.id);
+
+  const autorizados = await buscarSustitutosConStock({
+    carniceriaId,
+    catalogo,
+    productoFaltante,
+    cantidadNecesaria,
+    yaExcluidos: excluidos,
+  });
+  if (autorizados.length > 0) {
+    return { productos: autorizados.slice(0, maximo).map((o) => o.producto), fuente: "sustitutos" };
+  }
+
+  const tabla = await cargarTablaOcasiones(carniceriaId);
+  for (const ocasion of OCASIONES_CONCRETAS) {
+    const lista = tabla[ocasion].cortes;
+    if (!lista.includes(productoFaltante.codigo)) continue;
+    const productos = lista
+      .map((codigo) => catalogo.porCodigo.get(codigo))
+      .filter(
+        (p): p is Producto =>
+          p != null &&
+          !excluidos.has(p.id) &&
+          p.unidad === productoFaltante.unidad &&
+          p.stock_actual > 0 &&
+          p.stock_actual >= cantidadNecesaria
+      )
+      .slice(0, maximo);
+    if (productos.length > 0) {
+      return {
+        productos,
+        fuente: "ocasion",
+        ocasion,
+        paraQue: tituloDeOcasion(ocasion).replace(/^Para /, "para ").replace(/\s*\(.*\)$/, ""),
+      };
+    }
+  }
+  return { productos: [], fuente: "ninguna" };
+}
+

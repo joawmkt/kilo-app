@@ -193,6 +193,10 @@ mensaje, casi siempre es el paso 2 agarrando algo que no era suyo.
 | `src/lib/recomendacionesCarniceria.ts` | La tabla de CADA carnicería (la edita en el panel, Catálogo → Recomendaciones). Decide cuál se usa |
 | `src/lib/horaRetiro.ts` | La hora de retiro, leída sin IA y contrastada con el horario del local |
 | `src/lib/instrucciones.ts` | Parte un mensaje del carnicero en instrucciones de distinto tipo |
+| `src/lib/memoriaCharla.ts` | Lo que vale para toda la charla del día (personas, lo que faltó) |
+| `src/lib/decisionesCliente.ts` | Decidir sin IA: reparto de kilos, "X por persona", "cambiá X por Y" |
+| `src/lib/respuestaCortaStock.ts` | Respuestas de una palabra del carnicero ("vacuna", "7") sin IA |
+| `src/lib/tono.ts` | Cómo habla el bot: variantes, filtro de muletillas, cierre |
 | `src/lib/whatsapp/entrante.ts` | Por dónde entra todo; `atenderCarniceroConCola` atiende las instrucciones de a una |
 | `src/lib/whatsapp/ventana.ts` | La ventana de agrupación de 6 s del cliente |
 | `src/lib/pedidoEventos.ts` | El historial del pedido y el versionado |
@@ -345,6 +349,30 @@ bien escrita, o un mensaje "limpio", es un detector que falla todos los días. R
    atienden en fila. Nunca el primer flujo que reconoce algo se queda con todo.
 5. **Audio y texto van por el mismo camino.** Si hay dos caminos, uno se queda viejo.
 
+### Patrón 9 — Un dato que el cliente ya dio no se vuelve a preguntar (NUNCA)
+
+*Bugs del 30/09: "asado para 15 personas" en una consulta, y dos mensajes después "¿para
+cuántas personas es?"; el carnicero dijo que no había vacío, el cliente pidió cambiarlo por
+matambre y el bot volvió a preguntar las personas y no sabía cuántos kilos eran.*
+
+El estado del pedido se limpia cada vez que el pedido cambia de manos. Por eso lo que vale
+para toda la charla vive aparte, en `conversaciones.memoria` (`memoriaCharla.ts`). Reglas:
+
+1. **Todo dato del cliente se guarda en el mensaje en que lo dijo**, sea del tipo que sea
+   (una consulta también). Leerlo con texto si se puede (`leerPersonas`).
+2. **Antes de preguntar algo, mirar si ya se sabe**: pedido en curso → memoria → historial.
+3. **Si se puede calcular, se calcula y se PROPONE** (kilos por corte, "medio por persona",
+   el peso que falta por diferencia). Preguntar es el último recurso. Una propuesta se
+   acepta con un sí.
+4. **Cuando algo falta, se ofrece lo que hay**, no "¿querés que lo reemplace?".
+
+### Patrón 10 — El tono también es un bug
+
+Un bot correcto que habla como un call center ("Entendido", "necesito que me digas
+exactamente", "¿Te preparo algo?" en cada mensaje) se siente roto. Las frases fijas tienen
+variantes (`tono.ts`, `FRASES`), lo que escribe la IA pasa por `suavizar`, y nunca se
+repite el mismo cierre. Si aparece una muletilla nueva, se suma a `suavizar` y al prompt.
+
 ---
 
 ## Cómo probar
@@ -388,6 +416,16 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | (carnicero) "me entraron 3 mediarres. una de 96, una de 110 y una de 104" | Un lote de 3 medias con sus 3 pesos |
 | (carnicero) "no era tan difícil si cargalo" a "¿Las cargo?" | Cargar |
 | (carnicero) "llegó una media res de 104, un cajón de pollo de 8 y piqué 5 de nalga" | Tres cosas, de a una, sin repetir nada |
+| "Quiero asado para 15, ¿qué me recomendás?" y después "vacío, costilla y chorizos" | Propone kilos para 15 sin preguntar personas |
+| "más de vacío que de costilla" a la propuesta | Rehace con números; "sí" la acepta |
+| "medio chorizo por persona" | 8 chorizos (15 personas) |
+| El carnicero marca sin stock el vacío | El cliente recibe opciones con stock; "el matambre" entra con los kg del vacío |
+| "cambiá el vacío por el matambre" | Matambre con la cantidad del vacío |
+| "gracias por todo" | Un de nada, no "no entendí" |
+| (carnicero) "me entraron 2 cajones de pollo" + "9 cabezas" | 2 cajones de 9 |
+| (carnicero) "eran dos cajones" después de cargar uno | Propone cargar 1 más, no 2 |
+| (carnicero) "hice 10 k de picada común" + "nalga y costilla" + "7" | Nalga 7 (vacuna, sin preguntar), costilla 3 por diferencia |
+| (carnicero) "entró una media res de cerdo y una de vaca" | Dos lotes, sin preguntar "¿vaca o cerdo?" |
 | "quiero una promo" | Armar el pedido de la promo, no repetir la lista |
 | "son 3 pata muslo" | 3 u. (~kg) sin pedir kilos |
 | Pedido confirmado + "quiero sacar el vacío" | Nueva versión sin vacío, resumen y reaprobación; nunca preguntar personas |

@@ -297,3 +297,37 @@ export function corregirPorNombrePropio(
   }
   return producto;
 }
+
+/**
+ * Qué productos del catálogo nombra el texto, y DÓNDE (para saber el orden:
+ * en "cambiá el vacío por el matambre" importa cuál viene primero).
+ *
+ * Si dos nombres se pisan ("matambre" adentro de "matambre de cerdo"), queda
+ * el más largo: el que dijo "matambre de cerdo" no pidió matambre vacuno.
+ */
+export function productosEnTexto(catalogo: CatalogoCarniceria, texto: string): { codigo: string; posicion: number }[] {
+  const t = ` ${normalizar(texto).replace(/[^a-z0-9ñ]+/g, " ")} `;
+  const encontrados: { codigo: string; posicion: number; largo: number }[] = [];
+  for (const producto of catalogo.productos) {
+    let mejor: { posicion: number; largo: number } | null = null;
+    for (const palabra of vocabularioDe(producto)) {
+      const f = normalizar(palabra).replace(/[^a-z0-9ñ]+/g, " ").trim();
+      if (!f) continue;
+      for (const variante of [f, `${f}s`, `${f}es`]) {
+        const i = t.indexOf(` ${variante} `);
+        if (i >= 0 && (!mejor || variante.length > mejor.largo)) mejor = { posicion: i, largo: variante.length };
+      }
+    }
+    if (mejor) encontrados.push({ codigo: producto.codigo, ...mejor });
+  }
+  // Fuera los que quedan adentro de otro más largo.
+  return encontrados
+    .filter(
+      (e) =>
+        !encontrados.some(
+          (o) => o !== e && o.largo > e.largo && o.posicion <= e.posicion && o.posicion + o.largo >= e.posicion + e.largo
+        )
+    )
+    .map(({ codigo, posicion }) => ({ codigo, posicion }));
+}
+

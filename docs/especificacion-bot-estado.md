@@ -454,3 +454,37 @@ restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida
   que guarda, se copia la de fábrica entera y desde ahí manda la suya. "Volver a la de
   fábrica" restaura una ocasión.
 
+### 30/09/2026 — Retener los datos, decidir en vez de preguntar, hablar como un carnicero
+
+- **Memoria de la charla (`memoriaCharla.ts`, migración 0030).** Lo que vale para toda la
+  charla del día queda guardado aunque el pedido cambie de estado: para cuántos es y lo que
+  el carnicero dijo que faltó (con la cantidad). "Para 15 personas" se lee sin IA de
+  cualquier mensaje, también de una consulta. Nunca más "¿para cuántas personas es?"
+  después de que lo dijo.
+- **El bot decide (`decisionesCliente.ts`).** Con las personas sabidas, PROPONE los kilos de
+  cada corte ("Para 15 personas calculo unos 6,5 kg. Te pongo 3,25 de vacío, 3,25 de
+  costilla y 8 chorizos. ¿Va así?"); "más de vacío" rehace la cuenta con números; un sí la
+  acepta. Ya no pide el desglose hombres/mujeres (si lo da, se usa). "Medio chorizo por
+  persona" se calcula. Las unidades se redondean para arriba (7,5 chorizos → 8).
+- **Cuando algo se terminó (`opcionesDeReemplazo` en alternativas.ts).** El aviso al cliente
+  ya trae las opciones reales: sustitutos autorizados con stock, o si no, otros cortes de la
+  misma ocasión de la tabla de recomendaciones de la carnicería ("te lo puedo cambiar por
+  matambre, entraña o tapa de asado, que también van para la parrilla. ¿Cuál te pongo?").
+  Fase `esperando_reemplazo`: "el matambre", "dale", "sacalo", "¿tenés entraña?" se
+  resuelven sin IA, y el reemplazo entra con la cantidad del que faltó.
+- **"Cambiá X por Y" (`leerReemplazo`).** En cualquier momento (pedido armándose, esperando
+  al carnicero o ya confirmado), Y entra con la cantidad que tenía X.
+- **Tono (`tono.ts`).** Frases fijas con variantes; las preguntas de la IA pasan por un filtro
+  que saca "Entendido", "necesito que me digas exactamente", "(Por ejemplo: ...)" y el
+  "¿Te preparo algo?" del final. Reglas de estilo rioplatense en el prompt. El resumen varía
+  el encabezado y la pregunta, y la sugerencia de carbón reemplaza la pregunta final.
+- **Cierre.** "Gracias", "te agradezco", "chau", "genio" se contestan con un de nada (y si
+  quedaba algo pendiente, se lo recuerda una vez).
+- **Carnicero:** "2 cajones" + "9 cabezas" carga los dos cajones; "uno de 9 y otro de 8"
+  también; "cajones" a secas es pollo; "eran dos cajones" justo después de cargar uno propone
+  cargar el que faltó (no dos más); "nalga" a secas es vacuna y la picada siempre es vacuna
+  (no se pregunta); "vacuna" y "7" como respuesta se leen sin IA (`respuestaCortaStock.ts`);
+  en una picada de dos cortes, con el peso de uno el otro sale por diferencia; "entró una
+  media res de cerdo y una de vaca" son dos lotes; "nalga y costilla" ya no se parte en dos
+  instrucciones. Mensajes sin "Respondé *confirmar* o *cancelar*".
+

@@ -1,5 +1,6 @@
 import { detectarEspecieDeLote, especieExplicita } from "./deteccionLote";
 import { hablaDeTrozado } from "./lecturaTrozado";
+import { clasificarRespuesta } from "./confirmacion";
 
 // ============================================================
 // Partir un mensaje del carnicero en instrucciones (29/09/2026)
@@ -66,17 +67,23 @@ function clasificar(texto: string, anterior: Clase | null, nombraProducto: (t: s
 
   // "...y una de cerdo de 45" después de una media res vacuna: es otra media
   // res, de otro animal.
+  // res, de otro animal. Con o sin peso: "entró una media res de cerdo y una
+  // de vaca" son DOS medias (bug del 30/09: se cargó la de cerdo y la de vaca
+  // se perdió).
   if (anterior?.startsWith("lote:")) {
     const nombrada = especieExplicita(t);
-    if (nombrada && `lote:${nombrada}` !== anterior && /\d/.test(t)) return `lote:${nombrada}` as Clase;
+    if (nombrada && nombrada !== "aviar" && `lote:${nombrada}` !== anterior) return `lote:${nombrada}` as Clase;
   }
 
   if (hablaDeTrozado(t)) return "trozado";
   if (anterior === "trozado" && CONTINUA_TROZADO.test(t)) return "resto";
   if (VERBO_DE_STOCK.test(t)) return "stock";
   // "20 kg de asado" suelto, después de una media res: nombra un producto,
-  // entonces es una carga de stock y no un peso más de la media res.
-  if (anterior !== null && anterior !== "stock" && nombraProducto(t)) return "stock";
+  // entonces es una carga de stock y no un peso más de la media res. SOLO
+  // después de un lote: "nalga y costilla" (contestando de qué hizo la
+  // picada) es UNA respuesta con dos productos, no dos instrucciones (bug
+  // del 30/09: se partió y después preguntó "¿cuántos kilos de costilla?").
+  if (anterior?.startsWith("lote:") && nombraProducto(t)) return "stock";
   return "resto";
 }
 
@@ -120,9 +127,19 @@ export function partirInstrucciones(texto: string, nombraProducto: (t: string) =
     pedazos.push({ ...crudo, clase });
   }
 
-  // 3. Si al final hay un solo tipo de cosa, no se corta nada.
-  const clases = new Set(pedazos.map((p) => p.clase));
-  if (pedazos.length <= 1 || clases.size <= 1) return [limpio];
+  // 3. Solo se corta si hay DOS o más cosas de verdad distintas. Un pedazo
+  //    "resto" al principio cuenta solo si es un sí/no (la respuesta a lo que
+  //    estaba pendiente: "sí, y llegó un cajón de pollo de 8").
+  const primeroEsRespuesta =
+    pedazos[0]?.clase === "resto" && clasificarRespuesta(limpio.slice(pedazos[0].desde, pedazos[0].hasta)) !== null;
+  const fuertes = new Set(pedazos.filter((p) => p.clase !== "resto").map((p) => p.clase));
+  if (pedazos.length <= 1) return [limpio];
+  if (fuertes.size < 2 && !(primeroEsRespuesta && fuertes.size >= 1)) return [limpio];
+  // Un "resto" al principio que NO es un sí/no se pega al siguiente.
+  if (pedazos[0].clase === "resto" && !primeroEsRespuesta && pedazos.length > 1) {
+    pedazos[1].desde = pedazos[0].desde;
+    pedazos.shift();
+  }
 
   // 4. Cada instrucción tiene que entenderse SOLA, porque se atiende sola.
   //    "llegó una media res de 104, un cajón de pollo de 8": el cajón no tiene

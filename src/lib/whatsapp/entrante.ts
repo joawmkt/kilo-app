@@ -11,7 +11,7 @@ import {
   transcribirAudioDeCliente,
 } from "@/lib/flujoPedidos";
 import { esCarniceroAutorizado } from "@/lib/quienEs";
-import { probarComoLote } from "@/lib/flujoLotes";
+import { probarComoLote, probarCorreccionDeLote } from "@/lib/flujoLotes";
 import { probarComoTrozado } from "@/lib/flujoTrozado";
 import { registrarMensaje } from "./conversaciones";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
@@ -231,6 +231,11 @@ async function atenderInstruccionDeCarnicero(params: {
   const respuestaDecision = await procesarDecisionCarnicero({ carniceriaId, carniceroTelefono: telefono, texto });
   if (respuestaDecision !== null) return respuestaDecision;
 
+  // "Eran dos cajones" justo después de cargar uno: no llegaron dos más, le
+  // faltó uno a lo que se acaba de cargar (ver probarCorreccionDeLote).
+  const respuestaCorreccion = await probarCorreccionDeLote({ carniceriaId, telefono, texto });
+  if (respuestaCorreccion !== null) return respuestaCorreccion;
+
   // ¿Está avisando que entró mercadería (media res, media res de cerdo o cajón
   // de pollo)? Va ANTES del flujo de stock genérico porque son dos operaciones
   // distintas: una carga de stock SUMA kilos a un producto, una media res
@@ -319,7 +324,7 @@ async function atenderCarniceroConCola(params: {
     await getSupabaseAdmin().from("operaciones_stock").update({ cola_instrucciones: cola }).eq("id", despues.id);
     const aviso =
       resto.length > 0
-        ? `\n\n(Anoté también lo otro que me dijiste; lo vemos apenas cerremos esto: ${cola.map((c) => `«${c}»`).join(", ")}.)`
+        ? `\n\n(Después seguimos con ${cola.map((c) => `«${c}»`).join(" y ")}, no me olvido.)`
         : "";
     return `${respuesta ?? ""}${aviso}`.trim() || null;
   }

@@ -5,6 +5,9 @@ import { registrarEvento } from "./pedidoEventos";
 import { crearAviso } from "./notificaciones";
 import { moverStock } from "./lotes";
 import type { ItemGuardadoPedido } from "./flujoPedidos";
+import { cargarCatalogo } from "./catalogo";
+import { opcionesDeReemplazo } from "./alternativas";
+import { recordar, type FaltanteDeLaCharla } from "./memoriaCharla";
 
 // ============================================================
 // Rechazo conversado con el carnicero — especificación, secciones 36 y 50
@@ -275,23 +278,79 @@ export async function responderConsultaCarnicero(params: {
     // normal cuando el cliente conteste.
     const quedan = items.filter((item) => !faltantes.some((f) => f.valor === item.producto_id));
 
+    // Lo que faltó, CON la cantidad que había pedido el cliente. Se guarda en
+    // el pedido y en la memoria de la charla: bug del 30/09, el cliente dijo
+    // "cambiá el vacío por matambre" y el bot ya no sabía que eran 4 kg (y
+    // encima volvió a preguntar para cuántas personas era).
+    const quitados: FaltanteDeLaCharla[] = items
+      .filter((item) => faltantes.some((f) => f.valor === item.producto_id))
+      .map((item) => ({
+        producto_id: item.producto_id,
+        producto_codigo: item.producto_codigo,
+        nombre: item.nombre_display,
+        cantidad: item.cantidad,
+        unidad: item.unidad,
+        unidades_cliente: item.unidades_cliente ?? null,
+      }));
+
+    // Y en vez de preguntar "¿querés que lo reemplace por algo parecido?"
+    // (para que conteste "sí, ¿qué puede ser?"), se le ofrece directamente qué
+    // hay. El fundador: "el bot debe poder RESOLVER situaciones como esta".
+    const opciones: { codigo: string; nombre: string }[] = [];
+    let paraQue: string | undefined;
+    try {
+      const catalogo = await cargarCatalogo(carniceriaId);
+      const excluidos = new Set<string>([...items.map((i) => i.producto_id)]);
+      for (const quitado of quitados) {
+        const producto = catalogo.porCodigo.get(quitado.producto_codigo);
+        if (!producto) continue;
+        const encontradas = await opcionesDeReemplazo({
+          carniceriaId,
+          catalogo,
+          productoFaltante: producto,
+          cantidadNecesaria: quitado.cantidad,
+          excluidos,
+        });
+        for (const p of encontradas.productos) {
+          excluidos.add(p.id);
+          opciones.push({ codigo: p.codigo, nombre: (p.alias_display ?? p.nombre_display).toLowerCase() });
+        }
+        paraQue ??= encontradas.paraQue;
+      }
+    } catch (err) {
+      console.error("No se pudieron buscar opciones de reemplazo", err);
+    }
+
     await guardarConsulta(pedidoId, null);
+    const faltantesTexto = quitados.map((q) => q.nombre.toLowerCase()).join(" y ") || faltantes.map((f) => f.etiqueta).join(", ");
+    const lista =
+      opciones.length <= 1
+        ? opciones[0]?.nombre ?? ""
+        : `${opciones.slice(0, -1).map((o) => o.nombre).join(", ")} o ${opciones[opciones.length - 1].nombre}`;
+    const mensajeCliente =
+      opciones.length > 0
+        ? `Uy, me quedé sin ${faltantesTexto} 🙈 Te lo puedo cambiar por ${lista}${paraQue ? `, que también van ${paraQue}` : ""}. ¿Cuál te pongo? Si preferís, lo sacamos y seguimos con el resto.`
+        : quedan.length > 0
+          ? `Uy, me quedé sin ${faltantesTexto} 🙈 y no tengo nada parecido ahora. ¿Lo sacamos y seguimos con el resto?`
+          : `Uy, me quedé sin ${faltantesTexto} 🙈 ¿Querés que te cuente qué tengo hoy?`;
+
     await supabaseAdmin
       .from("pedidos")
       .update({
-        estado: quedan.length > 0 ? "pendiente_aclaracion" : "cancelado",
+        estado: quedan.length > 0 || opciones.length > 0 ? "pendiente_aclaracion" : "cancelado",
         items: quedan,
-        interpretacion: null,
-        pregunta_pendiente: null,
+        // Fase propia: la próxima respuesta ("el matambre", "dale", "sacalo")
+        // se lee sabiendo qué faltó y qué se le ofreció (manejarRespuestaReemplazo).
+        interpretacion:
+          quedan.length > 0 || opciones.length > 0
+            ? { fase: "esperando_reemplazo", faltantes: quitados, opciones: opciones.map((o) => o.codigo) }
+            : null,
+        pregunta_pendiente: quedan.length > 0 || opciones.length > 0 ? mensajeCliente : null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", pedidoId);
 
-    const faltantesTexto = faltantes.map((f) => f.etiqueta).join(", ");
-    const mensajeCliente =
-      quedan.length > 0
-        ? `Uy, me quedé sin ${faltantesTexto} 🙈 El resto del pedido lo tengo. ¿Querés que lo reemplace por otra cosa parecida, o lo dejamos sin eso?`
-        : `Uy, me quedé sin ${faltantesTexto} 🙈 ¿Querés que veamos alguna otra opción?`;
+    await recordar(carniceriaId, telefonoCliente, { faltantes: quitados });
 
     await enviarWhatsapp({
       carniceriaId,

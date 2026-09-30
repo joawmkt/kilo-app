@@ -225,6 +225,10 @@ Reglas de las transformaciones:
   - Si no dijo de qué salió ("hice 3 kilos de picada"), es un ingreso normal de picada, sin transformación:
     no inventes un origen.
 
+VACA POR DEFECTO — un corte nombrado a secas es VACUNO: "nalga" es nalga (vacuna), "vacío" es vacío
+(vacuno). El cerdo siempre se nombra ("nalga de cerdo", "bondiola"). La carne PICADA es SIEMPRE de carne
+vacuna. NUNCA preguntes "¿vacuna o de cerdo?" si el carnicero no habló de cerdo en la charla.
+
 POLLO ENTERO — se cuenta en CABEZAS, no en kilos, SIEMPRE (entre o salga). Cuando el carnicero dice cuántos
 ("trocé 3 pollos", "entraron 8"), poné cantidad = cantidad de pollos y unidad = "unidad". El sistema sabe cuánto
 pesa cada uno. Si falta el número, preguntá "¿Cuántos pollos?", NUNCA "¿cuántos kilos de pollo entero?".

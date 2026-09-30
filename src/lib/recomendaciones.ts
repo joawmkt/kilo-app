@@ -1,4 +1,5 @@
 import type { Producto } from "./catalogo";
+import { elegir } from "./tono";
 
 /** Lo mínimo de un producto que hace falta para recomendarlo (sirve también en el panel). */
 export type ProductoParaRecomendar = Pick<Producto, "id" | "codigo" | "nombre_display" | "alias_display" | "stock_actual">;
@@ -209,6 +210,9 @@ export function ocasionPedida(texto: string): Ocasion | null {
   if (ocasion && (sugerencia || /\bpara\s+(la\s+|el\s+|un\s+|hacer\s+)?/.test(t) || /^(y\s+)?(algo|que)\b/.test(t))) {
     return ocasion;
   }
+  // "Quiero asado para 15, ¿qué me recomendás?": asado + pedido de sugerencia
+  // es la comida, no el corte → parrilla.
+  if (sugerencia && /\basado\b/.test(t)) return "parrilla";
   if (sugerencia) return "general";
   return null;
 }
@@ -284,7 +288,7 @@ export function armarRecomendacion<P extends ProductoParaRecomendar>(params: {
   if (acompanan.length > 0) {
     partes.push(cortes.length > 0 ? `Y para acompañar, ${enumerar(acompanan)}.` : `${def.titulo} tengo ${enumerar(acompanan)}.`);
   }
-  partes.push("¿Qué te preparo?");
+  partes.push(elegir(["¿Cuál te tienta?", "¿Qué te separo?", "¿Qué te llevás?", "Decime cuál y te lo aparto."]));
   return partes.join(" ");
 }
 

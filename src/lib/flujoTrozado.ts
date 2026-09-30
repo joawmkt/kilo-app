@@ -88,7 +88,7 @@ function resumen(p: Required<Pick<TrozadoPendiente, "unidades" | "salidas" | "kg
     `${lineas.join("\n")}\n` +
     (hayEstimadas ? "Las que tienen ~ las calculé con tu tabla; se corrigen solas cuando se venden.\n" : "") +
     (p.aviso ? `${p.aviso}\n` : "") +
-    `¿Lo cargo? Respondé *confirmar* o *cancelar*. Si pesaste otra presa, decime el peso y recalculo.`
+    `¿Lo cargo? Si pesaste otra presa, pasame el peso y recalculo.`
   );
 }
 

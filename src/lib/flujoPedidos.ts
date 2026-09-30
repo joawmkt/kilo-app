@@ -1,5 +1,13 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
-import { cargarCatalogo, nombreParaCliente, nombreDichoPor, corregirPorNombrePropio, CatalogoCarniceria, Producto } from "./catalogo";
+import {
+  cargarCatalogo,
+  nombreParaCliente,
+  nombreDichoPor,
+  corregirPorNombrePropio,
+  productosEnTexto,
+  CatalogoCarniceria,
+  Producto,
+} from "./catalogo";
 import { detectarPreparacion, etiquetaPreparacion } from "./preparacion";
 import { descargarAudio, enviarWhatsapp, type ReferenciaMedia } from "./whatsapp";
 import { avisarPedidoPendiente, crearAviso, revisarStockDeProducto } from "./notificaciones";
@@ -22,6 +30,9 @@ import { extraerHora, resolverHora, validarIso, formatearRetiro } from "./horaRe
 import { cargarAgenda } from "./horarios";
 import { historialReciente } from "./historial";
 import { ocasionPedida } from "./recomendaciones";
+import { elegir, FRASES, suavizar, esCierre } from "./tono";
+import { leerMemoria, recordar, leerPersonas, totalDePersonas, type FaltanteDeLaCharla } from "./memoriaCharla";
+import { cantidadPorPersona, redondearUnidades, repartir, leerPreferenciaReparto, leerReemplazo, type Reparto } from "./decisionesCliente";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
 import { buscarSustitutoAutorizado } from "./alternativas";
 import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt, preguntaPorPeso, MARCA_PIEZA_ENTERA, textoPeso } from "./consultas";
@@ -112,12 +123,21 @@ type FaseInterna =
       /** Ver `PropuestaHora`: una hora que se le propuso y espera un sí. */
       propuestaHoraIso?: string;
       propuestaHoraMensaje?: string;
+      /**
+       * Los kilos que el BOT propuso para cada corte de asado ("te pongo 3,5
+       * de vacío y 3,25 de costilla, ¿va?"). Un sí los acepta; "más de vacío"
+       * los rehace. Ver `manejarPropuestaReparto` (30/09/2026).
+       */
+      propuestaReparto?: Reparto;
     }
   // `intentos` cuenta cuántas veces seguidas preguntamos la hora sin obtenerla.
   // Sirve para no repetir la misma frase indefinidamente: a la tercera el bot
   // cambia el pedido de dato en vez de sonar como un disco rayado.
   | { fase: "esperando_hora_retiro"; intentos?: number; propuestaHoraIso?: string; propuestaHoraMensaje?: string }
   | { fase: "esperando_confirmacion_sustitucion"; sustituciones: Sustitucion[] }
+  // El carnicero avisó que algo se terminó y el bot le ofreció al cliente con
+  // qué cambiarlo (decisionCarnicero.ts). Ver `manejarRespuestaReemplazo`.
+  | { fase: "esperando_reemplazo"; faltantes: FaltanteDeLaCharla[]; opciones: string[] }
   // Especificación, sección 31: el resumen completo ya se le mostró al cliente
   // y estamos esperando que diga que sí. Recién ahí el pedido sale al
   // carnicero. Es un paso más de conversación, a propósito: cuesta un mensaje
@@ -321,50 +341,82 @@ function calcularKgAsadoObjetivo(personas: InfoPersonas): number | null {
 // el fundador cambia esos dos, este se mueve solo.
 const KG_POR_PERSONA_PROMEDIO = (KG_POR_HOMBRE + KG_POR_MUJER) / 2;
 
-/** Cuántas veces se insiste con el desglose antes de resolver con el promedio. */
-const MAXIMO_INTENTOS_PERSONAS = 2;
 
-function armarPreguntaPersonas(personas: InfoPersonas, intentos: number): string {
-  const total = personas.sinGenero;
-
-  if (total != null) {
-    if (intentos <= 1) {
-      return `Para calcular mejor la cantidad de asado, ¿más o menos cuántos de esos ${total} son hombres y cuántas mujeres? (tomamos ${Math.round(KG_POR_HOMBRE * 1000)}g por hombre y ${Math.round(KG_POR_MUJER * 1000)}g por mujer)`;
-    }
-    // Segundo intento: la misma pregunta pero mucho más corta y con el
-    // formato de respuesta puesto como ejemplo.
-    return `Perdón, te lo pregunto más simple: de esos ${total}, ¿cuántos varones y cuántas mujeres? Podés contestarme así: *2 y 1*.`;
-  }
-
+function armarPreguntaPersonas(_personas: InfoPersonas, intentos: number): string {
+  // Solo el total: el desglose por género ya no se pide (30/09/2026). Si lo
+  // da solo ("10 hombres y 5 mujeres"), se usa.
   if (intentos <= 1) {
-    return "¿Para cuántas personas es? Así te tiro una cantidad aproximada de asado 🙂 (más o menos, ¿cuántos hombres y cuántas mujeres son?)";
+    return elegir([
+      "¿Para cuántos es? Así te calculo la cantidad 🙂",
+      "¿Cuántos son a comer? Así te digo cuánto llevar 🙂",
+      "¿Para cuánta gente es? Te calculo los kilos.",
+    ]);
   }
-  return "Decime nomás cuántos son en total y arranco por ahí 🙂 (ej: *somos 4*).";
+  return "Decime más o menos cuántos son (ej: *somos 6*) y te armo la cantidad.";
 }
 
 /**
  * Kilos estimados cuando el cliente no quiso o no pudo desglosar por género.
- * Solo se usa después de MAXIMO_INTENTOS_PERSONAS intentos y con un total
+ * Se usa cuando se sabe cuántos son pero no cuántos hombres y mujeres, con un total
  * conocido — nunca se inventa la cantidad de gente.
  */
 function kgAsadoConPromedio(total: number): number {
   return Math.round(total * KG_POR_PERSONA_PROMEDIO * 100) / 100;
 }
 
-function armarPreguntaRecomendacion(
-  catalogo: CatalogoCarniceria,
-  items: ItemParcialPedido[],
-  kgObjetivo: number,
-  nombrar: (producto: Producto) => string
-): string {
-  const nombres = items
-    .filter((i) => esCategoriaAsado(catalogo, i.producto_codigo))
-    .map((i) => {
-      const producto = catalogo.porCodigo.get(i.producto_codigo!);
-      return producto ? nombrar(producto) : i.producto_codigo;
-    })
-    .join(" y ");
-  return `Para eso calculamos un total de ${kgObjetivo}kg de asado. ¿Cuánto querés de ${nombres || "cada corte"}, o preferís más de uno que de otro?`;
+/** "3,5 kg" / "750 g" para mostrar kilos al cliente. */
+function kgATexto(kg: number): string {
+  if (kg < 1) return `${Math.round(kg * 1000)} g`;
+  return `${kg.toLocaleString("es-AR", { maximumFractionDigits: 2 })} kg`;
+}
+
+/**
+ * La propuesta de kilos por corte, ya repartida y escrita. Los cortes que ya
+ * tienen cantidad se respetan y se reparte el resto entre los que no.
+ */
+function proponerReparto(params: {
+  catalogo: CatalogoCarniceria;
+  items: ItemParcialPedido[];
+  kgObjetivo: number;
+  personas: InfoPersonas;
+  nombrar: (producto: Producto) => string;
+  preferido?: { codigo: string; mas: boolean };
+}): { texto: string; reparto: Reparto } {
+  const { catalogo, items, kgObjetivo, personas, nombrar, preferido } = params;
+  const deAsado = items.filter((i) => esCategoriaAsado(catalogo, i.producto_codigo));
+  const fijos = deAsado.filter((i) => i.cantidad != null).reduce((a, i) => a + (i.cantidad ?? 0), 0);
+  const sinCantidad = deAsado.filter((i) => i.cantidad == null).map((i) => i.producto_codigo!);
+  const aRepartir = Math.max(kgObjetivo - fijos, 0.5 * sinCantidad.length);
+  const reparto: Reparto = repartir(aRepartir, sinCantidad, preferido);
+
+  // Chorizos y morcillas sin cantidad: medio por persona, redondeado para
+  // arriba (lo que suele llevar la gente). Se propone; si quiere otra cosa, lo dice.
+  const total = totalDePersonas(personas);
+  const embutidos = items.filter((i) => {
+    const p = i.producto_codigo ? catalogo.porCodigo.get(i.producto_codigo) : undefined;
+    return i.cantidad == null && p?.familia === "embutidos" && p.unidad === "unidad";
+  });
+  if (total) {
+    for (const e of embutidos) reparto.push({ codigo: e.producto_codigo!, kg: redondearUnidades(total * 0.5), unidad: "unidad" });
+  }
+
+  const nombreDe = (codigo: string) => {
+    const producto = catalogo.porCodigo.get(codigo);
+    return producto ? nombrar(producto).toLowerCase() : codigo;
+  };
+  const partes = reparto.map((r) =>
+    r.unidad === "unidad" ? `${r.kg} ${nombreDe(r.codigo)}${/s$/.test(nombreDe(r.codigo)) ? "" : "s"}` : `${kgATexto(r.kg)} de ${nombreDe(r.codigo)}`
+  );
+  const lista = partes.length <= 1 ? partes[0] ?? "" : `${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
+  const intro = preferido
+    ? elegir(["Dale, entonces", "Joya, entonces", "Listo, entonces"])
+    : total
+      ? `Para ${total} personas calculo unos ${kgATexto(Math.round(kgObjetivo * 4) / 4)} de carne. Te pongo`
+      : `Te pongo`;
+  const cierre = preferido
+    ? elegir(["¿Así?", "¿Va así?", "¿Te lo dejo así?"])
+    : elegir(["¿Va así, o preferís más de uno que de otro?", "¿Te parece, o querés más de alguno?", "¿Así está bien o le cambio algo?"]);
+  return { texto: `${intro} ${lista}. ${cierre}`, reparto };
 }
 
 // Resuelve como máximo UNA marca "usarResto" por vez (ambigüedad entre dos
@@ -710,7 +762,9 @@ async function armarYGuardarPedido(params: {
       }
       return `De ${nombrar(producto)} todavía no tengo cargado cuánto pesa cada una. ¿Me decís más o menos cuántos kilos querés?`;
     }
-    const cantidadReal = convertida.kg;
+    // Lo que se vende por unidad va entero y redondeado para arriba: "medio
+    // chorizo por persona" para 15 son 8 chorizos, no "7,5 unidades" (30/09).
+    const cantidadReal = producto.unidad === "kg" ? convertida.kg : redondearUnidades(convertida.kg);
     const nombre = nombrar(producto);
 
     idsYaUsados.add(producto.id);
@@ -900,7 +954,7 @@ function preguntaPorLaHora(params: { intentos: number }): string {
     return "¿Más o menos a qué hora pasás? Con la hora sola me alcanza (ej: *19* o *19:30*).";
   }
 
-  return "¿A qué hora pasás a retirarlo?";
+  return elegir(FRASES.preguntaHora);
 }
 
 // ============================================================
@@ -919,18 +973,24 @@ function resumenParaConfirmar(params: {
   items: ItemGuardadoPedido[];
   horaRetiroIso: string;
   avisoDescartados: string;
+  /** Una sugerencia que reemplaza la pregunta final ("¿te sumo carbón, o así está bien?"). */
+  sugerencia?: string | null;
 }): string {
-  const { items, horaRetiroIso, avisoDescartados } = params;
+  const { items, horaRetiroIso, avisoDescartados, sugerencia } = params;
   const lineas = items.map(
     (item) =>
       `- ${item.nombre_display}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
   );
+  // El encabezado y la pregunta varían: el mismo "Entonces te preparo: ...
+  // ¿Está bien así?" tres veces seguidas suena a máquina (pedido del
+  // fundador, 30/09). Y si hay una sugerencia, va EN LUGAR de la pregunta:
+  // dos preguntas seguidas ("¿está bien así?" + "¿carbón tenés?") confunden.
   return [
-    `${avisoDescartados}Entonces te preparo:`,
+    `${avisoDescartados}${elegir(FRASES.encabezadoResumen)}`,
     ...lineas,
     `Retiro: ${formatearRetiro(new Date(horaRetiroIso))} hs.`,
     "",
-    "¿Está bien así?",
+    sugerencia ?? elegir(FRASES.preguntaResumen),
   ].join("\n");
 }
 
@@ -949,12 +1009,12 @@ const COMPLEMENTOS_POR_CONTEXTO: { familiaPedido: string; codigosSugeridos: stri
   {
     familiaPedido: FAMILIA_ASADO,
     codigosSugeridos: ["carbon"],
-    frase: "¿Carbón tenés, o te sumo una bolsa?",
+    frase: "¿Te sumo una bolsa de carbón, o así está bien?",
   },
   {
     familiaPedido: "elaborados_vacunos",
     codigosSugeridos: ["pan_rallado", "huevos"],
-    frase: "¿Te sumo pan rallado o huevos para empanarlas?",
+    frase: "¿Te sumo pan rallado o huevos para empanarlas, o así está bien?",
   },
 ];
 
@@ -992,11 +1052,11 @@ async function pedirConfirmacionFinal(params: {
   recomendacionYaHecha?: boolean;
 }): Promise<string> {
   const { guardar, items, horaRetiroIso, avisoDescartados, texto, catalogo, recomendacionYaHecha } = params;
-  const resumen = resumenParaConfirmar({ items, horaRetiroIso, avisoDescartados });
 
   // La recomendación va JUNTO con el resumen y no en un mensaje aparte: un
   // mensaje extra solo para ofrecer carbón es exactamente "vender por vender".
   const sugerencia = !recomendacionYaHecha && catalogo ? recomendacionComplementaria(catalogo, items) : null;
+  const resumen = resumenParaConfirmar({ items, horaRetiroIso, avisoDescartados, sugerencia });
 
   await guardar({
     estado: "pendiente_confirmacion_cliente",
@@ -1011,7 +1071,7 @@ async function pedirConfirmacionFinal(params: {
     updated_at: new Date().toISOString(),
   });
 
-  return sugerencia ? `${resumen}\n\n${sugerencia}` : resumen;
+  return resumen;
 }
 
 async function pasarAPendienteAprobacion(params: {
@@ -1286,7 +1346,22 @@ async function procesarResultado(params: {
     // pregunta quedaba sin responder.
     const saludo =
       !pedidoId && empiezaConSaludo(params.texto) ? `¡Hola${clienteNombre ? `, ${clienteNombre}` : ""}! 👋 ` : "";
-    const texto = `${saludo}${respuesta ?? respuestaSinDato(resultado.tema)}`;
+
+    // "Quiero asado para 15, ¿qué me recomendás?": si ya se sabe para cuántos
+    // es, la recomendación para la parrilla viene con los kilos calculados
+    // (el bot decide, no pregunta; 30/09/2026).
+    const total = totalDePersonas(personasPrevias);
+    const kgSugeridos =
+      resultado.tema === "recomendacion" && resultado.ocasion === "parrilla" && total
+        ? calcularKgAsadoObjetivo(personasPrevias ?? {}) ?? kgAsadoConPromedio(total)
+        : null;
+    const calculo = kgSugeridos
+      ? ` Para ${total} personas calculá unos ${kgATexto(Math.round(kgSugeridos * 4) / 4)} de carne: elegí dos o tres cortes y te reparto los kilos.`
+      : "";
+    const cuerpo = respuesta ?? respuestaSinDato(resultado.tema);
+    // El cálculo va antes de la pregunta final ("¿Qué te preparo?").
+    const conCalculo = calculo ? cuerpo.replace(/\s*(¿[^?]*\?|Decime cuál y te lo aparto\.)\s*$/, "") + calculo : cuerpo;
+    const texto = `${saludo}${conCalculo}`;
 
     // Si había una pregunta pendiente del pedido, se la repite al final: si no,
     // el cliente contesta la consulta y ya nadie se acuerda de dónde íbamos.
@@ -1426,12 +1501,14 @@ async function procesarResultado(params: {
   // Si ya insistimos demasiado con el desglose, dejamos de preguntar y
   // calculamos con el promedio. Un dato de estimación no puede trabar un
   // pedido — ver KG_POR_PERSONA_PROMEDIO.
+  //
+  // 30/09/2026: si dijo cuántos son ("somos 15") ya no se le pregunta
+  // cuántos hombres y cuántas mujeres: se calcula con el promedio de una. El
+  // fundador: "deja de hacer preguntas innecesarias". El desglose se usa si
+  // lo da solo ("10 hombres y 5 mujeres"), nunca se exige.
   const totalSinGenero = personas.sinGenero;
-  const seAgotaronLosIntentos = intentosPersonasPrevios >= MAXIMO_INTENTOS_PERSONAS;
   const kgPorPromedio =
-    !sabemosPersonas && seAgotaronLosIntentos && totalSinGenero != null && totalSinGenero > 0
-      ? kgAsadoConPromedio(totalSinGenero)
-      : null;
+    !sabemosPersonas && totalSinGenero != null && totalSinGenero > 0 ? kgAsadoConPromedio(totalSinGenero) : null;
 
   if (hayAsadoIncompleto && !sabemosPersonas && asadoKgObjetivoPrevio == null && kgPorPromedio == null) {
     const intentos = intentosPersonasPrevios + 1;
@@ -1456,15 +1533,12 @@ async function procesarResultado(params: {
     asadoKgObjetivoPrevio ?? (sabemosPersonas ? calcularKgAsadoObjetivo(personas) : null) ?? kgPorPromedio;
 
   if (hayAsadoIncompleto && kgObjetivoActual != null && !recomendacionMostrada) {
-    const pregunta = variarSiSeRepite(
-      armarPreguntaRecomendacion(
-        catalogo,
-        itemsParciales,
-        kgObjetivoActual,
-        await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId })
-      ),
-      preguntaPendientePrevia
-    );
+    // En vez de preguntar "¿cuánto querés de cada uno?", el bot PROPONE los
+    // kilos (30/09/2026: "el bot debe poder tomar decisiones por sí solo").
+    // Un sí los acepta; "más de vacío" los rehace (manejarPropuestaReparto).
+    const nombrar = await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId });
+    const propuesta = proponerReparto({ catalogo, items: itemsParciales, kgObjetivo: kgObjetivoActual, personas, nombrar });
+    const pregunta = variarSiSeRepite(propuesta.texto, preguntaPendientePrevia);
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
@@ -1477,6 +1551,7 @@ async function procesarResultado(params: {
         asadoKgObjetivo: kgObjetivoActual,
         recomendacionMostrada: true,
         intentosPersonas: intentosPersonasPrevios,
+        propuestaReparto: propuesta.reparto,
         ...extraFase,
       },
       expires_at: finDeHoyArgentina().toISOString(),
@@ -1517,13 +1592,23 @@ async function procesarResultado(params: {
   // no, seguimos la pregunta puntual que armó la IA (o repetimos la
   // pregunta pendiente si tampoco entendió esta vez).
   if (resultado.tipo === "no_entendido" && itemsParciales.length === 0 && !pedidoId) {
-    return `No relacioné "${texto}" con un pedido. Contame qué necesitás llevarte 🙂`;
+    // Sin repetirle su mensaje entre comillas ("No relacioné 'gracias por
+    // todo' con un pedido"): suena a máquina.
+    return elegir([
+      "Uy, no te agarré bien 🙈 Contame qué necesitás y te lo armo.",
+      "Perdón, no te entendí 🙈 ¿Qué andás buscando?",
+      "Me perdí un poco 🙈 Decime qué te hace falta y lo vemos.",
+    ]);
   }
 
+  // Lo que escribe la IA pasa por el filtro de tono: nada de "Entendido",
+  // "necesito que me digas exactamente" ni "¿te preparo algo?" (tono.ts).
   const preguntaCruda =
     resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante"
-      ? resultado.pregunta
-      : "No te entendí. ¿Podés contarme de nuevo qué necesitás, o responder la pregunta de arriba?";
+      ? suavizar(resultado.pregunta)
+      : preguntaPendientePrevia
+        ? preguntaPendientePrevia // variarSiSeRepite (abajo) le cambia la entrada
+        : "Perdón, no te agarré 🙈 ¿Me lo decís de otra forma?";
 
   // Última barrera contra el disco rayado: acá caen también las preguntas que
   // escribe la IA, que es la vía por la que puede llegar un texto repetido que
@@ -1548,6 +1633,172 @@ async function procesarResultado(params: {
     updated_at: ahora,
   });
   return pregunta;
+}
+
+/** La pregunta por el próximo dato que falta ("¿Cuántos chorizos querés?"). */
+function preguntaDelSiguienteDato(items: ItemParcialPedido[], catalogo: CatalogoCarniceria): string {
+  const falta = items.find((i) => i.producto_codigo && i.cantidad == null);
+  const producto = falta?.producto_codigo ? catalogo.porCodigo.get(falta.producto_codigo) : undefined;
+  if (!producto) return "¿Algo más, o lo dejamos así?";
+  const nombre = (producto.alias_display ?? producto.nombre_display).toLowerCase();
+  const plural = /s$/.test(nombre) ? nombre : /[aeiou]$/.test(nombre) ? `${nombre}s` : `${nombre}es`;
+  return producto.unidad === "kg" ? `¿Cuánto querés de ${nombre}?` : `¿Cuántos ${plural} querés?`;
+}
+
+/** "del vacío", "de la entraña", "de los chinchulines": el artículo que pide el nombre. */
+function delNombre(nombre: string): string {
+  const n = nombre.toLowerCase().trim();
+  const ultima = n.split(/\s+/)[0];
+  if (/as$/.test(ultima)) return `de las ${n}`;
+  if (/(os|es)$/.test(ultima)) return `de los ${n}`;
+  if (/a$/.test(ultima)) return `de la ${n}`;
+  return `del ${n}`;
+}
+
+/** "4 kg" o "3 u." de lo que faltó, para decírselo al cliente. */
+function cantidadDeFaltante(f: FaltanteDeLaCharla): string {
+  if (f.unidades_cliente) return `${f.unidades_cliente} u.`;
+  const n = f.cantidad.toLocaleString("es-AR", { maximumFractionDigits: 2 });
+  return f.unidad === "kg" ? `${n} kg` : `${n} ${f.unidad}`;
+}
+
+/** Lo que faltó, como item de pedido para el producto nuevo (misma cantidad). */
+function itemDesdeFaltante(f: FaltanteDeLaCharla, codigoNuevo: string): ItemPedido {
+  return f.unidades_cliente
+    ? { producto_codigo: codigoNuevo, cantidad: f.unidades_cliente, unidad: "unidad", confidence: 1 }
+    : { producto_codigo: codigoNuevo, cantidad: f.cantidad, unidad: f.unidad, confidence: 1 };
+}
+
+/**
+ * El cliente contesta la oferta de reemplazo ("Uy, me quedé sin vacío. Te lo
+ * puedo cambiar por matambre, entraña o tapa de asado. ¿Cuál te pongo?").
+ *
+ * Bug del 30/09 que esto cierra: el cliente dijo "cambiá el vacío por el
+ * matambre", el bot sacó el vacío y NO puso el matambre; "y el matambre?" →
+ * le preguntó para cuántas personas era. Acá el matambre entra con los 4 kg
+ * que tenía el vacío, y el pedido sigue al resumen. null = no fue una
+ * respuesta a la oferta: sigue el camino normal.
+ */
+async function manejarRespuestaReemplazo(params: {
+  carniceriaId: string;
+  telefono: string;
+  clienteId: string;
+  clienteNombre: string | null;
+  mensajeWhatsappId?: string;
+  pedido: PedidoPendiente;
+  texto: string;
+  catalogo: CatalogoCarniceria;
+}): Promise<string | null> {
+  const { carniceriaId, telefono, clienteId, clienteNombre, mensajeWhatsappId, pedido, texto, catalogo } = params;
+  const fase = pedido.fase as Extract<FaseInterna, { fase: "esperando_reemplazo" }>;
+  const faltantes = fase.faltantes ?? [];
+  if (faltantes.length === 0) return null;
+  const opciones = fase.opciones ?? [];
+
+  const nombreDe = (codigo: string) => {
+    const p = catalogo.porCodigo.get(codigo);
+    return (p?.alias_display ?? p?.nombre_display ?? codigo).toLowerCase();
+  };
+  const listar = (codigos: string[]) => {
+    const n = codigos.map(nombreDe);
+    return n.length <= 1 ? n[0] ?? "" : `${n.slice(0, -1).join(", ")} o ${n[n.length - 1]}`;
+  };
+
+  const enTexto = productosEnTexto(catalogo, texto);
+  const reemplazo = leerReemplazo(texto, enTexto);
+  const nuevos = enTexto.filter((p) => !faltantes.some((f) => f.producto_codigo === p.codigo));
+  const decision = clasificarRespuesta(texto);
+  const esPregunta = /\?/.test(texto) || /^\s*(y\s+)?(tenes|tenés|hay|te queda|queda|tenés)\b/i.test(texto);
+
+  // ¿Cuál eligió? Nombrado ("el matambre", "cambialo por matambre"), por
+  // orden ("el primero"), o un sí cuando se le ofreció uno solo.
+  let elegido: string | null = reemplazo?.a && !faltantes.some((f) => f.producto_codigo === reemplazo.a) ? reemplazo.a : null;
+  if (!elegido && nuevos.length === 1) elegido = nuevos[0].codigo;
+  if (!elegido) {
+    const orden = /\b(primer[oa]?|segund[oa]|tercer[oa]?|ultim[oa])\b/i.exec(texto.normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+    if (orden && opciones.length > 0) {
+      const i = /^prim/i.test(orden[1]) ? 0 : /^seg/i.test(orden[1]) ? 1 : /^ter/i.test(orden[1]) ? 2 : opciones.length - 1;
+      elegido = opciones[i] ?? null;
+    }
+  }
+  if (!elegido && decision === "confirmar" && opciones.length === 1) elegido = opciones[0];
+
+  const faltante = faltantes.find((f) => f.producto_codigo === reemplazo?.de) ?? faltantes[0];
+  const resto = (pedido.items ?? []).map((i) => ({ producto_codigo: i.producto_codigo, ...comoLoPidio(i), confidence: 1 }));
+
+  const armar = async (items: ItemPedido[]) =>
+    await armarYGuardarPedido({
+      carniceriaId,
+      telefono,
+      clienteId,
+      clienteNombre,
+      mensajeWhatsappId,
+      pedidoId: pedido.id,
+      catalogo,
+      itemsPedidos: items,
+      horaRetiroIso: pedido.hora_retiro ?? undefined,
+      texto,
+      recomendacionYaHecha: pedido.recomendacionHecha,
+    });
+
+  if (elegido) {
+    const producto = catalogo.porCodigo.get(elegido);
+    if (!producto) return null;
+
+    // "¿Tenés entraña?": se contesta y se deja la oferta lista para un sí.
+    if (esPregunta && decision !== "confirmar") {
+      if (!(producto.stock_actual > 0)) {
+        return opciones.length > 0
+          ? `De ${nombreDe(elegido)} tampoco me queda 😕 Tengo ${listar(opciones)}. ¿Cuál te pongo?`
+          : `De ${nombreDe(elegido)} tampoco me queda 😕`;
+      }
+      const pregunta = `Sí, hay ${nombreDe(elegido)} 👍 ¿Te pongo ${cantidadDeFaltante(faltante)} en lugar ${delNombre(faltante.nombre)}?`;
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({
+          pregunta_pendiente: pregunta,
+          interpretacion: { ...fase, opciones: [elegido] },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pedido.id);
+      return pregunta;
+    }
+
+    const quedan = faltantes.filter((f) => f !== faltante);
+    await recordar(carniceriaId, telefono, { faltantes: quedan.length > 0 ? quedan : null });
+    return await armar([...resto.filter((i) => i.producto_codigo !== elegido), itemDesdeFaltante(faltante, elegido)]);
+  }
+
+  // "No", "sacalo", "dejalo así": se sigue con el resto del pedido.
+  if (decision === "cancelar") {
+    await recordar(carniceriaId, telefono, { faltantes: null });
+    if (resto.length === 0) {
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({ estado: "cancelado", interpretacion: null, pregunta_pendiente: null, updated_at: new Date().toISOString() })
+        .eq("id", pedido.id);
+      return "Dale, lo dejamos acá. Cualquier cosa me escribís 🙌";
+    }
+    return await armar(resto);
+  }
+
+  // "Sí" con varias opciones: cuál.
+  if (decision === "confirmar" && opciones.length > 1) {
+    return `${elegir(["Dale 👍", "Joya", "Buenísimo"])} ¿Cuál te pongo: ${listar(opciones)}?`;
+  }
+
+  // "¿Qué otra cosa puede ser?", "no sé": se le vuelve a ofrecer, distinto.
+  if (esPregunta || /\b(no se|que (otra|mas)|otra cosa|que puede ser|que me (das|recomendas))\b/i.test(texto.normalize("NFD").replace(/[\u0300-\u036f]/g, ""))) {
+    if (opciones.length > 0) {
+      return elegir([
+        `Te puedo dar ${listar(opciones)} en lugar ${delNombre(faltante.nombre)}. ¿Cuál preferís?`,
+        `En lugar ${delNombre(faltante.nombre)} tengo ${listar(opciones)}. Decime cuál y te pongo ${cantidadDeFaltante(faltante)}.`,
+      ]);
+    }
+    return `Para reemplazar ${faltante.nombre.toLowerCase()} no tengo nada parecido ahora 😕 ¿Lo sacamos y seguimos con el resto?`;
+  }
+
+  return null;
 }
 
 // ============================================================
@@ -2164,9 +2415,31 @@ async function procesarMensajeDeCliente(params: {
     return "Tuve un problema técnico. Probá de nuevo en un rato.";
   }
 
+  // Lo que se sabe de la charla de hoy aunque el pedido ya no lo tenga
+  // (personas, lo que faltó). Ver memoriaCharla.ts.
+  const memoria = await leerMemoria(carniceriaId, telefono);
+
   // Sub-flujo especial: esperando sí/no sobre una sustitución propuesta.
   if (pedidoActivo?.fase?.fase === "esperando_confirmacion_sustitucion") {
     return await manejarRespuestaSustitucion({ pedido: pedidoActivo, texto });
+  }
+
+  // Sub-flujo especial: el carnicero avisó que algo se terminó y le
+  // ofrecimos con qué cambiarlo. "El matambre", "dale", "sacalo", "¿tenés
+  // entraña?" se resuelven acá; cualquier otra cosa sigue el camino normal
+  // (que igual sabe, por la memoria, qué faltó y en qué cantidad).
+  if (pedidoActivo?.fase?.fase === "esperando_reemplazo") {
+    const respuesta = await manejarRespuestaReemplazo({
+      carniceriaId,
+      telefono,
+      clienteId: cliente.id,
+      clienteNombre: cliente.nombre,
+      mensajeWhatsappId,
+      pedido: pedidoActivo,
+      texto,
+      catalogo,
+    });
+    if (respuesta !== null) return respuesta;
   }
 
   // Sub-flujo especial: el CARNICERO propuso un cambio y estamos esperando
@@ -2252,7 +2525,7 @@ async function procesarMensajeDeCliente(params: {
         catalogo,
         resultado: { tipo: "no_entendido" },
         texto,
-        personasPrevias: personasDeFase(pedidoActivo.fase),
+        personasPrevias: combinarPersonas(memoria.personas, personasDeFase(pedidoActivo.fase)),
         asadoKgObjetivoPrevio: asadoKgObjetivoDeFase(pedidoActivo.fase),
         recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo.fase),
         intentosPersonasPrevios: intentosPersonasDeFase(pedidoActivo.fase),
@@ -2276,6 +2549,111 @@ async function procesarMensajeDeCliente(params: {
         })
         .eq("id", pedidoActivo.id);
       return pregunta;
+    }
+  }
+
+  // ------------------------------------------------------------
+  // "Gracias", "te agradezco", "chau" (30/09/2026)
+  // ------------------------------------------------------------
+  //
+  // Bug: "gracias por todo" se contestaba "No relacioné 'gracias por todo'
+  // con un pedido". Un gracias se contesta con un de nada, y si quedaba algo
+  // pendiente, se lo recuerda una vez, sin trabar.
+  if (esCierre(texto)) {
+    if (pedidoActivo?.estado === "pendiente_aprobacion") {
+      return elegir(["¡De nada! 🙌 Apenas lo confirmemos te aviso.", "¡Gracias a vos! Ya te aviso cuando esté confirmado 🙌"]);
+    }
+    if (pedidoActivo?.pregunta_pendiente) {
+      return `${elegir(["¡De nada! 🙌", "¡Gracias a vos!", "¡Un gusto!"])} Antes de que te vayas, me quedó esto:\n\n${pedidoActivo.pregunta_pendiente}`;
+    }
+    const confirmadoHoy = (await obtenerPedidosConfirmados(carniceriaId, telefono))[0];
+    if (confirmadoHoy?.hora_retiro) {
+      return elegir([
+        `¡Gracias a vos! Te esperamos ${formatearRetiro(new Date(confirmadoHoy.hora_retiro))} hs 🙌`,
+        `¡De nada! Nos vemos ${formatearRetiro(new Date(confirmadoHoy.hora_retiro))} hs 👋`,
+      ]);
+    }
+    return elegir(FRASES.cierre);
+  }
+
+  // Para cuántos es: lo que ya se sabía (del pedido o de la charla) + lo que
+  // diga este mensaje, leído sin IA. Nunca se vuelve a preguntar algo que el
+  // cliente ya dijo (30/09/2026).
+  const personasDelTexto = leerPersonas(texto);
+  const personasConocidas = combinarPersonas(
+    combinarPersonas(memoria.personas, personasDeFase(pedidoActivo?.fase)),
+    personasDelTexto ?? undefined
+  );
+  if (personasDelTexto) await recordar(carniceriaId, telefono, { personas: personasConocidas });
+
+  // ------------------------------------------------------------
+  // El bot propuso los kilos de cada corte y el cliente contesta
+  // ------------------------------------------------------------
+  const faseDato = pedidoActivo?.fase?.fase === "esperando_dato_item" ? pedidoActivo.fase : null;
+  if (pedidoActivo && faseDato?.propuestaReparto && faseDato.propuestaReparto.length > 0) {
+    const reparto = faseDato.propuestaReparto;
+    const enJuego = reparto
+      .map((r) => catalogo.porCodigo.get(r.codigo))
+      .filter((p): p is Producto => Boolean(p))
+      .map((p) => ({ codigo: p.codigo, palabras: [p.nombre_display, ...(p.alias_display ? [p.alias_display] : []), ...p.sinonimos] }));
+    const preferencia = leerPreferenciaReparto(texto, enJuego);
+    const kgObjetivo = faseDato.asadoKgObjetivo;
+
+    // "Más de vacío que de costilla" / "mitad y mitad": se rehace la cuenta y
+    // se propone de nuevo con números (bug del 30/09: el bot contestaba
+    // "¿cuántos kg de cada uno?" y después "necesito que me digas exactamente").
+    if (preferencia && kgObjetivo) {
+      const itemsParciales = pedidoActivo.itemsParciales ?? [];
+      const nombrar = await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId: pedidoActivo.id });
+      const propuesta = proponerReparto({
+        catalogo,
+        items: itemsParciales,
+        kgObjetivo,
+        personas: personasConocidas,
+        nombrar,
+        preferido:
+          preferencia.tipo === "preferido" ? { codigo: preferencia.codigo, mas: preferencia.mas } : { codigo: "", mas: true },
+      });
+      await getSupabaseAdmin()
+        .from("pedidos")
+        .update({
+          pregunta_pendiente: propuesta.texto,
+          interpretacion: { ...faseDato, propuestaReparto: propuesta.reparto },
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", pedidoActivo.id);
+      return propuesta.texto;
+    }
+
+    // "Sí", "dale", "eso me parece bien": se toman los kilos propuestos.
+    if (clasificarRespuesta(texto) === "confirmar" || /(me parece bien|esta bien|asi esta bien|va asi|asi va)/i.test(texto)) {
+      const conKilos = (pedidoActivo.itemsParciales ?? []).map((i) => {
+        const propuesto = reparto.find((r) => r.codigo === i.producto_codigo);
+        return propuesto && i.cantidad == null ? { ...i, cantidad: propuesto.kg, unidad: propuesto.unidad ?? "kg" } : i;
+      });
+      return await procesarResultado({
+        carniceriaId,
+        telefono,
+        clienteId: cliente.id,
+        clienteNombre: cliente.nombre,
+        mensajeWhatsappId,
+        pedidoId: pedidoActivo.id,
+        catalogo,
+        resultado: { tipo: "info_faltante", pregunta: preguntaDelSiguienteDato(conKilos, catalogo), itemsParciales: conKilos },
+        texto,
+        personasPrevias: personasConocidas,
+        asadoKgObjetivoPrevio: kgObjetivo,
+        recomendacionMostrada: true,
+        intentosPersonasPrevios: intentosPersonasDeFase(pedidoActivo.fase),
+        itemsParcialesPrevios: conKilos,
+        itemsActualesPrevios: pedidoActivo.items,
+        horaRetiroPrevia: pedidoActivo.hora_retiro ?? undefined,
+        intentosHoraPrevios: intentosHoraDeFase(pedidoActivo.fase),
+        horaResuelta: {},
+        propuestaHoraPrevia: propuestaPrevia,
+        preguntaPendientePrevia: pedidoActivo.pregunta_pendiente ?? null,
+        recomendacionYaHecha: pedidoActivo.recomendacionHecha,
+      });
     }
   }
 
@@ -2376,6 +2754,86 @@ async function procesarMensajeDeCliente(params: {
         // Si el texto dice para qué ("parrilla"), gana el texto; si no, lo que haya visto la IA.
         ocasion: ocasion !== "general" ? ocasion : ocasionDeLaIA ?? "general",
       };
+    }
+  }
+
+  // Si la IA sacó para cuántos es (y el texto no lo tenía claro), también se
+  // guarda en la memoria de la charla.
+  const personasDeLaIA = "personas" in interpretado ? interpretado.personas : undefined;
+  if (!personasDelTexto && personasDeLaIA && totalDePersonas(personasDeLaIA)) {
+    await recordar(carniceriaId, telefono, { personas: combinarPersonas(personasConocidas, personasDeLaIA) });
+  }
+
+  // ------------------------------------------------------------
+  // "Medio chorizo por persona" (30/09/2026)
+  // ------------------------------------------------------------
+  //
+  // Si ya se sabe para cuántos es, "medio por persona" es un número: no se
+  // pregunta "¿medio kilo por persona de qué?". El producto es el que se le
+  // estaba preguntando (o el que nombra el mensaje).
+  const porPersona = cantidadPorPersona(texto, totalDePersonas(personasConocidas));
+  if (porPersona && pedidoActivo && interpretado.tipo !== "pedido") {
+    const parciales = pedidoActivo.itemsParciales ?? [];
+    const sinCantidad = parciales.filter((i) => i.producto_codigo && i.cantidad == null);
+    const nombradosAhora = productosEnTexto(catalogo, texto).map((p) => p.codigo);
+    const preguntados = productosEnTexto(catalogo, pedidoActivo.pregunta_pendiente ?? "").map((p) => p.codigo);
+    const objetivo =
+      sinCantidad.find((i) => nombradosAhora.includes(i.producto_codigo!)) ??
+      sinCantidad.find((i) => preguntados.includes(i.producto_codigo!)) ??
+      (sinCantidad.length === 1 ? sinCantidad[0] : undefined);
+    const producto = objetivo?.producto_codigo ? catalogo.porCodigo.get(objetivo.producto_codigo) : undefined;
+    if (objetivo && producto) {
+      const enKilos = porPersona.unidad === "kg" || (porPersona.unidad === null && producto.unidad === "kg");
+      const cantidad = enKilos ? porPersona.cantidad : redondearUnidades(porPersona.cantidad);
+      const actualizados = parciales.map((i) =>
+        i === objetivo ? { ...i, cantidad, unidad: enKilos ? "kg" : producto.unidad } : i
+      );
+      interpretado = {
+        tipo: "info_faltante",
+        pregunta: preguntaDelSiguienteDato(actualizados, catalogo),
+        itemsParciales: actualizados,
+      };
+    }
+  }
+
+  // ------------------------------------------------------------
+  // "Cambiá el vacío por el matambre" (30/09/2026)
+  // ------------------------------------------------------------
+  //
+  // El producto nuevo entra con la cantidad que tenía el viejo, esté el viejo
+  // todavía en el pedido o haya salido porque se terminó (la memoria lo
+  // guarda). Antes la IA sacaba el vacío y el matambre no entraba.
+  const reemplazo = leerReemplazo(texto, productosEnTexto(catalogo, texto));
+  if (reemplazo && interpretado.tipo !== "consulta" && interpretado.tipo !== "cancelacion") {
+    const faltantesMemoria = memoria.faltantes ?? [];
+    const deCodigo = reemplazo.de ?? (faltantesMemoria.length === 1 ? faltantesMemoria[0].producto_codigo : null);
+    const pedidoBase = pedidoActivo?.items ?? [];
+    const confirmadoBase = !pedidoActivo && confirmados.length === 1 ? confirmados[0].items : [];
+    const itemsBase = pedidoActivo ? pedidoBase : confirmadoBase;
+    const enPedido = itemsBase.find((i) => i.producto_codigo === deCodigo);
+    const faltante = faltantesMemoria.find((f) => f.producto_codigo === deCodigo);
+    if (deCodigo && deCodigo !== reemplazo.a && (enPedido || faltante)) {
+      const delModelo =
+        interpretado.tipo === "pedido" || interpretado.tipo === "modificacion"
+          ? interpretado.items?.find((i) => i.producto_codigo === reemplazo.a)
+          : undefined;
+      const base = enPedido ? comoLoPidio(enPedido) : faltante!.unidades_cliente ? { cantidad: faltante!.unidades_cliente, unidad: "unidad" } : { cantidad: faltante!.cantidad, unidad: faltante!.unidad };
+      const nuevo: ItemPedido = {
+        producto_codigo: reemplazo.a,
+        cantidad: delModelo?.cantidad ?? base.cantidad,
+        unidad: delModelo?.unidad ?? base.unidad,
+        confidence: 1,
+      };
+      const restantes: ItemPedido[] = itemsBase
+        .filter((i) => i.producto_codigo !== deCodigo && i.producto_codigo !== reemplazo.a)
+        .map((i) => ({ producto_codigo: i.producto_codigo, ...comoLoPidio(i), confidence: 1 }));
+      interpretado = pedidoActivo
+        ? { tipo: "pedido", items: [...restantes, nuevo] }
+        : { tipo: "modificacion", items: [...restantes, nuevo] };
+      if (faltante) {
+        const quedan = faltantesMemoria.filter((f) => f !== faltante);
+        await recordar(carniceriaId, telefono, { faltantes: quedan.length > 0 ? quedan : null });
+      }
     }
   }
 
@@ -2558,7 +3016,7 @@ async function procesarMensajeDeCliente(params: {
     catalogo,
     resultado,
     texto,
-    personasPrevias: personasDeFase(pedidoActivo?.fase),
+    personasPrevias: personasConocidas,
     asadoKgObjetivoPrevio,
     recomendacionMostrada: recomendacionMostradaDeFase(pedidoActivo?.fase),
     intentosPersonasPrevios: intentosPersonasDeFase(pedidoActivo?.fase),

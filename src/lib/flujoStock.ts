@@ -16,6 +16,8 @@ import { moverStock, consumirUnidadesEnteras, estimadorPorUnidad } from "./lotes
 import { descriptor } from "./especies";
 import { variarSiSeRepite } from "./conversacion";
 import { historialReciente } from "./historial";
+import { respuestaCortaDeStock, resolverEspecieSola } from "./respuestaCortaStock";
+import { elegir, suavizar } from "./tono";
 
 // Máquina de estados "INTERPRETAR → VALIDAR → CONFIRMAR → EJECUTAR" de la
 // especificación "Botonera de confirmación por WhatsApp" (22/08/2026).
@@ -100,7 +102,9 @@ function armarMensajeResumen(items: ItemGuardado[]): string {
     lineas.push(`${emojiParaFamilia(item.familia)} ${lineaItem(item)}`);
   });
 
-  return `Entendí:\n${lineas.join("\n")}\n¿Está bien? Respondé *confirmar* o *modificar*.`;
+  // Sin "Respondé confirmar o modificar": un "sí", "dale" o 👍 alcanzan, y si
+  // algo está mal lo corrige con sus palabras ("no, eran 12").
+  return `${elegir(["Te anoto esto:", "Va así:", "Queda así:"])}\n${lineas.join("\n")}\n${elegir(["¿Lo cargo?", "¿Va?", "¿Está bien así?"])}`;
 }
 
 async function obtenerOperacionPendienteActiva(
@@ -232,7 +236,18 @@ async function guardarResultado(params: {
     // el turno anterior, se los vuelve a poner. Nunca confiar en que la IA se
     // acuerde de repetirlos (mismo arreglo que pedidos, 23/08).
     const itemsParciales = fusionarParciales(resultado.itemsParciales, previa?.itemsParciales);
-    const pregunta = variarSiSeRepite(resultado.pregunta, previa?.pregunta_pendiente);
+
+    // "¿Nalga vacuna o de cerdo?" cuando nadie habló de cerdo: no se pregunta,
+    // es vacuna (y la picada, siempre). Pregunta menos = charla más fluida.
+    const sola = resolverEspecieSola({
+      pregunta: resultado.pregunta,
+      itemsParciales,
+      textoDeLaCharla: `${textoInicial} ${texto}`,
+      catalogo,
+    });
+    if (sola) return await guardarResultado({ ...params, resultado: sola });
+
+    const pregunta = variarSiSeRepite(suavizar(resultado.pregunta), previa?.pregunta_pendiente);
     await guardar({
       estado: "pendiente_aclaracion",
       transcripcion: texto,
@@ -490,7 +505,7 @@ async function confirmarYEjecutar(operacionId: string): Promise<string> {
     }
   }
 
-  return `Listo, quedó actualizado:\n${resumen.join("\n")}`;
+  return `${elegir(["Listo, cargado 👍", "Hecho 👍", "Joya, ya está 👍"])}\n${resumen.join("\n")}`;
 }
 
 async function cancelarOperacion(operacionId: string): Promise<string> {
@@ -797,17 +812,28 @@ export async function procesarTextoEntrante(params: {
     return "Tuve un problema técnico cargando el catálogo. Probá de nuevo en un rato.";
   }
 
-  const historial = await historialReciente({ carniceriaId, telefono, quien: "Carnicero" });
-  const resultado = await interpretarMensajeStock(
+  // Respuesta de una palabra a una pregunta con respuestas contadas ("vacuna",
+  // "7"): se completa sin IA. Ver respuestaCortaStock.ts.
+  const corta = respuestaCortaDeStock({
+    pregunta: op.pregunta_pendiente,
+    itemsParciales: op.itemsParciales,
     texto,
-    catalogo.promptCatalogo,
-    {
-      itemsActuales: op.items,
-      preguntaPendiente: op.pregunta_pendiente ?? undefined,
-      itemsParciales: op.itemsParciales,
-    },
-    historial
-  );
+    catalogo,
+  });
+
+  const historial = corta ? "" : await historialReciente({ carniceriaId, telefono, quien: "Carnicero" });
+  const resultado =
+    corta ??
+    (await interpretarMensajeStock(
+      texto,
+      catalogo.promptCatalogo,
+      {
+        itemsActuales: op.items,
+        preguntaPendiente: op.pregunta_pendiente ?? undefined,
+        itemsParciales: op.itemsParciales,
+      },
+      historial
+    ));
 
   return await guardarResultado({
     carniceriaId,

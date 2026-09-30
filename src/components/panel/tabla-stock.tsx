@@ -210,6 +210,11 @@ function FilaProducto({ producto }: { producto: ProductoDelPanel }) {
         <p className="truncate font-titulo text-sm font-semibold text-ink">{producto.nombre}</p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-ink-3">
           <EtiquetaEstado estado={estado} />
+          {producto.piezasEnteras ? (
+            <span className="font-semibold text-ink-2">
+              {producto.piezasEnteras === 1 ? "1 pieza entera" : `${producto.piezasEnteras} piezas enteras`}
+            </span>
+          ) : null}
           {producto.stockActualizadoAt ? (
             <span className="flex items-center gap-1">
               {origen === "audio" ? (

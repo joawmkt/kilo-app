@@ -66,7 +66,16 @@ type LotePendiente = {
   fallos?: number;
   /** Algo que decidió el sistema (ej. "cerdo entero partido en dos"). Se muestra al confirmar. */
   nota?: string;
+  /**
+   * Otros lotes del MISMO mensaje, ya completos, que se confirman y cargan
+   * junto con este ("entró un cajón de pollo y una media res de 90": una sola
+   * confirmación para las dos cosas). Ver `probarVariosLotes` (01/10/2026).
+   */
+  extras?: LotePendiente[];
 };
+
+/** Lo que quedó acumulado de un mensaje con varios lotes mientras se pregunta un dato. */
+type Acumulado = { extras: LotePendiente[]; siguientes: string[] };
 
 type LoteLeido = Extract<ResultadoLoteVoz, { tipo: "lote" }>;
 
@@ -162,8 +171,9 @@ async function guardarEsperandoEspecie(params: {
   texto: string;
   leido: LoteLeido;
   operacionId?: string;
+  acumulado?: Acumulado;
 }): Promise<string> {
-  const { carniceriaId, telefono, mensajeWhatsappId, texto, leido, operacionId } = params;
+  const { carniceriaId, telefono, mensajeWhatsappId, texto, leido, operacionId, acumulado } = params;
   const pesos = leido.pesosKg ?? Array.from({ length: leido.cantidad }, () => leido.pesoKg);
   const cuantas =
     pesos.length === 1
@@ -181,6 +191,9 @@ async function guardarEsperandoEspecie(params: {
       pesosKg: pesos,
       proveedor: leido.proveedor,
       cantidad: pesos.length,
+      ...(acumulado && (acumulado.extras.length > 0 || acumulado.siguientes.length > 0)
+        ? { extras: acumulado.extras, siguientes: acumulado.siguientes }
+        : {}),
     },
     pregunta_pendiente: pregunta,
     updated_at: new Date().toISOString(),
@@ -222,6 +235,11 @@ export async function responderSobreLote(params: {
   const especie = (interpretacion.especie as Especie | undefined) ?? "vacuno";
   const desc = descriptor(especie);
   const telefono = params.telefono ?? (await telefonoDeOperacion(operacion.id));
+  // Lo que quedó juntado de un mensaje con varios lotes (ver probarVariosLotes).
+  const acumulado: Acumulado = {
+    extras: Array.isArray(interpretacion.extras) ? (interpretacion.extras as Record<string, unknown>[]).map(normalizarPendiente) : [],
+    siguientes: Array.isArray(interpretacion.siguientes) ? (interpretacion.siguientes as string[]) : [],
+  };
 
   // ------------------------------------------------------------
   // Un lote NUEVO mientras había otro pendiente (21/09/2026)
@@ -279,7 +297,7 @@ export async function responderSobreLote(params: {
       proveedor: (interpretacion.proveedor as string | null | undefined) ?? null,
       cantidad: pesos.length,
     };
-    return await pasarAConfirmacion(carniceriaId, operacion.id, leido, texto);
+    return await pasarAConfirmacion(carniceriaId, operacion.id, leido, texto, acumulado);
   }
 
   // ------------------------------------------------------------
@@ -369,10 +387,11 @@ export async function responderSobreLote(params: {
         texto,
         leido: nueva,
         operacionId: operacion.id,
+        acumulado,
       });
     }
 
-    return await pasarAConfirmacion(carniceriaId, operacion.id, { ...nueva, unidadesPorLote }, texto);
+    return await pasarAConfirmacion(carniceriaId, operacion.id, { ...nueva, unidadesPorLote }, texto, acumulado);
   }
 
   // ------------------------------------------------------------
@@ -532,16 +551,37 @@ async function pasarAConfirmacion(
   carniceriaId: string,
   operacionId: string,
   leido: LoteLeido & { unidadesPorLote?: number[] },
-  texto: string
+  texto: string,
+  acumulado?: Acumulado
 ): Promise<string> {
   const pendiente = await armarPendiente(carniceriaId, leido);
   if (typeof pendiente === "string") return pendiente;
 
+  // Si el mensaje traía más lotes, se siguen juntando: los que ya están
+  // completos esperan, y si a otro le falta un dato se pregunta ese.
+  const listos: LotePendiente[] = [...(acumulado?.extras ?? []), pendiente];
+  const resto = [...(acumulado?.siguientes ?? [])];
+  const avance = await juntarLotes(carniceriaId, listos, resto);
+  if (avance.falta) {
+    await getSupabaseAdmin()
+      .from("operaciones_stock")
+      .update({
+        estado: "pendiente_aclaracion",
+        interpretacion: avance.falta.interpretacion,
+        pregunta_pendiente: avance.falta.pregunta,
+        transcripcion: texto,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", operacionId);
+    return avance.falta.pregunta;
+  }
+
+  const principal = unirLotes(avance.listos);
   await getSupabaseAdmin()
     .from("operaciones_stock")
     .update({
       estado: "pendiente_confirmacion",
-      interpretacion: pendiente,
+      interpretacion: principal,
       pregunta_pendiente: null,
       transcripcion: texto,
       updated_at: new Date().toISOString(),
@@ -549,7 +589,99 @@ async function pasarAConfirmacion(
     })
     .eq("id", operacionId);
 
-  return resumenParaConfirmar(pendiente);
+  return resumenParaConfirmar(principal);
+}
+
+/** El primero es el principal y los demás van en `extras`. */
+function unirLotes(listos: LotePendiente[]): LotePendiente {
+  const [primero, ...demas] = listos;
+  return { ...primero, ...(demas.length > 0 ? { extras: demas } : {}) };
+}
+
+/**
+ * Sigue leyendo los lotes que quedaban del mismo mensaje. Devuelve todos los
+ * completos, o el primero al que le falta un dato (con la pregunta y lo que
+ * hay que guardar para no perder nada).
+ */
+async function juntarLotes(
+  carniceriaId: string,
+  listos: LotePendiente[],
+  resto: string[]
+): Promise<{ listos: LotePendiente[]; falta?: { pregunta: string; interpretacion: Record<string, unknown> } }> {
+  const pendientes = [...resto];
+  while (pendientes.length > 0) {
+    const texto = pendientes.shift()!;
+    const r = await interpretarLote(texto);
+    if (r.tipo === "no_es_lote") continue;
+    if (r.tipo === "falta_dato") {
+      return {
+        listos,
+        falta: {
+          pregunta: r.pregunta,
+          interpretacion: {
+            tipo: MARCA,
+            especie: r.especie,
+            esperando: r.falta,
+            cantidad: r.cantidad,
+            especieSupuesta: r.especie === "vacuno" && especieExplicita(texto) === null,
+            extras: listos,
+            siguientes: pendientes,
+          },
+        },
+      };
+    }
+    const armado = await armarPendiente(carniceriaId, r);
+    if (typeof armado !== "string") listos.push(armado);
+  }
+  return { listos };
+}
+
+/**
+ * Varios lotes en UN mensaje ("entró un cajón de pollo y una media res de
+ * 90"): se juntan los datos de todos y se confirman con UN solo mensaje
+ * (01/10/2026: "cuantos menos mensajes mejor, WhatsApp cobra por mensaje").
+ * Si a alguno le falta un dato, se pregunta ese y los demás esperan
+ * guardados. null = alguno no es un lote: que se atiendan de a uno.
+ */
+export async function probarVariosLotes(params: {
+  carniceriaId: string;
+  telefono: string;
+  mensajeWhatsappId?: string;
+  textos: string[];
+}): Promise<string | null> {
+  const { carniceriaId, telefono, mensajeWhatsappId, textos } = params;
+  if (textos.length < 2) return null;
+  for (const t of textos) if (!detectarEspecieDeLote(t)) return null;
+
+  const avance = await juntarLotes(carniceriaId, [], textos);
+  const supabaseAdmin = getSupabaseAdmin();
+  const base = {
+    carniceria_id: carniceriaId,
+    telefono,
+    mensaje_whatsapp_id: mensajeWhatsappId ?? null,
+    transcripcion: textos.join(" / "),
+    items: [],
+  };
+
+  if (avance.falta) {
+    await supabaseAdmin.from("operaciones_stock").insert({
+      ...base,
+      estado: "pendiente_aclaracion",
+      interpretacion: avance.falta.interpretacion,
+      pregunta_pendiente: avance.falta.pregunta,
+    });
+    return avance.falta.pregunta;
+  }
+  if (avance.listos.length === 0) return null;
+
+  const principal = unirLotes(avance.listos);
+  await supabaseAdmin.from("operaciones_stock").insert({
+    ...base,
+    estado: "pendiente_confirmacion",
+    interpretacion: principal,
+    expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(),
+  });
+  return resumenParaConfirmar(principal);
 }
 
 async function guardarPendiente(operacionId: string, pendiente: LotePendiente, texto: string): Promise<void> {
@@ -749,6 +881,27 @@ async function ejecutar(params: {
   pendiente: LotePendiente;
 }): Promise<string> {
   const { carniceriaId, operacionId, pendiente } = params;
+  const todos = [pendiente, ...(pendiente.extras ?? [])];
+  const mensajes: string[] = [];
+  for (const uno of todos) {
+    const resultado = await ejecutarUno({ carniceriaId, pendiente: { ...uno, extras: undefined } });
+    if (!resultado.ok) {
+      await cerrar(operacionId, mensajes.length > 0 ? "ejecutado" : "cancelado");
+      return [...mensajes, resultado.mensaje].join("\n\n");
+    }
+    mensajes.push(resultado.mensaje);
+  }
+  await cerrar(operacionId, "ejecutado");
+  if (mensajes.length === 1) return mensajes[0];
+  // Varios: un solo "Listo" arriba y una línea por cada cosa.
+  return `${elegir(FRASES.listoCarnicero)}\n${mensajes.map((m) => `• ${m.replace(/^(Listo|Hecho|Joya, listo|Ya está) 👍\s*/, "")}`).join("\n")}`;
+}
+
+async function ejecutarUno(params: {
+  carniceriaId: string;
+  pendiente: LotePendiente;
+}): Promise<{ ok: boolean; mensaje: string }> {
+  const { carniceriaId, pendiente } = params;
   const desc = descriptor(pendiente.especie);
 
   let piezasTotales = 0;
@@ -769,36 +922,32 @@ async function ejecutar(params: {
       proveedor: pendiente.proveedor,
     });
 
-    if (!resultado.ok) {
-      await cerrar(operacionId, "cancelado");
-      return resultado.mensaje;
-    }
+    if (!resultado.ok) return { ok: false, mensaje: resultado.mensaje };
 
     piezasTotales += resultado.piezas;
     kgTotales += resultado.kgVendibles;
     esperaDesposte = resultado.esperaDesposte;
   }
 
-  await cerrar(operacionId, "ejecutado");
-
   if (esperaDesposte) {
-    return (
-      `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}.\n\n` +
-      `Cuando la despostes, pasame los pesos de cada corte y te armo el stock.`
-    );
+    return {
+      ok: true,
+      mensaje:
+        `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}. ` +
+        `Cuando la despostes, pasame los pesos de cada corte y te armo el stock.`,
+    };
   }
 
   if (desc.unidadEntrada === "cajon") {
-    const vence = desc.vidaUtilDiasPorDefecto
-      ? `\nOjo que el pollo dura poco: te aviso cuando falten 2 días para que se pase.`
-      : "";
-    return `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} pollos en total.${vence}`;
+    const vence = desc.vidaUtilDiasPorDefecto ? ` Ojo que el pollo dura poco: te aviso 2 días antes de que se pase.` : "";
+    return { ok: true, mensaje: `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} pollos.${vence}` };
   }
 
-  return (
-    `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} cortes estimados, ${formatearKg(kgTotales)} kg vendibles.\n\n` +
-    `Si después me pasás los pesos reales del desposte, afino las cuentas.`
-  );
+  return {
+    ok: true,
+    mensaje:
+      `${elegir(FRASES.listoCarnicero)} Cargué ${describirCantidad(pendiente)}: ${piezasTotales} cortes estimados, ${formatearKg(kgTotales)} kg vendibles.`,
+  };
 }
 
 async function cerrar(operacionId: string, estado: "ejecutado" | "cancelado"): Promise<void> {
@@ -838,6 +987,16 @@ function describirCantidad(pendiente: LotePendiente): string {
 }
 
 function resumenParaConfirmar(pendiente: LotePendiente): string {
+  const extras = pendiente.extras ?? [];
+  if (extras.length === 0) return resumenDeUno(pendiente);
+  // Varios lotes del mismo mensaje: una línea cada uno y UNA sola pregunta
+  // (01/10/2026: "cuantos menos mensajes mejor, WhatsApp cobra por mensaje").
+  const lineas = [pendiente, ...extras].map((p) => resumenDeUno(p).split("\n").filter((l) => !/^¿/.test(l)).join("\n"));
+  const pregunta = extras.length === 1 ? ["¿Cargo las dos cosas?", "¿Te cargo las dos?", "¿Cargo todo?"] : ["¿Cargo todo?", "¿Te cargo todo?"];
+  return `${lineas.join("\n")}\n${elegir(pregunta)}`;
+}
+
+function resumenDeUno(pendiente: LotePendiente): string {
   const desc = descriptor(pendiente.especie);
   const proveedor = pendiente.proveedor ? `, de ${pendiente.proveedor}` : "";
 
@@ -901,6 +1060,9 @@ function normalizarPendiente(interpretacion: Record<string, unknown>): LotePendi
       : {}),
     fallos: Number(interpretacion.fallos ?? 0),
     ...(typeof interpretacion.nota === "string" ? { nota: interpretacion.nota } : {}),
+    ...(Array.isArray(interpretacion.extras) && interpretacion.extras.length > 0
+      ? { extras: (interpretacion.extras as Record<string, unknown>[]).map(normalizarPendiente) }
+      : {}),
   };
 }
 

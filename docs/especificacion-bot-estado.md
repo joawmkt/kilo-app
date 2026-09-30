@@ -488,3 +488,58 @@ restauraron desde la copia de trabajo de Claude. **Commitear y pushear enseguida
   media res de cerdo y una de vaca" son dos lotes; "nalga y costilla" ya no se parte en dos
   instrucciones. Mensajes sin "Respondé *confirmar* o *cancelar*".
 
+### 01/10/2026 — Fundamentos de carnicero, un tema por mensaje, cargas juntas, desposte de vaca y asado = costilla
+
+- **"¿X es bueno para Y?" con fundamento (`conocimientoCortes.ts`).** Una ficha por corte
+  (vacuno, cerdo y pollo) con qué es y por qué va o no va con cada cocción (colágeno y
+  cocción lenta, magro que se seca, marmoleado, hueso y grasa en la brasa...). Temas
+  nuevos de consulta `aptitud` y `que_es`, detectados sin IA antes de la recomendación. Si
+  va: lo dice con el porqué y si hay stock; si no hay, ofrece de la tabla de la carnicería
+  lo que sí hay. Si no va: "no es lo ideal", por qué, y qué conviene de lo que hay.
+- **Un tema por mensaje.** La respuesta a una consulta ya no trae pegada la pregunta
+  pendiente ni el resumen del pedido.
+- **Cargas juntas, una confirmación (`probarVariosLotes`).** "Entró un cajón de pollos y una
+  media res de 90" arma un solo resumen con las dos cosas y una sola pregunta; un sí carga
+  todo. Si a una le falta un dato, se pregunta solo eso y las otras esperan.
+- **Desposte de vaca en el panel.** La pantalla de desposte lista también las medias reses
+  de vaca abiertas con sus cortes estimados; el peso real reemplaza al estimado
+  (`pesarDesposteVacuno` en lotes.ts). El control de que no se pese más que la media res
+  se hace del lado del servidor.
+- **Asado = costilla.** "Asado" no es un corte: "¿asado tenés?" es una pregunta por la
+  parrilla y nunca dispara "¿qué tipo de asado?" (se corta en código, en catalogo.ts). La
+  tabla de ocasiones de fábrica ya no tiene "asado" y empieza por costilla. La migración
+  0031 une el producto "asado" dentro de "costilla" (stock, % de rendimiento, sustitutos,
+  recomendaciones y sinónimos) y apaga las preguntas "¿vacuna o de cerdo?" de nalga,
+  cuadrada, cuadril, bola de lomo, peceto y "¿qué chorizo?". Aplicada: costilla quedó con
+  72,7 kg en 9 piezas y "asado" apagado.
+
+### 01/10/2026 (tarde) — Varias preguntas juntas, nada sin stock, piezas enteras, sin sustitutos
+
+- **Varias preguntas en un mensaje.** Dirección, horarios, pagos, envíos y promos se
+  reconocen por texto y se contestan todas juntas (`temasInformativosEnTexto`,
+  `responderTemasInformativos`). Si el mensaje también pide algo, la respuesta va arriba del
+  pedido. La pregunta pendiente ya no se pega a las consultas (era la insistencia del "¿qué
+  tipo de asado buscás?", que además desapareció con la 0031).
+- **Nada sin stock.** El catálogo que ve la IA marca "[SIN STOCK HOY]" y el código saca de
+  cualquier pregunta con opciones las que no tienen stock (`sinOpcionesAgotadas`). Si el
+  cliente nombra algo que no hay, se le dice al momento con alternativas, sin preguntarle
+  la cantidad antes.
+- **Sustitutos → recomendaciones (decisión del fundador).** Se sacó "Reemplazos
+  autorizados" del panel (Configuración). Cuando algo falta, se ofrece de la tabla de
+  recomendaciones de la carnicería: misma ocasión, misma especie primero, con stock
+  (`alternativas.ts`). La tabla `sustitutos_autorizados` queda en la base sin uso. Esto
+  reemplaza a la sección 5.5 de la especificación (pares autorizados).
+- **Recomendaciones por especie.** En el panel (Catálogo → Recomendaciones) cada ocasión
+  se ve separada en De vaca / De cerdo / De pollo, y el bot contesta igual separado cuando
+  hay más de una especie.
+- **Pollo entero se cuenta.** "Quiero 5" hablando de pollo entero son 5 pollos. El resumen
+  dice "Pollo entero: 5 (unos 11,9 kg aprox.)" y agrega "Los kilos son aproximados: se
+  cobra lo que marque la balanza".
+- **Todo se vende como pieza entera.** Cada corte que nace de una media res es una pieza
+  (un vacío, un matambre). "Un vacío" es la pieza entera con sus kilos estimados; "¿cuánto
+  pesa?" contesta el rango (del 10 % más liviano al 10 % más pesado de la tabla de
+  rendimiento) y cuántas enteras hay; al aprobar se da de baja esa pieza
+  (`estimadorInfoPieza`, `venderPiezasEnteras` en lotes.ts). Los bifes, costeletas,
+  osobuco y costilla se venden en porciones: una unidad no es la pieza. El panel de stock
+  muestra cuántas piezas enteras hay de cada corte.
+- **Espera de 3 segundos** (antes 6) antes de contestar (`ventana.ts`).

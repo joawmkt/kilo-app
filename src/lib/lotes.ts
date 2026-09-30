@@ -539,6 +539,85 @@ export async function despostarLote(params: {
 }
 
 /**
+ * Desposte de una media res de VACA (01/10/2026).
+ *
+ * Pedido del fundador: "en la parte de desposte también me debe dar la
+ * opción de despostar las medias res de vaca". La vaca es distinta del cerdo:
+ * sus cortes ya nacieron al cargarla, ESTIMADOS con la tabla de rendimiento.
+ * Despostarla es poner el peso REAL de los cortes que se pesaron: cada peso
+ * reemplaza al estimado (`pesarPieza`), y así la tabla se va afinando con la
+ * balanza de esta carnicería. Lo que no se pesa queda estimado, como estaba.
+ */
+export async function pesarDesposteVacuno(params: {
+  carniceriaId: string;
+  loteId: string;
+  salidas: SalidaPesada[];
+}): Promise<{ ok: boolean; mensaje: string }> {
+  const { carniceriaId, loteId, salidas } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+
+  const { data: lote } = await supabaseAdmin
+    .from("recepciones_lote")
+    .select("id, especie, peso_recibido_kg, estado")
+    .eq("id", loteId)
+    .eq("carniceria_id", carniceriaId)
+    .maybeSingle();
+  if (!lote) return { ok: false, mensaje: "No encontré esa media res." };
+  if (lote.estado === "cerrada") return { ok: false, mensaje: "Esa media res ya está cerrada." };
+
+  const { data: piezasDelLote } = await supabaseAdmin
+    .from("piezas_stock")
+    .select("id, kg_iniciales, confianza, productos!inner(codigo, nombre_display)")
+    .eq("recepcion_lote_id", loteId);
+  const piezas = (piezasDelLote ?? []) as unknown as {
+    id: string;
+    kg_iniciales: number;
+    confianza: string;
+    productos: { codigo: string; nombre_display: string };
+  }[];
+
+  const conPeso = salidas.filter((s) => s.kg > 0);
+  if (conPeso.length === 0) return { ok: false, mensaje: "No me pasaste ningún peso." };
+
+  // Nunca más que la media res (con 2 % de margen por la balanza): lo ya
+  // pesado de antes + lo que se pesa ahora.
+  const yaPesado = piezas
+    .filter((p) => p.confianza === "pesado" && !conPeso.some((s) => s.codigo === p.productos.codigo))
+    .reduce((suma, p) => suma + Number(p.kg_iniciales), 0);
+  const nuevo = conPeso.reduce((suma, s) => suma + s.kg, 0);
+  const entrada = Number(lote.peso_recibido_kg);
+  if (yaPesado + nuevo > entrada * 1.02) {
+    return {
+      ok: false,
+      mensaje: `Eso suma ${redondear(yaPesado + nuevo, 2)} kg pesados y la media res pesó ${redondear(entrada, 2)} kg. Revisá los pesos.`,
+    };
+  }
+
+  const noEstaban: string[] = [];
+  let actualizados = 0;
+  for (const salida of conPeso) {
+    const pieza = piezas.find((p) => p.productos.codigo === salida.codigo);
+    if (!pieza) {
+      noEstaban.push(salida.codigo);
+      continue;
+    }
+    const r = await pesarPieza({ carniceriaId, piezaId: pieza.id, kgReales: redondear(salida.kg, 3) });
+    if (r.ok) actualizados++;
+  }
+
+  const faltan = piezas.filter((p) => p.confianza !== "pesado" && !conPeso.some((s) => s.codigo === p.productos.codigo)).length;
+  return {
+    ok: actualizados > 0,
+    mensaje:
+      actualizados > 0
+        ? `Listo: ${actualizados} ${actualizados === 1 ? "corte quedó" : "cortes quedaron"} con el peso real.` +
+          (faltan > 0 ? ` Los otros ${faltan} siguen con el estimado hasta que los peses.` : " Ya pesaste todos los cortes de esta media res.") +
+          (noEstaban.length > 0 ? ` (${noEstaban.join(", ")} no estaba en esta media res.)` : "")
+        : "No encontré esos cortes en esta media res.",
+  };
+}
+
+/**
  * "Terminé de despostar": lo que no se pesó de la media res es hueso y merma.
  *
  * Se anota como merma (no como descuadre) porque el carnicero lo está
@@ -1100,6 +1179,207 @@ export function estimadorPiezaEntera(
     }
     return promesa;
   };
+}
+
+// ============================================================
+// Vender una pieza ENTERA como unidad (01/10/2026)
+// ============================================================
+//
+// El fundador: "en el stock debemos tener la posibilidad de vender TODO como
+// unidad... entra una media res de 90 kg y tiene 1 unidad de vacío (por si
+// alguien pregunta por un vacío entero) y esa misma unidad representa un
+// estimado de entre 3 y 6 kg".
+//
+// Eso ya existe en el stock: cada media res se abre en piezas (UN vacío, UN
+// matambre, UNA entraña...), cada una con sus kilos estimados. Lo que faltaba
+// era usarlo: contar las piezas ENTERAS que quedan (las que nadie empezó a
+// cortar), decir entre cuántos y cuántos kilos anda cada una (sale de la
+// tabla de rendimiento: el 10 % más liviano y el 10 % más pesado), y al
+// aprobar el pedido dar de baja ESA pieza entera, no kilos sueltos de varias.
+//
+// Cuando el carnicero la pesa (desposte), deja de ser estimada: el rango
+// pasa a ser el peso real.
+
+/**
+ * Cortes que se venden en PORCIONES: "2 bifes de chorizo" son dos bifes, no
+ * dos bloques enteros de 3 kg. En estos, una unidad no es la pieza: se usa el
+ * peso por unidad del catálogo, o se pregunta.
+ */
+const SE_VENDEN_EN_PORCIONES = new Set([
+  "bife_ancho",
+  "bife_angosto",
+  "bife_de_chorizo",
+  "costeleta_de_cerdo",
+  "osobuco",
+  "costilla",
+]);
+
+export type InfoPiezaEntera = {
+  /** Lo que pesa, en promedio, una pieza entera (las que hay, o las últimas que entraron). */
+  kgPromedio: number;
+  /** Entre cuánto y cuánto puede pesar una (del rendimiento; igual al promedio si no hay tabla). */
+  kgMin: number;
+  kgMax: number;
+  /** Las piezas enteras disponibles, en el orden en que se venden (la que vence primero). */
+  enteras: { id: string; kg: number; recepcion_lote_id: string | null }[];
+};
+
+/** ¿Una unidad de este producto es la pieza entera que vino en la media res? */
+export function seVendePorPieza(producto: { codigo: string; especie: string | null; peso_aproximado_unidad_kg?: number | null }): boolean {
+  if (!producto.especie || !ESPECIES_CON_PIEZA_ENTERA.has(producto.especie)) return false;
+  if (producto.peso_aproximado_unidad_kg != null && producto.peso_aproximado_unidad_kg > 0) return false;
+  return !SE_VENDEN_EN_PORCIONES.has(producto.codigo);
+}
+
+export function estimadorInfoPieza(
+  carniceriaId: string
+): (producto: { id: string; codigo: string; especie: string | null; peso_aproximado_unidad_kg?: number | null }) => Promise<InfoPiezaEntera | null> {
+  const historico = estimadorPiezaEntera(carniceriaId);
+  const cache = new Map<string, Promise<InfoPiezaEntera | null>>();
+  return (producto) => {
+    if (!seVendePorPieza(producto)) return Promise.resolve(null);
+    let promesa = cache.get(producto.id);
+    if (!promesa) {
+      promesa = (async () => {
+        const supabaseAdmin = getSupabaseAdmin();
+        const [{ data: piezas }, { data: rendimientos }] = await Promise.all([
+          supabaseAdmin
+            .from("piezas_stock")
+            .select("id, kg_iniciales, kg_restantes, confianza, recepcion_lote_id")
+            .eq("carniceria_id", carniceriaId)
+            .eq("producto_id", producto.id)
+            .eq("estado", "disponible")
+            .eq("es_subproducto", false)
+            .gt("kg_restantes", 0)
+            .order("vence_at", { ascending: true, nullsFirst: false })
+            .order("ingresada_at", { ascending: true }),
+          supabaseAdmin
+            .from("rendimiento_cortes")
+            .select("pct_central, pct_p10, pct_p90, tablas_rendimiento!inner(carniceria_id, vigente_hasta)")
+            .eq("producto_id", producto.id)
+            .eq("tablas_rendimiento.carniceria_id", carniceriaId)
+            .is("tablas_rendimiento.vigente_hasta", null),
+        ]);
+
+        // Cuánto más liviana o pesada puede venir una pieza, relativo a la
+        // estimada. Si no hay tabla, no se inventa un margen: rango = estimado.
+        const ratios = ((rendimientos ?? []) as { pct_central: number; pct_p10: number | null; pct_p90: number | null }[])
+          .filter((r) => Number(r.pct_central) > 0 && r.pct_p10 != null && r.pct_p90 != null)
+          .map((r) => ({ bajo: Number(r.pct_p10) / Number(r.pct_central), alto: Number(r.pct_p90) / Number(r.pct_central) }));
+        const bajo = ratios.length > 0 ? ratios.reduce((a, r) => a + r.bajo, 0) / ratios.length : 1;
+        const alto = ratios.length > 0 ? ratios.reduce((a, r) => a + r.alto, 0) / ratios.length : 1;
+
+        const filas = (piezas ?? []) as {
+          id: string;
+          kg_iniciales: number;
+          kg_restantes: number;
+          confianza: string;
+          recepcion_lote_id: string | null;
+        }[];
+        // Entera = nadie la empezó a cortar (un 2 % de margen por redondeos).
+        const enteras = filas.filter(
+          (p) => p.recepcion_lote_id != null && Number(p.kg_restantes) >= Number(p.kg_iniciales) * 0.98
+        );
+
+        if (enteras.length > 0) {
+          const kgs = enteras.map((p) => Number(p.kg_restantes));
+          const minimos = enteras.map((p) => (p.confianza === "pesado" ? Number(p.kg_restantes) : Number(p.kg_restantes) * bajo));
+          const maximos = enteras.map((p) => (p.confianza === "pesado" ? Number(p.kg_restantes) : Number(p.kg_restantes) * alto));
+          return {
+            kgPromedio: redondear(kgs.reduce((a, b) => a + b, 0) / kgs.length, 2),
+            kgMin: redondear(Math.min(...minimos), 1),
+            kgMax: redondear(Math.max(...maximos), 1),
+            enteras: enteras.map((p) => ({ id: p.id, kg: Number(p.kg_restantes), recepcion_lote_id: p.recepcion_lote_id })),
+          };
+        }
+
+        // No queda ninguna entera: lo que pesaban las últimas que entraron.
+        const promedio = await historico(producto);
+        if (!promedio) return null;
+        return { kgPromedio: promedio, kgMin: redondear(promedio * bajo, 1), kgMax: redondear(promedio * alto, 1), enteras: [] };
+      })();
+      cache.set(producto.id, promesa);
+    }
+    return promesa;
+  };
+}
+
+/**
+ * Al aprobar un pedido de "N piezas enteras": se dan de baja N piezas ENTERAS
+ * (FEFO), no N × kilos repartidos entre varias. Si no alcanzan las enteras
+ * (alguien cortó una en el medio), el resto se descuenta por kilos como
+ * siempre. Devuelve los kilos que salieron de verdad.
+ */
+export async function venderPiezasEnteras(params: {
+  carniceriaId: string;
+  producto: { id: string; codigo: string; especie: string | null; peso_aproximado_unidad_kg?: number | null };
+  unidades: number;
+  kgEstimados: number;
+  pedidoId?: string | null;
+}): Promise<{ kg: number; piezas: number }> {
+  const { carniceriaId, producto, pedidoId } = params;
+  const supabaseAdmin = getSupabaseAdmin();
+  const n = Math.max(0, Math.floor(params.unidades));
+
+  // Pollo entero: una pieza es un pollo, y toda pieza disponible está entera.
+  const esPollo = producto.codigo === descriptor("aviar").codigoProductoUnidad;
+  let enteras: { id: string; kg: number; recepcion_lote_id: string | null }[] = [];
+  if (esPollo) {
+    const { data } = await supabaseAdmin
+      .from("piezas_stock")
+      .select("id, kg_restantes, recepcion_lote_id")
+      .eq("carniceria_id", carniceriaId)
+      .eq("producto_id", producto.id)
+      .eq("estado", "disponible")
+      .gt("kg_restantes", 0)
+      .order("vence_at", { ascending: true, nullsFirst: false })
+      .order("ingresada_at", { ascending: true })
+      .limit(n);
+    enteras = ((data ?? []) as { id: string; kg_restantes: number; recepcion_lote_id: string | null }[]).map((p) => ({
+      id: p.id,
+      kg: Number(p.kg_restantes),
+      recepcion_lote_id: p.recepcion_lote_id,
+    }));
+  } else {
+    enteras = (await estimadorInfoPieza(carniceriaId)(producto))?.enteras ?? [];
+  }
+
+  let kg = 0;
+  let vendidas = 0;
+  for (const pieza of enteras.slice(0, n)) {
+    await supabaseAdmin
+      .from("piezas_stock")
+      .update({ kg_restantes: 0, estado: "agotada", agotada_at: new Date().toISOString() })
+      .eq("id", pieza.id);
+    await supabaseAdmin.from("movimientos_stock").insert({
+      carniceria_id: carniceriaId,
+      pieza_id: pieza.id,
+      recepcion_lote_id: pieza.recepcion_lote_id,
+      tipo: "venta",
+      kg: pieza.kg,
+      causa: "Pedido aprobado (pieza entera)",
+      pedido_id: pedidoId ?? null,
+    });
+    kg = redondear(kg + pieza.kg, 3);
+    vendidas++;
+  }
+
+  // Si faltaron piezas enteras, lo que falta sale por kilos (FEFO).
+  if (vendidas < n) {
+    const faltanKg = redondear((params.kgEstimados / Math.max(1, n)) * (n - vendidas), 3);
+    const resto = await consumirDeProducto({
+      carniceriaId,
+      productoId: producto.id,
+      kg: faltanKg,
+      tipo: "venta",
+      causa: "Pedido aprobado",
+      pedidoId,
+    });
+    kg = redondear(kg + resto.kgConsumidos, 3);
+  } else {
+    await recalcularStock(producto.id);
+  }
+  return { kg, piezas: vendidas };
 }
 
 /**

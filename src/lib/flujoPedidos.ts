@@ -5,6 +5,7 @@ import {
   nombreDichoPor,
   corregirPorNombrePropio,
   productosEnTexto,
+  sinOpcionesAgotadas,
   CatalogoCarniceria,
   Producto,
 } from "./catalogo";
@@ -29,17 +30,38 @@ import { variarSiSeRepite } from "./conversacion";
 import { extraerHora, resolverHora, validarIso, formatearRetiro } from "./horaRetiro";
 import { cargarAgenda } from "./horarios";
 import { historialReciente } from "./historial";
-import { ocasionPedida } from "./recomendaciones";
+import { ocasionPedida, ocasionNombrada } from "./recomendaciones";
+import { preguntaSiSirve, preguntaQueEs } from "./conocimientoCortes";
 import { elegir, FRASES, suavizar, esCierre } from "./tono";
 import { leerMemoria, recordar, leerPersonas, totalDePersonas, type FaltanteDeLaCharla } from "./memoriaCharla";
 import { cantidadPorPersona, redondearUnidades, repartir, leerPreferenciaReparto, leerReemplazo, type Reparto } from "./decisionesCliente";
 import { clasificarDecisionCarnicero } from "./confirmacionPedido";
-import { buscarSustitutoAutorizado } from "./alternativas";
-import { responderConsulta, respuestaSinDato, bloquePromocionesParaPrompt, preguntaPorPeso, MARCA_PIEZA_ENTERA, textoPeso } from "./consultas";
+import { mejorReemplazo, opcionesDeReemplazo } from "./alternativas";
+import {
+  responderConsulta,
+  respuestaSinDato,
+  bloquePromocionesParaPrompt,
+  preguntaPorPeso,
+  MARCA_PIEZA_ENTERA,
+  textoPeso,
+  temasInformativosEnTexto,
+  responderTemasInformativos,
+  TEMAS_INFORMATIVOS,
+  type TemaConsulta,
+} from "./consultas";
 import { obtenerOCrearCliente } from "./clientes";
 import { obtenerNumerosCarnicero } from "./numerosCarnicero";
 import { esCarniceroAutorizado } from "./quienEs";
-import { consumirDeProducto, devolverStockDePedido, estimadorPorUnidad, estimadorPiezaEntera } from "./lotes";
+import {
+  consumirDeProducto,
+  devolverStockDePedido,
+  estimadorPorUnidad,
+  estimadorPiezaEntera,
+  estimadorInfoPieza,
+  seVendePorPieza,
+  venderPiezasEnteras,
+} from "./lotes";
+import { descriptor } from "./especies";
 import { ahoraArgentinaIso, finDeHoyArgentina, formatearHoraArgentina } from "./tiempo";
 import { normalizarTexto } from "./texto";
 
@@ -75,6 +97,11 @@ export type ItemGuardadoPedido = {
    * "Pata y muslo: 3 u. (~1,5 kg)".
    */
   unidades_cliente?: number | null;
+  /**
+   * Se vende la PIEZA ENTERA (un vacío entero, un pollo entero): al aprobar se
+   * da de baja esa pieza, no kilos sueltos (01/10/2026).
+   */
+  pieza_entera?: boolean;
   // Precio de lista congelado al aprobar. Se guarda acá y no se recalcula
   // después: si mañana sube el precio del asado, el pedido de ayer no cambia
   // de valor retroactivamente. ESTIMATIVO — el total real se define al pesar.
@@ -90,7 +117,8 @@ type Sustitucion = {
   cantidad: number;
   unidad: string;
   /** El reemplazo depende del uso: hay que preguntarlo antes (sección 5.4). */
-  requierePreguntarUso?: boolean;
+  /** "para la parrilla": por qué ese reemplazo tiene sentido (sale de la tabla de recomendaciones). */
+  paraQue?: string;
 };
 
 /** Un producto del que había menos de lo pedido (sección 39). */
@@ -251,19 +279,46 @@ async function convertirACantidadReal(
   cantidad: number,
   unidadCliente: string,
   estimar: ReturnType<typeof estimadorPorUnidad>,
-  /** Pieza entera (lo que pesó al entrar con la media res): solo si el cliente la pidió entera. */
-  pieza?: { estimar: ReturnType<typeof estimadorPiezaEntera>; permitida: boolean }
-): Promise<{ kg: number; unidades: number | null } | null> {
+  /**
+   * La pieza entera que vino en la media res. Se usa sola en los cortes que
+   * se venden por pieza ("un vacío" = el vacío entero, 01/10/2026), y en los
+   * que se venden en porciones solo si el cliente dijo "entero" o "pieza".
+   */
+  pieza?: { estimar: ReturnType<typeof estimadorInfoPieza>; permitida: boolean }
+): Promise<{ kg: number; unidades: number | null; piezaEntera: boolean } | null> {
   if (producto.unidad === "kg" && esPedidoPorUnidad(unidadCliente)) {
-    const peso = await estimar(producto);
-    if (peso) return { kg: Number((cantidad * peso.kg).toFixed(3)), unidades: cantidad };
-    if (pieza?.permitida) {
-      const kgPieza = await pieza.estimar(producto);
-      if (kgPieza) return { kg: Number((cantidad * kgPieza).toFixed(3)), unidades: cantidad };
+    const esPollo = producto.codigo === descriptor("aviar").codigoProductoUnidad;
+    const porPieza = seVendePorPieza(producto) || Boolean(pieza?.permitida);
+    // El peso por unidad del catálogo manda (una milanesa, un bife), salvo en
+    // los cortes que se venden por pieza, donde la pieza real sabe más.
+    if (!porPieza || esPollo) {
+      const peso = await estimar(producto);
+      if (peso) return { kg: Number((cantidad * peso.kg).toFixed(3)), unidades: cantidad, piezaEntera: esPollo };
+    }
+    if (porPieza && pieza) {
+      const info = await pieza.estimar({ ...producto, peso_aproximado_unidad_kg: seVendePorPieza(producto) ? producto.peso_aproximado_unidad_kg : null });
+      if (info) {
+        // Si hay tantas enteras como pidió, los kilos son los de ESAS piezas
+        // (las que se le van a dar); si no, el promedio.
+        const n = Math.max(1, Math.round(cantidad));
+        const kg = info.enteras.length >= n ? info.enteras.slice(0, n).reduce((a, p) => a + p.kg, 0) : info.kgPromedio * cantidad;
+        return { kg: Number(kg.toFixed(3)), unidades: cantidad, piezaEntera: true };
+      }
     }
     return null;
   }
-  return { kg: cantidad, unidades: null };
+  return { kg: cantidad, unidades: null, piezaEntera: false };
+}
+
+/**
+ * Lo que se cuenta, no se pesa: "quiero 5" hablando de pollo entero son 5
+ * pollos, no 5 kg (bug del 01/10/2026). Solo si el cliente no nombró kilos.
+ */
+function seCuentaPorUnidad(producto: Producto, cantidad: number, unidadCliente: string, texto: string): boolean {
+  if (esPedidoPorUnidad(unidadCliente)) return false; // ya viene por unidad
+  if (producto.codigo !== descriptor("aviar").codigoProductoUnidad) return false;
+  if (!Number.isInteger(cantidad) || cantidad <= 0 || cantidad > 30) return false;
+  return !/\b(kg|kgs|kilos?|k|gramos|gr|g|medio kilo)\b|\d\s*(kg|k)\b/i.test(texto);
 }
 
 /**
@@ -272,7 +327,15 @@ async function convertirACantidadReal(
  */
 function mostrarCantidad(item: ItemGuardadoPedido): string {
   const n = (x: number) => x.toLocaleString("es-AR", { maximumFractionDigits: 2 });
-  if (item.unidades_cliente) return ` ${n(item.unidades_cliente)} u. (~${n(item.cantidad)} kg)`;
+  // Los kilos de algo pedido por unidad son un estimado, y se dice (01/10/2026:
+  // "debe aclarar que los kg son aproximados").
+  const aprox = (kg: number) => `(unos ${n(Math.round(kg * 10) / 10)} kg aprox.)`;
+  if (item.unidades_cliente && item.pieza_entera) {
+    if (item.producto_codigo === descriptor("aviar").codigoProductoUnidad) return ` ${n(item.unidades_cliente)} ${aprox(item.cantidad)}`;
+    const piezas = item.unidades_cliente === 1 ? "1 pieza entera" : `${n(item.unidades_cliente)} piezas enteras`;
+    return ` ${piezas} ${aprox(item.cantidad)}`;
+  }
+  if (item.unidades_cliente) return ` ${n(item.unidades_cliente)} u. ${aprox(item.cantidad)}`;
   if (item.unidad === "kg") return ` ${n(item.cantidad)} kg`;
   const plural = item.cantidad === 1 ? item.unidad : item.unidad.endsWith("a") || item.unidad.endsWith("o") ? `${item.unidad}s` : `${item.unidad}es`;
   return ` ${n(item.cantidad)} ${plural}`;
@@ -589,7 +652,7 @@ function mensajeResumenPedidoParaCarnicero(params: {
   const quien = clienteNombre ? `${clienteNombre} (${clienteTelefono})` : clienteTelefono;
   const lineas = items.map(
     (item) =>
-      `- ${item.nombre_display}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
+      `- ${nombreEnResumen(item)}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
   );
   return [
     `🧾 Pedido nuevo de ${quien}`,
@@ -728,6 +791,7 @@ async function armarYGuardarPedido(params: {
   // Con qué palabra nombró el cliente cada producto, mirando TODA la charla.
   const { nombrar, ultimoMensajeBot } = await contextoDeCharla({ carniceriaId, telefono, texto, pedidoId });
   const estimarPieza = estimadorPiezaEntera(carniceriaId);
+  const estimarInfoPieza = estimadorInfoPieza(carniceriaId);
   // ¿"Uno" acá quiere decir una pieza ENTERA? Solo si lo dijo ("entero",
   // "pieza") o si justo le acabamos de contar cuánto pesa la pieza entera de
   // ese corte ("dame uno" después de "la pieza entera de matambre pesa 1,5 kg").
@@ -747,8 +811,9 @@ async function armarYGuardarPedido(params: {
       return `Perdón, no reconocí uno de los productos que pediste ("${item.producto_codigo}"). ¿Podés decirlo de otra forma?`;
     }
 
-    const convertida = await convertirACantidadReal(producto, item.cantidad, item.unidad, estimar, {
-      estimar: estimarPieza,
+    const unidadDelCliente = seCuentaPorUnidad(producto, item.cantidad, item.unidad, texto) ? "unidad" : item.unidad;
+    const convertida = await convertirACantidadReal(producto, item.cantidad, unidadDelCliente, estimar, {
+      estimar: estimarInfoPieza,
       permitida: pideEntera(producto),
     });
     if (convertida === null) {
@@ -779,8 +844,9 @@ async function armarYGuardarPedido(params: {
         cantidad: cantidadReal,
         unidad: producto.unidad,
         disponible: true,
-        preparacion: detectarPreparacion(texto),
+        preparacion: convertida.piezaEntera && detectarPreparacion(texto) === "entero" ? null : detectarPreparacion(texto),
         unidades_cliente: convertida.unidades,
+        ...(convertida.piezaEntera ? { pieza_entera: true } : {}),
       });
       continue;
     }
@@ -792,12 +858,14 @@ async function armarYGuardarPedido(params: {
     // "De vacío me quedan 1,8 kg" es muchísimo mejor que "no tengo vacío". El
     // objetivo de esa sección es resolver la necesidad del cliente, no
     // limitarse a decir que no hay. Se le ofrece lo que hay, y si además existe
-    // un sustituto autorizado, se le ofrece completar con eso.
+    // algo de la tabla de recomendaciones con stock, se ofrece completar con eso.
     const hayAlgo = producto.stock_actual > 0;
 
     const faltante = hayAlgo ? Number((cantidadReal - producto.stock_actual).toFixed(3)) : cantidadReal;
 
-    const sustituto = await buscarSustitutoAutorizado({
+    // Qué se le ofrece en lugar de lo que falta: de la tabla de
+    // recomendaciones de la carnicería, con stock (alternativas.ts).
+    const sustituto = await mejorReemplazo({
       carniceriaId,
       catalogo,
       productoFaltante: producto,
@@ -834,7 +902,7 @@ async function armarYGuardarPedido(params: {
         alternativa_nombre: sustituto.producto.nombre_display,
         cantidad: faltante,
         unidad: producto.unidad,
-        requierePreguntarUso: sustituto.requierePreguntarUso,
+        paraQue: sustituto.paraQue,
       });
     } else if (!hayAlgo) {
       descartadosSinAlternativa.push(nombre);
@@ -846,26 +914,26 @@ async function armarYGuardarPedido(params: {
   if (sustituciones.length > 0) {
     // Sección 39: primero se cuenta qué hay, y recién después se ofrece
     // completar. El orden importa: el cliente quiere saber si se lleva algo.
-    const lineasSustitucion = sustituciones
-      .map((s) => {
-        const parcial = parciales.find((p) => p.nombre === s.producto_faltante_nombre);
-        if (parcial) {
-          return `- De ${s.producto_faltante_nombre} me quedan ${parcial.hay}${parcial.unidad}. Si querés, completamos los ${s.cantidad}${s.unidad} que faltan con ${s.alternativa_nombre}. ¿Te sirve?`;
-        }
-        return `- No tengo "${s.producto_faltante_nombre}", pero sí "${s.alternativa_nombre}" (${s.cantidad}${s.unidad}). ¿Te sirve?`;
-      })
-      .join("\n");
+    const cant = (n: number, unidad: string) => (unidad === "kg" ? kgATexto(n) : `${n} ${unidad}${n === 1 ? "" : "s"}`);
+    // Lo que se ofrece sale de la tabla de recomendaciones: se dice para qué
+    // va ("que también va para la parrilla"), así el cambio tiene sentido.
+    const lineasSustitucion = sustituciones.map((s) => {
+      const parcial = parciales.find((p) => p.nombre === s.producto_faltante_nombre);
+      const razon = s.paraQue ? `, que también va ${s.paraQue}` : "";
+      if (parcial) {
+        return `De ${s.producto_faltante_nombre.toLowerCase()} me quedan ${cant(parcial.hay, parcial.unidad)}. Los ${cant(s.cantidad, s.unidad)} que faltan te los puedo completar con ${s.alternativa_nombre.toLowerCase()}${razon}.`;
+      }
+      return `${s.producto_faltante_nombre} no me queda 😕 pero tengo ${s.alternativa_nombre.toLowerCase()}${razon}: te pongo ${cant(s.cantidad, s.unidad)}.`;
+    });
 
-    // Sección 5.4: cuando el reemplazo depende de para qué lo va a usar, se
-    // pregunta antes en vez de asumir.
-    const preguntaUso = sustituciones.some((s) => s.requierePreguntarUso)
-      ? "\n(Contame para qué lo ibas a usar y te digo si te sirve el cambio.)"
-      : "";
     const lineasDescartados =
       descartadosSinAlternativa.length > 0
-        ? `\nPor ahora no tengo disponible: ${descartadosSinAlternativa.join(", ")} (ni un sustituto parecido) — lo saqué del pedido.`
-        : "";
-    const pregunta = `${lineasSustitucion}${lineasDescartados}${preguntaUso}\n\nRespondé *sí* para aceptar los cambios, o *no* para sacarlos del pedido.`;
+        ? [`De ${descartadosSinAlternativa.join(", ")} no me queda ni tengo algo parecido, así que lo saqué.`]
+        : [];
+    // Una sola pregunta al final, y en criollo: nada de "Respondé *sí* para
+    // aceptar los cambios" (01/10/2026: "no tan estructurado").
+    const preguntaFinal = sustituciones.length === 1 ? "¿Te sirve el cambio?" : "¿Te sirven los cambios?";
+    const pregunta = [...lineasSustitucion, ...lineasDescartados, "", preguntaFinal].join("\n");
 
     await guardar({
       estado: "pendiente_aclaracion",
@@ -979,7 +1047,7 @@ function resumenParaConfirmar(params: {
   const { items, horaRetiroIso, avisoDescartados, sugerencia } = params;
   const lineas = items.map(
     (item) =>
-      `- ${item.nombre_display}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
+      `- ${nombreEnResumen(item)}:${mostrarCantidad(item)}${etiquetaPreparacion(item.preparacion)}`
   );
   // El encabezado y la pregunta varían: el mismo "Entonces te preparo: ...
   // ¿Está bien así?" tres veces seguidas suena a máquina (pedido del
@@ -989,9 +1057,23 @@ function resumenParaConfirmar(params: {
     `${avisoDescartados}${elegir(FRASES.encabezadoResumen)}`,
     ...lineas,
     `Retiro: ${formatearRetiro(new Date(horaRetiroIso))} hs.`,
+    // La carne no sale exacta: se avisa una vez, corto (01/10/2026).
+    ...(items.some((i) => i.unidad === "kg") ? ["Los kilos son aproximados: se cobra lo que marque la balanza."] : []),
     "",
     sugerencia ?? elegir(FRASES.preguntaResumen),
   ].join("\n");
+}
+
+/**
+ * El nombre en el resumen. El pollo entero se nombra entero ("Pollo entero:
+ * 5"), aunque el cliente haya dicho "pollo": "Pollo: 5" no dice si va entero
+ * o en presas.
+ */
+function nombreEnResumen(item: ItemGuardadoPedido): string {
+  if (item.producto_codigo === descriptor("aviar").codigoProductoUnidad && !/enter/i.test(item.nombre_display)) {
+    return `${item.nombre_display} entero`;
+  }
+  return item.nombre_display;
 }
 
 // ============================================================
@@ -1332,13 +1414,26 @@ async function procesarResultado(params: {
       if (delContexto.length > 0) productosConsultados = Array.from(new Set(delContexto));
     }
 
-    const respuesta = await responderConsulta({
+    // "¿Dónde están? ¿Qué días abren?": si la IA vio una sola pregunta de
+    // información pero el mensaje trae más, se contestan todas juntas.
+    const otrasInformativas = TEMAS_INFORMATIVOS.includes(resultado.tema)
+      ? temasInformativosEnTexto(params.texto).filter((t) => t !== resultado.tema)
+      : [];
+    const respuesta = otrasInformativas.length > 0
+      ? await responderTemasInformativos(
+          carniceriaId,
+          temasInformativosEnTexto(params.texto).includes(resultado.tema)
+            ? temasInformativosEnTexto(params.texto)
+            : [resultado.tema, ...otrasInformativas]
+        )
+      : await responderConsulta({
       carniceriaId,
       tema: resultado.tema,
       catalogo,
       productosConsultados,
       nombrar: await nombradorDelCliente({ carniceriaId, telefono, texto: params.texto, pedidoId }),
       ocasion: resultado.ocasion,
+      texto: params.texto,
     });
 
     // "¡Hola! ¿Qué te quedó para la parrilla?": se saluda UNA línea y se
@@ -1363,11 +1458,13 @@ async function procesarResultado(params: {
     const conCalculo = calculo ? cuerpo.replace(/\s*(¿[^?]*\?|Decime cuál y te lo aparto\.)\s*$/, "") + calculo : cuerpo;
     const texto = `${saludo}${conCalculo}`;
 
-    // Si había una pregunta pendiente del pedido, se la repite al final: si no,
-    // el cliente contesta la consulta y ya nadie se acuerda de dónde íbamos.
-    if (pedidoId && preguntaPendientePrevia) {
-      return `${texto}\n\n${preguntaPendientePrevia}`;
-    }
+    // La pregunta pendiente del pedido NO se pega abajo (01/10/2026). El
+    // fundador: "no se deben mezclar dos mensajes, queda confuso. Primero hay
+    // que hablar de lo que quiere hablar el cliente". El pedido sigue en pie
+    // con su pregunta guardada: cuando el cliente termine con sus dudas y
+    // conteste ("dale", "a las 19"), se retoma de donde estaba; y si se va,
+    // el cierre ("gracias") se la recuerda. Además es un mensaje más corto
+    // (WhatsApp cobra por mensaje, y un mensaje largo y mezclado se lee mal).
     return texto;
   }
 
@@ -1431,6 +1528,55 @@ async function procesarResultado(params: {
       if (!codigosEnParciales.has(item.producto_codigo)) {
         itemsParciales = [...itemsParciales, { producto_codigo: item.producto_codigo, ...comoLoPidio(item) }];
       }
+    }
+  }
+
+  // ------------------------------------------------------------
+  // Pidió algo que no hay: se le dice YA, no después de preguntarle cuánto
+  // ------------------------------------------------------------
+  //
+  // Bug del 01/10: "milanesa de cerdo" → "¿cuántos kilos?" → "3" → "no tengo
+  // stock de nada de lo que pediste". Se le hizo contestar una pregunta al
+  // pedo. Ahora, apenas nombra algo sin stock, se le dice y se le ofrece lo
+  // que sí hay de la tabla de recomendaciones (misma especie primero).
+  if (resultado.tipo !== "pedido") {
+    const agotados = itemsParciales.filter((i) => {
+      const producto = i.producto_codigo ? catalogo.porCodigo.get(i.producto_codigo) : undefined;
+      return producto != null && i.cantidad == null && !(producto.stock_actual > 0);
+    });
+    if (agotados.length > 0) {
+      const nombrar = await nombradorDelCliente({ carniceriaId, telefono, texto, pedidoId });
+      const partes: string[] = [];
+      const excluidos = new Set<string>();
+      for (const item of agotados) {
+        const producto = catalogo.porCodigo.get(item.producto_codigo!)!;
+        excluidos.add(producto.id);
+        const opciones = await opcionesDeReemplazo({ carniceriaId, catalogo, productoFaltante: producto, excluidos });
+        opciones.productos.forEach((p) => excluidos.add(p.id));
+        const crudo = nombrar(producto);
+        const nombre = crudo.charAt(0).toUpperCase() + crudo.slice(1);
+        const nombres = opciones.productos.map((p) => nombrar(p).toLowerCase());
+        const lista = nombres.length <= 1 ? nombres[0] ?? "" : `${nombres.slice(0, -1).join(", ")} o ${nombres[nombres.length - 1]}`;
+        partes.push(
+          nombres.length > 0
+            ? `${nombre} hoy no me queda 😕 Te puedo ofrecer ${lista}, que también van ${opciones.paraQue ?? "bien"}.`
+            : `${nombre} hoy no me queda 😕`
+        );
+      }
+      const restantes = itemsParciales.filter((i) => !agotados.includes(i));
+      const ofrecioAlgo = partes.some((p) => p.includes("Te puedo ofrecer"));
+      const pregunta = `${partes.join("\n")}\n\n${ofrecioAlgo ? "¿Te sirve alguno?" : "¿Querés otra cosa?"}`;
+      await guardar({
+        estado: "pendiente_aclaracion",
+        transcripcion: texto,
+        pregunta_pendiente: pregunta,
+        item_parcial: restantes,
+        ...(horaRetiroIso ? { hora_retiro: horaRetiroIso } : {}),
+        interpretacion: { fase: "esperando_dato_item", personas, intentosPersonas: intentosPersonasPrevios, ...extraFase },
+        expires_at: finDeHoyArgentina().toISOString(),
+        updated_at: ahora,
+      });
+      return pregunta;
     }
   }
 
@@ -1603,10 +1749,15 @@ async function procesarResultado(params: {
 
   // Lo que escribe la IA pasa por el filtro de tono: nada de "Entendido",
   // "necesito que me digas exactamente" ni "¿te preparo algo?" (tono.ts).
-  const preguntaCruda =
+  // Y nunca ofrece opciones sin stock (01/10/2026): se sacan de la pregunta.
+  const preguntaDeLaIA =
     resultado.tipo === "aclaracion" || resultado.tipo === "info_faltante"
-      ? suavizar(resultado.pregunta)
-      : preguntaPendientePrevia
+      ? sinOpcionesAgotadas(suavizar(resultado.pregunta), catalogo) ??
+        elegir(["Justo de eso hoy no me queda nada 😕 ¿Te cuento qué tengo?", "Uy, de eso hoy no tengo 😕 ¿Querés que te diga qué me queda?"])
+      : null;
+  const preguntaCruda = preguntaDeLaIA
+    ? preguntaDeLaIA
+    : preguntaPendientePrevia
         ? preguntaPendientePrevia // variarSiSeRepite (abajo) le cambia la entrada
         : "Perdón, no te agarré 🙈 ¿Me lo decís de otra forma?";
 
@@ -2389,7 +2540,68 @@ function mencionaProductos(resultado: ResultadoInterpretacionPedido): boolean {
   return false;
 }
 
+// "Apenas abran", "cuando cierren": es una HORA de retiro, no una pregunta
+// por el horario.
+const HORA_POR_EL_HORARIO = /\b(apenas|ni bien|antes de que|despues de que) (abr|cierr)|\bcuando (abran|abras|cierren|cierres|este abierto)\b|\bal (abrir|cerrar)\b/;
+const EMPIEZA_PREGUNTANDO = /^(hola\s+|buen[oa]s?\s+\w*\s*)?(que|donde|cual|cuales|como|a que|hasta|desde|tienen|hacen|aceptan|abren|atienden|estan|hay|trabajan|cuando)\b/;
+
+/**
+ * Los temas de información que pregunta el mensaje, si el mensaje es SOLO
+ * eso (no nombra productos ni pide nada). Vacío si no.
+ */
+function esSoloPreguntaInformativa(texto: string, catalogo: CatalogoCarniceria): TemaConsulta[] {
+  const temas = temasInformativosEnTexto(texto);
+  if (temas.length === 0) return [];
+  const t = normalizarTexto(texto);
+  if (HORA_POR_EL_HORARIO.test(t)) return [];
+  if (productosEnTexto(catalogo, texto).length > 0) return [];
+  // Una promo sola puede ser el comienzo de un pedido ("tienen la promo del
+  // asado?") y la IA ya la maneja bien con el bloque de promos del prompt.
+  if (temas.length === 1 && temas[0] === "promociones") return [];
+  const esPregunta = /\?/.test(texto) || EMPIEZA_PREGUNTANDO.test(t) || temas.length > 1;
+  return esPregunta ? temas : [];
+}
+
+/**
+ * La primera línea de una respuesta de información, para saber si ya se
+ * contestó (sin el "Te esperamos", que se saca cuando hay varias juntas).
+ */
+function huellaDeRespuesta(respuesta: string): string {
+  return respuesta.split("\n")[0].replace(/\s*Te esperamos 🙌$/, "").trim();
+}
+
+/**
+ * Un pedido con una pregunta adentro ("quiero 2 kg de vacío, ¿hasta qué hora
+ * abren?"): el flujo arma el pedido y acá se contesta la pregunta arriba, en
+ * el MISMO mensaje (01/10/2026: "debe saber responder dos preguntas a la
+ * vez"). Si la respuesta ya la trae (porque era solo una consulta), no se
+ * repite.
+ */
 async function procesarMensajeDeCliente(params: {
+  carniceriaId: string;
+  telefono: string;
+  mensajeWhatsappId: string;
+  texto: string;
+  nombreWhatsapp?: string | null;
+}): Promise<string> {
+  const respuesta = await procesarMensajeDeClienteSinPreguntasSueltas(params);
+  const t = normalizarTexto(params.texto);
+  const temas = HORA_POR_EL_HORARIO.test(t) ? [] : temasInformativosEnTexto(params.texto);
+  if (temas.length === 0) return respuesta;
+
+  const faltan: TemaConsulta[] = [];
+  for (const tema of temas) {
+    const sola = await responderTemasInformativos(params.carniceriaId, [tema]);
+    if (!respuesta.includes(huellaDeRespuesta(sola))) faltan.push(tema);
+  }
+  // Las promos, si no se contestaron, es porque la IA las tomó como parte del
+  // pedido ("quiero la promo"): no se agrega la lista encima.
+  const agregar = faltan.filter((tema) => tema !== "promociones");
+  if (agregar.length === 0) return respuesta;
+  return `${await responderTemasInformativos(params.carniceriaId, agregar)}\n\n${respuesta}`;
+}
+
+async function procesarMensajeDeClienteSinPreguntasSueltas(params: {
   carniceriaId: string;
   telefono: string;
   mensajeWhatsappId: string;
@@ -2576,6 +2788,21 @@ async function procesarMensajeDeCliente(params: {
     return elegir(FRASES.cierre);
   }
 
+  // ------------------------------------------------------------
+  // Preguntas de información, una o varias (01/10/2026)
+  // ------------------------------------------------------------
+  //
+  // "¿En qué dirección están? ¿Qué días abren?" se contesta entero, en un solo
+  // mensaje, sin pasar por la IA (que elegía UNA de las dos). Solo si el
+  // mensaje es SOLO eso: si además nombra productos, es un pedido con una
+  // pregunta y lo resuelve el flujo normal (la pregunta se contesta arriba del
+  // pedido, ver `procesarMensajeDeCliente`). El pedido en curso queda intacto.
+  const soloInformativo = esSoloPreguntaInformativa(texto, catalogo);
+  if (soloInformativo.length > 0) {
+    const saludo = !pedidoActivo && empiezaConSaludo(texto) ? `¡Hola${cliente.nombre ? `, ${cliente.nombre}` : ""}! 👋 ` : "";
+    return `${saludo}${await responderTemasInformativos(carniceriaId, soloInformativo)}`;
+  }
+
   // Para cuántos es: lo que ya se sabía (del pedido o de la charla) + lo que
   // diga este mensaje, leído sin IA. Nunca se vuelve a preguntar algo que el
   // cliente ya dijo (30/09/2026).
@@ -2719,6 +2946,19 @@ async function procesarMensajeDeCliente(params: {
       tema: "peso_unidad",
       ...(nombrados.length > 0 ? { productosConsultados: nombrados } : {}),
     };
+  }
+
+  // "¿La aguja es buena para estofado?", "¿qué es la marucha?": se contesta
+  // con fundamento, desde las fichas de conocimientoCortes.ts (01/10/2026).
+  // Va antes que la recomendación: nombra UN corte, no pide una lista.
+  const cortesNombrados = productosEnTexto(catalogo, texto).map((p) => p.codigo);
+  if (cortesNombrados.length > 0 && interpretado.tipo !== "pedido" && interpretado.tipo !== "modificacion") {
+    const paraQue = ocasionNombrada(texto);
+    if (paraQue && preguntaSiSirve(texto)) {
+      interpretado = { tipo: "consulta", tema: "aptitud", productosConsultados: cortesNombrados, ocasion: paraQue };
+    } else if (preguntaQueEs(texto)) {
+      interpretado = { tipo: "consulta", tema: "que_es", productosConsultados: cortesNombrados };
+    }
   }
 
   // "¿Qué te queda de asado?", "algo para la parrilla", "¿qué cortes tenés?":
@@ -2871,7 +3111,7 @@ async function procesarMensajeDeCliente(params: {
     // No se toca nada todavía (si después no cambia nada, el pedido sigue
     // aprobado como estaba).
     if (!interpretado.items) {
-      const lineas = pedido.items.map((i) => `- ${i.nombre_display}:${mostrarCantidad(i)}`);
+      const lineas = pedido.items.map((i) => `- ${nombreEnResumen(i)}:${mostrarCantidad(i)}`);
       return `${interpretado.pregunta ?? "Dale, ¿qué querés cambiar?"}\n\nTu pedido es:\n${lineas.join("\n")}`;
     }
 
@@ -3192,7 +3432,7 @@ export async function aprobarPedido(params: {
   for (const item of items) {
     const { data: producto } = await supabaseAdmin
       .from("productos")
-      .select("stock_actual, precio")
+      .select("stock_actual, precio, codigo, especie, peso_aproximado_unidad_kg")
       .eq("id", item.producto_id)
       .single();
 
@@ -3219,14 +3459,34 @@ export async function aprobarPedido(params: {
     //    en pieza la primera vez que se lo toca (`asegurarPiezaDeArrastre`,
     //    adentro de consumirDeProducto). Restar de `stock_actual` a mano se
     //    borraba en el próximo recálculo.
-    await consumirDeProducto({
-      carniceriaId,
-      productoId: item.producto_id,
-      kg: item.cantidad,
-      tipo: "venta",
-      causa: "Pedido aprobado",
-      pedidoId,
-    });
+    //
+    // 3. (01/10/2026) Si se vendió la PIEZA ENTERA ("un vacío entero", "5
+    //    pollos"), se da de baja esa pieza, no kilos sueltos de varias: así la
+    //    que queda en la heladera sigue entera y se puede volver a vender como
+    //    unidad.
+    if (item.pieza_entera && item.unidades_cliente) {
+      await venderPiezasEnteras({
+        carniceriaId,
+        producto: {
+          id: item.producto_id,
+          codigo: String(producto.codigo),
+          especie: (producto.especie as string | null) ?? null,
+          peso_aproximado_unidad_kg: producto.peso_aproximado_unidad_kg == null ? null : Number(producto.peso_aproximado_unidad_kg),
+        },
+        unidades: item.unidades_cliente,
+        kgEstimados: item.cantidad,
+        pedidoId,
+      });
+    } else {
+      await consumirDeProducto({
+        carniceriaId,
+        productoId: item.producto_id,
+        kg: item.cantidad,
+        tipo: "venta",
+        causa: "Pedido aprobado",
+        pedidoId,
+      });
+    }
 
 
     const precio = producto.precio === null || producto.precio === undefined ? null : Number(producto.precio);

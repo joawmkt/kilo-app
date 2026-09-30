@@ -187,13 +187,14 @@ mensaje, casi siempre es el paso 2 agarrando algo que no era suyo.
 | Archivo | Qué hace |
 |---|---|
 | `src/lib/catalogo.ts` | Carga el catálogo y arma el bloque de productos del prompt |
-| `src/lib/alternativas.ts` | Sustitutos, leyendo `sustitutos_autorizados` |
+| `src/lib/alternativas.ts` | Qué ofrecer cuando algo no hay: SOLO de la tabla de recomendaciones, misma especie primero, siempre con stock (los "sustitutos autorizados" se sacaron el 01/10) |
 | `src/lib/consultas.ts` | Horarios, dirección, pagos, promos, peso por unidad — siempre desde datos reales |
 | `src/lib/recomendaciones.ts` | La tabla de ocasiones DE FÁBRICA (parrilla, horno, milanesas...) y la recomendación con stock real |
 | `src/lib/recomendacionesCarniceria.ts` | La tabla de CADA carnicería (la edita en el panel, Catálogo → Recomendaciones). Decide cuál se usa |
 | `src/lib/horaRetiro.ts` | La hora de retiro, leída sin IA y contrastada con el horario del local |
 | `src/lib/instrucciones.ts` | Parte un mensaje del carnicero en instrucciones de distinto tipo |
 | `src/lib/memoriaCharla.ts` | Lo que vale para toda la charla del día (personas, lo que faltó) |
+| `src/lib/conocimientoCortes.ts` | El saber del carnicero: qué es cada corte y POR QUÉ sirve (o no) para cada cocción. Si el bot fundamenta mal, se corrige acá |
 | `src/lib/decisionesCliente.ts` | Decidir sin IA: reparto de kilos, "X por persona", "cambiá X por Y" |
 | `src/lib/respuestaCortaStock.ts` | Respuestas de una palabra del carnicero ("vacuna", "7") sin IA |
 | `src/lib/tono.ts` | Cómo habla el bot: variantes, filtro de muletillas, cierre |
@@ -373,6 +374,29 @@ exactamente", "¿Te preparo algo?" en cada mensaje) se siente roto. Las frases f
 variantes (`tono.ts`, `FRASES`), lo que escribe la IA pasa por `suavizar`, y nunca se
 repite el mismo cierre. Si aparece una muletilla nueva, se suma a `suavizar` y al prompt.
 
+### Patrón 11 — Un mensaje, un tema (y los menos mensajes posibles)
+
+*Bugs del 01/10: el cliente preguntó por una promo y la respuesta traía pegado el resumen
+del pedido; el carnicero mandó "entró un cajón de pollos y una media res de 90" y recibió
+dos confirmaciones por separado.*
+
+WhatsApp cobra por mensaje y el cliente lee de a un tema. Reglas:
+
+1. **Se contesta lo que preguntó, y nada más.** Una consulta (promo, horario, "¿sirve
+   para...?") no arrastra el resumen ni la pregunta pendiente. El cierre del pedido va
+   cuando el cliente ya no tiene dudas.
+2. **Lo que llega junto, se confirma junto.** Varias cargas en un mensaje → un resumen con
+   todas y una sola pregunta. Si a una le falta un dato, se pregunta eso solo y las demás
+   esperan en la misma confirmación (`probarVariosLotes` en flujoLotes.ts).
+3. **Varias preguntas, una respuesta.** "¿Dónde están? ¿Qué días abren?" se contesta entero
+   (`temasInformativosEnTexto` en consultas.ts, sin IA). Si además pide algo, la respuesta
+   a la pregunta va arriba del pedido, en el mismo mensaje.
+4. **Nunca se ofrece lo que no hay, tampoco como opción de una pregunta**
+   (`sinOpcionesAgotadas` en catalogo.ts). Y si nombra algo sin stock, se le dice en ese
+   mismo momento, no después de preguntarle cuánto quería.
+5. **Opinar con fundamento.** "¿Es bueno para...?" se contesta con el porqué del carnicero
+   (`conocimientoCortes.ts`), nunca con un "sí" pelado ni con una recomendación genérica.
+
 ---
 
 ## Cómo probar
@@ -393,11 +417,12 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 |---|---|
 | "hola" | Saludar y ofrecer tomar el pedido |
 | "quiero 2 kilos de asado para las 7" | Entender producto, cantidad Y hora de una |
-| "asado" | Preguntar CUÁL corte para asar (asado es categoría, no corte) |
+| "Asado tenés algo?" | Cortes para la parrilla CON stock (asado es la comida, no un corte: nunca "¿qué tipo de asado?") |
+| "2 kilos de asado" | Costilla (asado = costilla, migración 0031), contestando con su palabra "asado" |
 | "no, 1 kilo" | Corregir, no empezar de nuevo |
 | "¿a qué hora abren?" | Contestar con el horario real, o decir que no lo tiene |
-| "quiero peceto" (sin stock) | Ofrecer un sustituto autorizado **que tenga stock**, no cualquier cosa |
-| "¿tenés algo parecido?" | Ofrecer solo sustitutos autorizados CON stock; si no hay, decirlo |
+| "quiero peceto" (sin stock) | Decirlo YA (sin preguntar cantidad) y ofrecer de su lista de recomendaciones, misma especie, **con stock** |
+| "¿tenés algo parecido?" | Ofrecer de la tabla de recomendaciones CON stock; si no hay, decirlo |
 | "dale no hay problema" | Leerlo como un sí (igual que 👍, "de una", "ni ahí" como no) |
 | "1 y 1" (a la pregunta de personas) | Entender 1 hombre y 1 mujer, no repetir la pregunta |
 | El carnicero propone otra hora y el cliente dice "dale" | Cerrar el pedido, **no** volver a mostrar el resumen |
@@ -430,6 +455,20 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | "son 3 pata muslo" | 3 u. (~kg) sin pedir kilos |
 | Pedido confirmado + "quiero sacar el vacío" | Nueva versión sin vacío, resumen y reaprobación; nunca preguntar personas |
 | "gracias" | No reabrir la venta |
+| "¿la aguja es buena para estofado?" | Sí, CON el fundamento (colágeno, cocción lenta) y si hay stock; si no, alternativas con stock |
+| "¿el lomo sirve para guiso?" | "No es lo ideal" + por qué + qué le conviene, de lo que hay |
+| "¿qué es la marucha?" | Qué es y para qué va, en una línea |
+| "¿En qué dirección están? ¿Qué días abren?" | Las DOS respuestas en un solo mensaje |
+| "quiero 2 kg de vacío, ¿hasta qué hora abren?" | El horario arriba y el pedido abajo, mismo mensaje |
+| Consulta en el medio de un pedido | No se repite la pregunta pendiente al final |
+| "cerdo" / "milanesa" (pregunta con opciones) | Solo opciones CON stock; nunca "milanesa" si no hay |
+| "Sí, tenemos pollo entero" → "quiero 5" | 5 pollos (no 5 kg); el resumen dice "Pollo entero: 5 (unos 12 kg aprox.)" |
+| Cualquier resumen con kilos | "Los kilos son aproximados: se cobra lo que marque la balanza." |
+| "quiero un vacío" / "un vacío entero" | La pieza entera, con sus kilos aproximados; al aprobar se da de baja ESA pieza |
+| "¿cuánto pesa un vacío?" | "La pieza entera de vacío pesa entre X y Y kg. Hoy tengo N…" |
+| "2 bifes de chorizo" | Dos bifes (porciones), NO dos bloques enteros |
+| "¿qué tenés para la parrilla?" con vaca y cerdo | Separado: "De vaca: … / De cerdo: …" |
+| Pregunta por una promo con un pedido armándose | Contestar SOLO la promo; el resumen no se pega (se cierra cuando no tiene más dudas) |
 
 | Como carnicero | Tiene que |
 |---|---|
@@ -450,6 +489,8 @@ llaman al mismo motor que WhatsApp. Los números los pone el servidor:
 | "entraron dos cerdos" → "48 y 52" | Dos medias de cerdo de 48 y 52 kg, nunca pollo |
 | "trocé 3 pollos y saqué 2,700 de pechuga" | Resumen con la pechuga pesada y el resto calculado; al confirmar, todas las presas al stock |
 | "trocé un pollo que pesaba 2,25 kg" | No preguntar cuántos pollos |
+| "entró un cajón de pollos y una media res de 90" | UNA sola confirmación con las dos cosas ("¿Cargo las dos cosas?"), y un "sí" carga las dos |
+| Panel → Desposte, media res de vaca | Aparece con sus cortes estimados; poner el peso real reemplaza el estimado |
 
 ---
 

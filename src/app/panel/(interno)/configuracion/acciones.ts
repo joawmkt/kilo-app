@@ -269,65 +269,6 @@ export async function borrarPromocion(id: string): Promise<ResultadoAccion> {
   return { ok: true, mensaje: "Promo borrada." };
 }
 
-// ============================================================
-// Sustitutos autorizados (especificación del bot, sección 5)
-// ============================================================
-//
-// El bot SOLO puede ofrecer los reemplazos que estén acá. Si un corte no tiene
-// ninguno cargado, cuando falte le va a decir al cliente que no hay, en vez de
-// ofrecerle cualquier otra cosa parecida — que es justo lo que la sección 5.5
-// prohíbe ("no ofrecer lomo como reemplazo de vacío solo porque los dos son
-// carne vacuna").
-
-export async function agregarSustituto(
-  _previo: ResultadoAccion | null,
-  datos: FormData
-): Promise<ResultadoAccion> {
-  const sesion = await requerirSesion();
-
-  const productoId = String(datos.get("producto_id") ?? "");
-  const sustitutoId = String(datos.get("sustituto_id") ?? "");
-
-  if (!productoId || !sustitutoId) {
-    return { ok: false, mensaje: "Elegí los dos productos." };
-  }
-  if (productoId === sustitutoId) {
-    return { ok: false, mensaje: "Un producto no puede reemplazarse a sí mismo." };
-  }
-
-  const { error } = await getSupabaseAdmin().from("sustitutos_autorizados").insert({
-    carniceria_id: sesion.carniceria.id,
-    producto_id: productoId,
-    sustituto_id: sustitutoId,
-    prioridad: Number(datos.get("prioridad") ?? 1) || 1,
-    requiere_preguntar_uso: datos.get("preguntar_uso") === "on",
-  });
-
-  if (error) {
-    // 23505 = ya existía ese par.
-    if (error.code === "23505") return { ok: false, mensaje: "Ese reemplazo ya estaba cargado." };
-    return { ok: false, mensaje: "No se pudo guardar. Probá de nuevo." };
-  }
-
-  revalidatePath("/panel/configuracion");
-  return { ok: true, mensaje: "Reemplazo autorizado." };
-}
-
-export async function borrarSustituto(id: string): Promise<ResultadoAccion> {
-  const sesion = await requerirSesion();
-
-  const { error } = await getSupabaseAdmin()
-    .from("sustitutos_autorizados")
-    .delete()
-    .eq("id", id)
-    .eq("carniceria_id", sesion.carniceria.id);
-
-  if (error) return { ok: false, mensaje: "No se pudo borrar." };
-
-  revalidatePath("/panel/configuracion");
-  return { ok: true, mensaje: "Reemplazo eliminado." };
-}
-
 // ------------------------------------------------------------
 
 function leerFecha(valor: FormDataEntryValue | null): string | null {

@@ -102,6 +102,8 @@ export type TemaConsulta =
   | "sustitutos"
   | "peso_unidad"
   | "recomendacion"
+  | "aptitud"
+  | "que_es"
   | "otro";
 
 const TEMAS_CONSULTA: TemaConsulta[] = [
@@ -114,6 +116,8 @@ const TEMAS_CONSULTA: TemaConsulta[] = [
   "sustitutos",
   "peso_unidad",
   "recomendacion",
+  "aptitud",
+  "que_es",
   "otro",
 ];
 
@@ -172,7 +176,7 @@ const TOOL_SCHEMA: Anthropic.Tool = {
       },
       consulta_tema: {
         type: "string",
-        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "sustitutos", "peso_unidad", "recomendacion", "otro"],
+        enum: ["horarios", "direccion", "medios_pago", "promociones", "delivery", "stock", "sustitutos", "peso_unidad", "recomendacion", "aptitud", "que_es", "otro"],
         description:
           "Solo si tipo=consulta. De qué está preguntando: 'horarios' (a qué hora abren/cierran, si abren tal " +
           "día), 'direccion' (dónde están, cómo llegar), 'medios_pago' (si toman tarjeta, transferencia, QR), " +
@@ -183,21 +187,24 @@ const TOOL_SCHEMA: Anthropic.Tool = {
           "viene cada uno?', '¿cuántos kilos trae un matambre?', '¿qué tamaño tiene?'), 'recomendacion' (quiere " +
           "que le SUGIERAN qué llevar: '¿qué te queda de asado?' — asado como comida, no como corte —, '¿qué " +
           "tenés para la parrilla?', 'algo para el horno', '¿qué cortes tenés?', '¿qué más me ofrecés?', '¿qué " +
-          "me recomendás para milanesas / vitel toné / un guiso?'), 'otro' para cualquier otra pregunta. " +
+          "me recomendás para milanesas / vitel toné / un guiso?'), 'aptitud' (pregunta si UN corte que nombra sirve para " +
+          "una preparación: '¿la aguja es buena para estofado?', '¿el vacío va al horno?'; poné el corte en " +
+          "productos_consultados y la preparación en ocasion), 'que_es' ('¿qué es la marucha?', '¿de dónde sale la " +
+          "entraña?'), 'otro' para cualquier otra pregunta. " +
           "NO inventes la respuesta: el sistema la arma con los datos reales de la carnicería.",
       },
       ocasion: {
         type: "string",
         enum: ["parrilla", "horno", "milanesas", "olla", "plancha", "vitel_tone", "picada", "salteado", "general"],
         description:
-          "Solo si consulta_tema='recomendacion'. Para qué lo quiere: parrilla (asado, asar), horno, milanesas, " +
+          "Solo si consulta_tema='recomendacion' o 'aptitud'. Para qué lo quiere: parrilla (asado, asar), horno, milanesas, " +
           "olla (guiso, puchero, estofado, locro, disco), plancha (bifes, sartén), vitel_tone, picada " +
           "(hamburguesas, empanadas, albóndigas, salsa), salteado (wok, fajitas). 'general' si no dijo para qué.",
       },
       productos_consultados: {
         type: "array",
         description:
-          "Solo si tipo=consulta y consulta_tema es 'stock', 'sustitutos' o 'peso_unidad'. Los códigos de los productos por " +
+          "Solo si tipo=consulta y consulta_tema es 'stock', 'sustitutos', 'peso_unidad', 'aptitud' o 'que_es'. Los códigos de los productos por " +
           "los que pregunta (EXACTAMENTE los de PRODUCTOS ACTIVOS). Ojo con la diferencia: '¿tenés vacío?' es " +
           "una consulta de stock; 'dame 2 kg de vacío' es un pedido. Si el tema es 'sustitutos', poné acá el " +
           "producto que quiere REEMPLAZAR (el que no hay), no el reemplazo — el reemplazo lo elige el sistema. " +
@@ -380,6 +387,10 @@ Reglas:
 - "producto_codigo" tiene que ser EXACTAMENTE uno de los códigos de PRODUCTOS ACTIVOS. Nunca inventes uno que
   no esté en la lista.
 - Si el texto es ambiguo (ver TERMINOS AMBIGUOS), respondé tipo "aclaracion" con la pregunta indicada.
+- Los productos marcados [SIN STOCK HOY] NO se ofrecen: nunca los pongas como opción en una pregunta
+  ("¿cuál querés: ...?"). Si el cliente pide uno igual, igual va en el item (el sistema le avisa que no hay).
+- Si el cliente pide una "pieza", "entero/a" o nombra un corte en unidades ("un vacío", "2 matambres"),
+  poné cantidad = cuántos y unidad = "unidad": el sistema sabe cuánto pesa cada pieza.
 - Si identificaste uno o más productos pero falta la cantidad de alguno, respondé tipo "info_faltante"
   pidiéndola (todas juntas si falta más de una). No inventes una cantidad.
 - Un producto puede tener nota "[también se puede pedir por unidad, ~Xkg c/u]" — si el cliente lo pide por
@@ -603,6 +614,7 @@ function validarInterpretacion(input: unknown): ResultadoInterpretacionPedido {
       tema,
       ...(productos.length > 0 ? { productosConsultados: productos } : {}),
       ...(tema === "recomendacion" ? { ocasion: ocasion ?? "general" } : {}),
+      ...(tema === "aptitud" && ocasion && ocasion !== "general" ? { ocasion } : {}),
     };
   }
 

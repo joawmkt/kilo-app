@@ -2,7 +2,14 @@
 
 import { useMemo, useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { armarRecomendacion, sinNadaParaOcasion, type OcasionConcreta, type TablaOcasiones } from "@/lib/recomendaciones";
+import {
+  GRUPOS_ESPECIE,
+  armarRecomendacion,
+  grupoDeEspecie,
+  sinNadaParaOcasion,
+  type OcasionConcreta,
+  type TablaOcasiones,
+} from "@/lib/recomendaciones";
 import { nombreDeFamilia } from "@/lib/panel/productos";
 import { Etiqueta, Tarjeta, TarjetaEncabezado, clasesBoton } from "./ui";
 import {
@@ -25,6 +32,7 @@ export type ProductoParaTabla = {
   nombre_display: string;
   alias_display: string | null;
   familia: string;
+  especie: string | null;
   stock_actual: number;
   activo: boolean;
   unidad: string;
@@ -122,12 +130,21 @@ export function RecomendacionesEditor({
     setListas((previas) => ({ ...previas, [activa]: nuevas }));
   }
 
+  // Subir o bajar se hace DENTRO de su grupo (vaca, cerdo, pollo): se cambia
+  // de lugar con el anterior (o el siguiente) de la misma especie.
   function mover(rol: Rol, indice: number, delta: -1 | 1) {
     const lista = [...actual[rol]];
-    const destino = indice + delta;
+    const grupo = grupoDe(lista[indice]);
+    let destino = indice + delta;
+    while (destino >= 0 && destino < lista.length && grupoDe(lista[destino]) !== grupo) destino += delta;
     if (destino < 0 || destino >= lista.length) return;
     [lista[indice], lista[destino]] = [lista[destino], lista[indice]];
     cambiar({ ...actual, [rol]: lista });
+  }
+
+  function grupoDe(id: string) {
+    const p = porId.get(id);
+    return p ? grupoDeEspecie(p) : "otros";
   }
 
   function quitar(rol: Rol, id: string) {
@@ -225,6 +242,7 @@ export function RecomendacionesEditor({
           <Lista
             titulo="Lo que ofrece, en este orden"
             vacia="Sin cortes. Agregá abajo lo que querés ofrecer para esta ocasión."
+            agrupar
             ids={actual.cortes}
             porId={porId}
             textoPasar="Pasar a acompañar"
@@ -326,9 +344,12 @@ function Lista({
   onBajar,
   onQuitar,
   onPasar,
+  agrupar = false,
 }: {
   titulo: string;
   vacia: string;
+  /** Separar por especie: de vaca, de cerdo, de pollo (01/10/2026). */
+  agrupar?: boolean;
   ids: string[];
   porId: Map<string, ProductoParaTabla>;
   textoPasar: string;
@@ -337,6 +358,38 @@ function Lista({
   onQuitar: (id: string) => void;
   onPasar: (id: string) => void;
 }) {
+  if (agrupar && ids.length > 0) {
+    const grupoDe = (id: string) => {
+      const p = porId.get(id);
+      return p ? grupoDeEspecie(p) : "otros";
+    };
+    return (
+      <div className="flex flex-col gap-3">
+        <h3 className="font-titulo text-sm font-semibold text-ink">{titulo}</h3>
+        {GRUPOS_ESPECIE.map(({ grupo, titulo: tituloGrupo }) => {
+          const delGrupo = ids.filter((id) => grupoDe(id) === grupo);
+          if (delGrupo.length === 0) return null;
+          return (
+            <div key={grupo} className="border-l-2 border-border pl-3">
+              <Lista
+                titulo={tituloGrupo}
+                vacia=""
+                ids={delGrupo}
+                porId={porId}
+                textoPasar={textoPasar}
+                // Los índices de adentro son del grupo; se traducen a los de la lista entera.
+                onSubir={(i) => onSubir(ids.indexOf(delGrupo[i]))}
+                onBajar={(i) => onBajar(ids.indexOf(delGrupo[i]))}
+                onQuitar={onQuitar}
+                onPasar={onPasar}
+              />
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   return (
     <div>
       <h3 className="font-titulo text-sm font-semibold text-ink">{titulo}</h3>

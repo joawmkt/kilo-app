@@ -11,7 +11,7 @@ import {
   transcribirAudioDeCliente,
 } from "@/lib/flujoPedidos";
 import { esCarniceroAutorizado } from "@/lib/quienEs";
-import { probarComoLote, probarCorreccionDeLote } from "@/lib/flujoLotes";
+import { probarComoLote, probarCorreccionDeLote, probarVariosLotes } from "@/lib/flujoLotes";
 import { probarComoTrozado } from "@/lib/flujoTrozado";
 import { registrarMensaje } from "./conversaciones";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
@@ -307,6 +307,18 @@ async function atenderCarniceroConCola(params: {
       // Sin catálogo se parte igual, solo que sin reconocer productos sueltos.
     }
   }
+  // Varios lotes juntos ("entró un cajón de pollo y una media res de 90"):
+  // se juntan los datos de todos y se confirman con UN solo mensaje, en vez
+  // de uno por uno (01/10/2026: WhatsApp cobra por mensaje).
+  if (!antes && instrucciones.length > 1) {
+    const juntos = await probarVariosLotes({ carniceriaId, telefono, mensajeWhatsappId: mensajeId, textos: instrucciones });
+    if (juntos !== null) {
+      const nueva = heredada.length > 0 ? await pendienteConCola(carniceriaId, telefono) : null;
+      if (nueva) await getSupabaseAdmin().from("operaciones_stock").update({ cola_instrucciones: heredada }).eq("id", nueva.id);
+      return juntos;
+    }
+  }
+
   const [primera, ...resto] = instrucciones.length > 0 ? instrucciones : [texto];
 
   const respuesta = await atenderInstruccionDeCarnicero({ carniceriaId, telefono, mensajeId, texto: primera });

@@ -6,10 +6,8 @@ import { Tarjeta, TarjetaEncabezado, clasesBoton } from "./ui";
 import { DIAS_SEMANA, formatearFecha, formatearHoraSimple } from "@/lib/panel/formatos";
 import {
   agregarDiaEspecial,
-  agregarSustituto,
   borrarDiaEspecial,
   borrarPromocion,
-  borrarSustituto,
   cambiarEstadoPromocion,
   crearPromocion,
   guardarDatosDelNegocio,
@@ -469,117 +467,6 @@ export function Promociones({ promociones }: { promociones: FilaPromocion[] }) {
         <p className="mt-3 text-xs text-ink-3">
           Poner una fecha de fin es la forma más segura de que una promo vencida no se siga ofreciendo sola.
         </p>
-
-        {estado ? <Aviso estado={estado} /> : null}
-      </div>
-    </Tarjeta>
-  );
-}
-
-// ============================================================
-// Sustitutos autorizados (especificación del bot, sección 5)
-// ============================================================
-
-export type OpcionProducto = { id: string; nombre: string };
-export type FilaSustituto = {
-  id: string;
-  productoNombre: string;
-  sustitutoNombre: string;
-  preguntarUso: boolean;
-};
-
-export function SustitutosAutorizados({
-  sustitutos,
-  productos,
-}: {
-  sustitutos: FilaSustituto[];
-  productos: OpcionProducto[];
-}) {
-  const [estado, accion] = useActionState<ResultadoAccion | null, FormData>(agregarSustituto, null);
-  const [borrando, iniciarTransicion] = useTransition();
-
-  return (
-    <Tarjeta as="div">
-      <TarjetaEncabezado
-        titulo="Reemplazos autorizados"
-        descripcion="Lo único que el bot puede ofrecer cuando falta un corte"
-      />
-
-      <div className="px-4 py-4 sm:px-5">
-        <p className="mb-3 text-sm text-ink-2">
-          Si un corte no tiene ningún reemplazo cargado, el bot va a decir que no hay en vez de ofrecer otra
-          cosa. Es a propósito: un reemplazo mal elegido molesta más que un &quot;no tengo&quot;.
-        </p>
-
-        {sustitutos.length === 0 ? (
-          <p className="text-sm text-ink-2">Todavía no hay reemplazos cargados.</p>
-        ) : (
-          <ul className="mb-4 divide-y divide-border rounded-control border border-border">
-            {sustitutos.map((s) => (
-              <li key={s.id} className="flex min-h-12 items-center justify-between gap-3 px-3 py-2">
-                <span className="min-w-0 text-sm text-ink">
-                  Si falta <strong>{s.productoNombre}</strong> → ofrecer <strong>{s.sustitutoNombre}</strong>
-                  {s.preguntarUso ? (
-                    <span className="block text-xs text-ink-3">Preguntando antes para qué lo va a usar</span>
-                  ) : null}
-                </span>
-                <button
-                  type="button"
-                  disabled={borrando}
-                  onClick={() => iniciarTransicion(async () => void (await borrarSustituto(s.id)))}
-                  className={clasesBoton("fantasma")}
-                >
-                  Quitar
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        <form action={accion} className="flex flex-col gap-3">
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <label className="flex flex-1 flex-col gap-1.5">
-              <span className="font-titulo text-sm font-semibold text-ink-2">Si falta…</span>
-              <select
-                name="producto_id"
-                required
-                className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
-              >
-                <option value="">Elegí un corte</option>
-                {productos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="flex flex-1 flex-col gap-1.5">
-              <span className="font-titulo text-sm font-semibold text-ink-2">…ofrecer</span>
-              <select
-                name="sustituto_id"
-                required
-                className="min-h-12 rounded-control border border-border bg-surface px-3 text-base text-ink"
-              >
-                <option value="">Elegí el reemplazo</option>
-                {productos.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          <label className="flex items-center gap-2 text-sm text-ink-2">
-            <input type="checkbox" name="preguntar_uso" className="h-5 w-5 accent-[var(--brand)]" />
-            Preguntarle antes para qué lo va a usar
-          </label>
-
-          <div className="flex justify-end">
-            <BotonGuardar etiqueta="Autorizar reemplazo" />
-          </div>
-        </form>
 
         {estado ? <Aviso estado={estado} /> : null}
       </div>

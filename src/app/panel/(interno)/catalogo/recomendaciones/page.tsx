@@ -24,7 +24,7 @@ export default async function RecomendacionesPage() {
   const [{ data: filas }, { tabla, personalizada }] = await Promise.all([
     supabase
       .from("productos")
-      .select("id, codigo, nombre_display, alias_display, familia, stock_actual, activo, unidad")
+      .select("id, codigo, nombre_display, alias_display, familia, especie, stock_actual, activo, unidad")
       .order("nombre_display", { ascending: true }),
     leerTablaDeCarniceria(supabase, sesion.carniceria.id),
   ]);
@@ -36,6 +36,7 @@ export default async function RecomendacionesPage() {
       nombre_display: string;
       alias_display: string | null;
       familia: string;
+      especie: string | null;
       stock_actual: number | string;
       activo: boolean;
       unidad: string;
@@ -46,6 +47,7 @@ export default async function RecomendacionesPage() {
     nombre_display: f.nombre_display,
     alias_display: f.alias_display,
     familia: f.familia,
+    especie: f.especie,
     stock_actual: Number(f.stock_actual),
     activo: f.activo,
     unidad: f.unidad,
@@ -73,7 +75,9 @@ export default async function RecomendacionesPage() {
 
       <div className="rounded-tarjeta border border-border bg-surface-2 px-4 py-3">
         <p className="text-sm text-ink-2">
-          Armá cada lista una sola vez, en el orden en que querés ofrecer. El bot nombra{" "}
+          Armá cada lista una sola vez, en el orden en que querés ofrecer, separada en vaca, cerdo
+          y pollo. Cuando algo se termina, el bot ofrece otra cosa de la misma lista (primero de la
+          misma especie). Nombra{" "}
           <strong className="text-ink">solo lo que tenga stock</strong> en ese momento: si hoy no
           hay entraña, no la ofrece, y cuando vuelva a entrar la ofrece sola.
           {personalizada ? null : " Por ahora estás usando la lista que viene de fábrica."}

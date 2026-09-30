@@ -2,7 +2,38 @@ import type { Producto } from "./catalogo";
 import { elegir } from "./tono";
 
 /** Lo mínimo de un producto que hace falta para recomendarlo (sirve también en el panel). */
-export type ProductoParaRecomendar = Pick<Producto, "id" | "codigo" | "nombre_display" | "alias_display" | "stock_actual">;
+export type ProductoParaRecomendar = Pick<Producto, "id" | "codigo" | "nombre_display" | "alias_display" | "stock_actual"> & {
+  especie?: string | null;
+  familia?: string | null;
+};
+
+// ------------------------------------------------------------
+// Vaca, cerdo o pollo (01/10/2026)
+// ------------------------------------------------------------
+//
+// El fundador: "dentro de las secciones de recomendaciones debemos separar
+// las de carne vacuna y las de cerdo o pollo. PARRILLA → vaca, cerdo, pollo".
+// Muchos productos elaborados no tienen la especie cargada (la milanesa de
+// carne, la picada), así que se deduce también de la familia y del código.
+export type GrupoEspecie = "vaca" | "cerdo" | "pollo" | "otros";
+
+export const GRUPOS_ESPECIE: { grupo: GrupoEspecie; titulo: string }[] = [
+  { grupo: "vaca", titulo: "De vaca" },
+  { grupo: "cerdo", titulo: "De cerdo" },
+  { grupo: "pollo", titulo: "De pollo" },
+  { grupo: "otros", titulo: "Otros" },
+];
+
+export function grupoDeEspecie(p: { codigo: string; especie?: string | null; familia?: string | null }): GrupoEspecie {
+  if (p.especie === "vacuno") return "vaca";
+  if (p.especie === "porcino") return "cerdo";
+  if (p.especie === "aviar") return "pollo";
+  const f = `${p.familia ?? ""} ${p.codigo}`;
+  if (/cerdo|porcin|bondiola|panceta|pernil|solomillo|carre/.test(f)) return "cerdo";
+  if (/pollo|aviar|pechuga|pata_y_muslo|alitas?|suprema/.test(f)) return "pollo";
+  if (/vacun|picada|milanesa_de_(carne|nalga|cuadrada|bola)|hamburguesa_de_carne|medallon_de_carne/.test(f)) return "vaca";
+  return "otros";
+}
 
 // ============================================================
 // Recomendar según para qué lo quiere el cliente (29/09/2026)
@@ -84,8 +115,11 @@ export function tablaDeFabrica(): TablaOcasiones {
 export const TABLA_OCASIONES: Record<OcasionConcreta, DefinicionOcasion> = {
   parrilla: {
     titulo: "Para la parrilla",
+    // Sin "asado": no es un corte, es la comida (el fundador, 01/10: "ASADO =
+    // COSTILLA"). La costilla va primera porque es lo que el mostrador llama
+    // asado; la migración 0031 une los dos productos en costilla.
     cortes: [
-      "asado", "vacio", "matambre", "entrana", "costilla", "tapa_de_asado", "colita_de_cuadril",
+      "costilla", "vacio", "matambre", "entrana", "tapa_de_asado", "colita_de_cuadril",
       "bife_ancho", "bife_angosto", "bife_de_chorizo", "falda", "tapa_de_cuadril", "lomo",
       "pechito_de_cerdo", "matambre_de_cerdo", "bondiola", "costeleta_de_cerdo", "vacio_de_cerdo", "carre",
       "pollo_entero", "pata_y_muslo", "brochette_de_carne", "brochette_de_pollo", "brochette_mixta",
@@ -207,6 +241,12 @@ export function ocasionPedida(texto: string): Ocasion | null {
   const yaEligio = /\b\d+([.,]\d+)?\s*(kg|kilos?|k|gr|gramos|unidades?)?\b|\b(quiero|dame|mandame|preparame|separame|anotame)\b/.test(t);
   if (yaEligio && !sugerencia) return null;
 
+  // "¿Asado tenés algo?", "¿qué hay de asado?": ASADO viene de ASAR — son
+  // los cortes para la parrilla, no un corte puntual (el fundador, 01/10/2026).
+  if (/\basado\b/.test(t) && (/\?/.test(texto) || /\b(tenes|tienen|tendras|hay|queda|quedo)\b/.test(t))) {
+    return "parrilla";
+  }
+
   if (ocasion && (sugerencia || /\bpara\s+(la\s+|el\s+|un\s+|hacer\s+)?/.test(t) || /^(y\s+)?(algo|que)\b/.test(t))) {
     return ocasion;
   }
@@ -224,20 +264,24 @@ export function ocasionPedida(texto: string): Ocasion | null {
 const MAXIMO_CORTES = 8;
 const MAXIMO_ACOMPANAN = 4;
 
+function productosConStock<P extends ProductoParaRecomendar>(codigos: string[], porCodigo: Map<string, P>): P[] {
+  const vistos = new Set<string>();
+  const lista: P[] = [];
+  for (const codigo of codigos) {
+    const producto = porCodigo.get(codigo);
+    if (!producto || !(producto.stock_actual > 0) || vistos.has(producto.id)) continue;
+    vistos.add(producto.id);
+    lista.push(producto);
+  }
+  return lista;
+}
+
 function conStock<P extends ProductoParaRecomendar>(
   codigos: string[],
   porCodigo: Map<string, P>,
   nombrar: (p: P) => string
 ): string[] {
-  const vistos = new Set<string>();
-  const nombres: string[] = [];
-  for (const codigo of codigos) {
-    const producto = porCodigo.get(codigo);
-    if (!producto || !(producto.stock_actual > 0) || vistos.has(producto.id)) continue;
-    vistos.add(producto.id);
-    nombres.push(nombrar(producto).toLowerCase());
-  }
-  return nombres;
+  return productosConStock(codigos, porCodigo).map((p) => nombrar(p).toLowerCase());
 }
 
 function enumerar(nombres: string[]): string {
@@ -276,19 +320,35 @@ export function armarRecomendacion<P extends ProductoParaRecomendar>(params: {
   }
 
   const def = { titulo: tituloDeOcasion(ocasion), ...tabla[ocasion] };
-  const cortes = conStock(def.cortes, porCodigo, nombrar).slice(0, MAXIMO_CORTES);
+  const productosCorte = productosConStock(def.cortes, porCodigo).slice(0, MAXIMO_CORTES);
+  const cortes = productosCorte.map((p) => nombrar(p).toLowerCase());
   const acompanan = conStock(def.acompanan, porCodigo, nombrar)
     .filter((n) => !cortes.includes(n))
     .slice(0, MAXIMO_ACOMPANAN);
 
   if (cortes.length === 0 && acompanan.length === 0) return null;
 
+  const cierre = elegir(["¿Cuál te tienta?", "¿Qué te separo?", "¿Qué te llevás?", "Decime cuál y te lo aparto."]);
+
+  // Si hay de más de una especie, se separa: de vaca, de cerdo, de pollo
+  // (01/10/2026). Si es todo de una, una sola línea, que se lee mejor.
+  const porGrupo = GRUPOS_ESPECIE.map(({ grupo, titulo }) => ({
+    titulo,
+    nombres: productosCorte.filter((p) => grupoDeEspecie(p) === grupo).map((p) => nombrar(p).toLowerCase()),
+  })).filter((g) => g.nombres.length > 0);
+
+  if (porGrupo.length > 1) {
+    const lineas = porGrupo.map((g) => `• ${g.titulo}: ${enumerar(g.nombres)}`);
+    const acompana = acompanan.length > 0 ? `\nY para acompañar, ${enumerar(acompanan)}.` : "";
+    return `${def.titulo} hoy te puedo ofrecer:\n${lineas.join("\n")}${acompana}\n\n${cierre}`;
+  }
+
   const partes: string[] = [];
   if (cortes.length > 0) partes.push(`${def.titulo} hoy te puedo ofrecer ${enumerar(cortes)}.`);
   if (acompanan.length > 0) {
     partes.push(cortes.length > 0 ? `Y para acompañar, ${enumerar(acompanan)}.` : `${def.titulo} tengo ${enumerar(acompanan)}.`);
   }
-  partes.push(elegir(["¿Cuál te tienta?", "¿Qué te separo?", "¿Qué te llevás?", "Decime cuál y te lo aparto."]));
+  partes.push(cierre);
   return partes.join(" ");
 }
 

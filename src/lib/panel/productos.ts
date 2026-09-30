@@ -21,6 +21,12 @@ export type ProductoDelPanel = {
   stockOrigen: "audio" | "panel" | "pedido" | null;
   precioActualizadoAt: string | null;
   esComplementario: boolean;
+  /**
+   * Cuántas piezas ENTERAS hay (un vacío entero, un pollo): lo que se puede
+   * vender como unidad (01/10/2026). Opcional: solo lo calcula el listado de
+   * stock.
+   */
+  piezasEnteras?: number;
 };
 
 type FilaProducto = {
@@ -81,7 +87,23 @@ export async function listarProductos(
     .order("nombre_display", { ascending: true });
 
   if (error) throw new Error(error.message);
-  return ((data ?? []) as unknown as FilaProducto[]).map((fila) => mapear(fila, umbralDefault));
+  const productos = ((data ?? []) as unknown as FilaProducto[]).map((fila) => mapear(fila, umbralDefault));
+
+  // Las piezas enteras: las que entraron con un lote (media res, cajón) y
+  // nadie empezó a cortar. Son las que el bot puede vender "enteras".
+  const { data: piezas } = await supabase
+    .from("piezas_stock")
+    .select("producto_id, kg_iniciales, kg_restantes, recepcion_lote_id")
+    .eq("estado", "disponible")
+    .eq("es_subproducto", false)
+    .gt("kg_restantes", 0)
+    .not("recepcion_lote_id", "is", null);
+  const enteras = new Map<string, number>();
+  for (const p of (piezas ?? []) as { producto_id: string; kg_iniciales: number; kg_restantes: number }[]) {
+    if (Number(p.kg_restantes) < Number(p.kg_iniciales) * 0.98) continue;
+    enteras.set(p.producto_id, (enteras.get(p.producto_id) ?? 0) + 1);
+  }
+  return productos.map((p) => (enteras.has(p.id) ? { ...p, piezasEnteras: enteras.get(p.id) } : p));
 }
 
 /** Productos sin stock o con stock bajo — lo que afecta a lo que el bot puede ofrecer. */

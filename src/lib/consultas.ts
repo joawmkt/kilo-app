@@ -1,11 +1,14 @@
 import { getSupabaseAdmin } from "./supabaseAdmin";
+import { normalizarTexto } from "./texto";
 import { CatalogoCarniceria, Producto } from "./catalogo";
 import { listarParaElCliente, mediosPagoHabilitados } from "./mediosPago";
-import { buscarSustitutosConStock, opcionesDeReemplazo } from "./alternativas";
-import { estimadorPiezaEntera, estimadorPorUnidad } from "./lotes";
+import { opcionesDeReemplazo } from "./alternativas";
+import { estimadorInfoPieza, estimadorPiezaEntera, estimadorPorUnidad } from "./lotes";
 import { armarRecomendacion, sinNadaParaOcasion, type Ocasion } from "./recomendaciones";
 import { cargarTablaOcasiones } from "./recomendacionesCarniceria";
-import { cierreDeConsulta } from "./tono";
+import { cierreDeConsulta, elegir } from "./tono";
+import { aptitud, palabraDeOcasion, queEs, FICHAS } from "./conocimientoCortes";
+import { tituloDeOcasion, type OcasionConcreta } from "./recomendaciones";
 
 // ============================================================
 // Atención general — especificación del bot, secciones 1.1 y 15 a 21
@@ -35,6 +38,8 @@ export type TemaConsulta =
   | "sustitutos"
   | "peso_unidad"
   | "recomendacion"
+  | "aptitud"
+  | "que_es"
   | "otro";
 
 const DIAS = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
@@ -248,14 +253,14 @@ export async function bloquePromocionesParaPrompt(carniceriaId: string): Promise
 // misma razón por la que la sección 46 pide listar cortes "sin los kg").
 //
 // ⚠️ Regla del 13/09/2026: cuando de algo NO hay, la respuesta no termina en
-// "no me queda". Se busca un sustituto autorizado — y el buscador solo
-// devuelve los que TIENEN STOCK (ver alternativas.ts). Nunca se nombra un
-// reemplazo sin haber mirado el stock, y nunca lo elige la IA: los pares
-// autorizados están en la base y el filtro de stock es del código.
+// "no me queda". Se ofrece lo que hay de la tabla de recomendaciones de la
+// carnicería, y el buscador solo devuelve lo que TIENE STOCK (ver
+// alternativas.ts). Nunca lo elige la IA. (Desde el 01/10 ya no hay tabla de
+// sustitutos: el fundador pidió que todo salga de las recomendaciones.)
 
 /**
- * Los nombres de los sustitutos autorizados CON STOCK de un producto.
- * Devuelve [] si no hay ninguno — y ahí no se ofrece nada, que es lo correcto.
+ * Los nombres de lo que se puede ofrecer CON STOCK en lugar de un producto.
+ * Devuelve [] si no hay nada — y ahí no se ofrece nada, que es lo correcto.
  */
 async function sustitutosDisponibles(
   carniceriaId: string,
@@ -263,15 +268,9 @@ async function sustitutosDisponibles(
   producto: Producto,
   yaExcluidos: Set<string>
 ): Promise<string[]> {
-  const opciones = await buscarSustitutosConStock({
-    carniceriaId,
-    catalogo,
-    productoFaltante: producto,
-    yaExcluidos,
-  });
-  for (const o of opciones) yaExcluidos.add(o.producto.id);
-  // Dos alcanzan: una lista larga en WhatsApp no la lee nadie.
-  return opciones.slice(0, 2).map((o) => o.producto.nombre_display);
+  const opciones = await opcionesDeReemplazo({ carniceriaId, catalogo, productoFaltante: producto, excluidos: yaExcluidos, maximo: 3 });
+  for (const p of opciones.productos) yaExcluidos.add(p.id);
+  return opciones.productos.map((p) => (p.alias_display ?? p.nombre_display).toLowerCase());
 }
 
 function enumerar(nombres: string[]): string {
@@ -308,12 +307,33 @@ async function responderPeso(
   if (codigos.length === 0) return null;
   const porUnidad = estimadorPorUnidad(carniceriaId);
   const porPieza = estimadorPiezaEntera(carniceriaId);
+  const infoPieza = estimadorInfoPieza(carniceriaId);
   const frases: string[] = [];
 
   for (const codigo of codigos) {
     const producto = catalogo.porCodigo.get(codigo);
     if (!producto) continue;
     const nombre = (nombrar ? nombrar(producto) : producto.alias_display ?? producto.nombre_display).toLowerCase();
+
+    // Los cortes que se venden por pieza (un vacío, un matambre): entre
+    // cuánto y cuánto pesa uno entero, y cuántos enteros hay (01/10/2026).
+    const info = await infoPieza(producto);
+    if (info) {
+      const rango =
+        info.kgMax - info.kgMin >= 0.2
+          ? `entre ${textoPeso(info.kgMin)} y ${textoPeso(info.kgMax)}`
+          : `más o menos ${textoPeso(info.kgPromedio)}`;
+      const hay =
+        info.enteras.length === 0
+          ? " Entera hoy no me queda, pero te corto lo que necesites."
+          : info.enteras.length === 1
+            ? ` Hoy tengo una de unos ${textoPeso(info.enteras[0].kg)}.`
+            : ` Hoy tengo ${info.enteras.length}, de unos ${textoPeso(info.kgPromedio)} cada una.`;
+      // "La pieza entera de" también es la marca con la que el pedido sabe
+      // que un "dame una" que venga después es la pieza entera.
+      frases.push(`${capitalizar(MARCA_PIEZA_ENTERA)} ${nombre} pesa ${rango}.${producto.stock_actual > 0 ? hay : ""}`);
+      continue;
+    }
 
     const unidad = await porUnidad(producto);
     if (unidad) {
@@ -435,8 +455,8 @@ async function responderSustitutos(
       continue;
     }
 
-    // Primero los sustitutos autorizados; si no hay, otros cortes de la misma
-    // ocasión que armó la carnicería (alternativas.ts, 30/09/2026). Bug real:
+    // Otros cortes de la misma ocasión que armó la carnicería, primero de la
+    // misma especie (alternativas.ts, 30/09 y 01/10/2026). Bug real:
     // "¿qué otra cosa puede ser?" → "no tengo nada parecido" dos veces,
     // habiendo matambre y entraña para la parrilla.
     const opciones = await opcionesDeReemplazo({ carniceriaId, catalogo, productoFaltante: producto, excluidos: yaExcluidos });
@@ -464,6 +484,93 @@ async function responderSustitutos(
 // Punto de entrada
 // ------------------------------------------------------------
 
+// ------------------------------------------------------------
+// Varias preguntas en un mismo mensaje (01/10/2026)
+// ------------------------------------------------------------
+//
+// Bug: "¿En qué dirección están? ¿Qué días abren?" se contestó solo con la
+// dirección. La IA clasifica UN tema por mensaje, así que la otra pregunta se
+// perdía. El fundador: "debe saber responder dos preguntas a la vez. Y no
+// hacerlo en dos mensajes separados".
+//
+// Las preguntas de información (dónde, cuándo, cómo pago, si hay envío, si
+// hay promos) se reconocen por el texto, sin IA (Patrón 3 del manual): son
+// frases cortas y de forma fija. Se contestan TODAS, en un solo mensaje y en
+// el orden en que las hizo.
+
+const PATRONES_INFORMATIVOS: [TemaConsulta, RegExp][] = [
+  ["direccion", /\b(direccion|donde (estan|queda|quedan|es el local|los encuentro|se encuentran)|ubicacion|ubicados|como llego|en que calle|la dire)\b/],
+  [
+    "horarios",
+    /\b(horarios?|a que hora (abren|abris|cierran|cerras|atienden|arrancan)|hasta que hora|desde que hora|que dias|dias (abren|atienden|trabajan)|abren|abris|cierran|cerras|atienden|estan abiertos|esta abierto|trabajan (hoy|manana|el))\b/,
+  ],
+  ["medios_pago", /\b(medios? de pago|formas? de pago|como (se )?(paga|pago|puedo pagar|abono)|aceptan|toman (tarjeta|debito|credito|mercado ?pago|transferencia)|se puede pagar|puedo pagar|pagar con)\b/],
+  ["delivery", /\b(delivery|envios?|hacen envio|mandan a domicilio|a domicilio|me lo (mandan|llevan|traen)|reparten)\b/],
+  ["promociones", /\b(promos?|promociones?|ofertas?|descuentos?)\b/],
+];
+
+// "Quiero la promo", "dame la oferta": eso es un pedido, no una pregunta.
+const PIDE_ALGO = /\b(quiero|queria|dame|damelo|pasame|anotame|poneme|me llevo|reservame|separame|preparame|haceme)\b/;
+
+/**
+ * Los temas de información que pregunta el texto, en el orden en que los
+ * preguntó. Vacío si no pregunta ninguno.
+ */
+export function temasInformativosEnTexto(texto: string): TemaConsulta[] {
+  const t = normalizarTexto(texto).replace(/[¿?¡!.,;:]+/g, " ").replace(/\s+/g, " ");
+  const encontrados: { tema: TemaConsulta; posicion: number }[] = [];
+  for (const [tema, patron] of PATRONES_INFORMATIVOS) {
+    const m = patron.exec(t);
+    if (!m) continue;
+    if (tema === "promociones" && PIDE_ALGO.test(t)) continue;
+    encontrados.push({ tema, posicion: m.index });
+  }
+  return encontrados.sort((a, b) => a.posicion - b.posicion).map((e) => e.tema);
+}
+
+export const TEMAS_INFORMATIVOS: TemaConsulta[] = ["direccion", "horarios", "medios_pago", "delivery", "promociones"];
+
+/** Las preguntas de información: salen de los datos de la carnicería, no del catálogo. */
+async function responderInformativo(carniceriaId: string, tema: TemaConsulta): Promise<string | null> {
+  switch (tema) {
+    case "horarios":
+      return await responderHorarios(carniceriaId);
+    case "direccion":
+      return await responderDireccion(carniceriaId);
+    case "medios_pago":
+      return await responderMediosPago(carniceriaId);
+    case "promociones":
+      return await responderPromociones(carniceriaId);
+    case "delivery":
+      // Sección 20: no hay delivery y no está previsto. Es un dato del
+      // producto, no de la carnicería, así que no depende de la base.
+      return "Por el momento los pedidos son para retirar por el local.";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Contesta varias preguntas de información en UN mensaje. Cada respuesta sale
+ * de los datos reales de la carnicería (o reconoce que el dato no está, como
+ * siempre: nunca se inventa). El "Te esperamos" de la dirección va una sola
+ * vez, al final.
+ */
+export async function responderTemasInformativos(carniceriaId: string, temas: TemaConsulta[]): Promise<string> {
+  const partes: string[] = [];
+  for (const tema of temas) {
+    const respuesta = (await responderInformativo(carniceriaId, tema)) ?? respuestaSinDato(tema);
+    partes.push(respuesta);
+  }
+  if (partes.length > 1) {
+    const conEsperamos = partes.findIndex((p) => /Te esperamos 🙌$/.test(p));
+    if (conEsperamos >= 0 && conEsperamos < partes.length - 1) {
+      partes[conEsperamos] = partes[conEsperamos].replace(/\s*Te esperamos 🙌$/, "");
+    }
+  }
+  return partes.join("\n\n");
+}
+
 /**
  * Devuelve el texto con el que hay que contestar una consulta, o `null` si no
  * se pudo responder con datos reales.
@@ -481,22 +588,14 @@ export async function responderConsulta(params: {
   nombrar?: (producto: Producto) => string;
   /** Para qué lo quiere, si pidió una recomendación. */
   ocasion?: Ocasion;
+  /** El mensaje del cliente, para contestar con su palabra ("estofado", no "la olla"). */
+  texto?: string;
 }): Promise<string | null> {
-  const { carniceriaId, tema, catalogo, productosConsultados, nombrar, ocasion } = params;
+  const { carniceriaId, tema, catalogo, productosConsultados, nombrar, ocasion, texto } = params;
+
+  if (TEMAS_INFORMATIVOS.includes(tema)) return await responderInformativo(carniceriaId, tema);
 
   switch (tema) {
-    case "horarios":
-      return await responderHorarios(carniceriaId);
-    case "direccion":
-      return await responderDireccion(carniceriaId);
-    case "medios_pago":
-      return await responderMediosPago(carniceriaId);
-    case "promociones":
-      return await responderPromociones(carniceriaId);
-    case "delivery":
-      // Sección 20: no hay delivery y no está previsto. Es un dato del
-      // producto, no de la carnicería, así que no depende de la base.
-      return "Por el momento los pedidos son para retirar por el local.";
     case "stock":
       return await responderStock(carniceriaId, catalogo, productosConsultados ?? []);
     case "sustitutos":
@@ -511,9 +610,122 @@ export async function responderConsulta(params: {
       const tabla = await cargarTablaOcasiones(carniceriaId);
       return armarRecomendacion({ ocasion: o, porCodigo: catalogo.porCodigo, nombrar, tabla }) ?? sinNadaParaOcasion(o);
     }
+    case "aptitud":
+      return ocasion && ocasion !== "general"
+        ? await responderAptitud(carniceriaId, catalogo, productosConsultados ?? [], ocasion, texto ?? "", nombrar)
+        : null;
+    case "que_es":
+      return responderQueEs(catalogo, productosConsultados ?? [], nombrar);
     default:
       return null;
   }
+}
+
+// ------------------------------------------------------------
+// "¿La aguja es buena para estofado?" — con fundamento (01/10/2026)
+// ------------------------------------------------------------
+//
+// El porqué sale de las fichas de conocimientoCortes.ts (oficio de
+// carnicero, escrito a mano: la IA no lo inventa). Si el corte no tiene
+// ficha para esa preparación, se usa la tabla de recomendaciones de la
+// carnicería, sin inventar un porqué. Siempre se dice si hay stock, y si no
+// es lo ideal (o no hay), se ofrece lo que sí sirve y tiene stock.
+
+/** "la aguja", "el vacío", "los chinchulines". */
+function conArticulo(nombre: string): string {
+  const n = nombre.toLowerCase().trim();
+  const primera = n.split(/\s+/)[0];
+  if (/as$/.test(primera)) return `las ${n}`;
+  if (/(os|es)$/.test(primera)) return `los ${n}`;
+  if (/a$/.test(primera)) return `la ${n}`;
+  return `el ${n}`;
+}
+
+function capitalizarPrimera(t: string): string {
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
+async function responderAptitud(
+  carniceriaId: string,
+  catalogo: CatalogoCarniceria,
+  codigos: string[],
+  ocasion: OcasionConcreta,
+  texto: string,
+  nombrar?: (producto: Producto) => string
+): Promise<string | null> {
+  const productos = codigos.map((c) => catalogo.porCodigo.get(c)).filter((p): p is Producto => p != null).slice(0, 2);
+  if (productos.length === 0) return null;
+  const tabla = await cargarTablaOcasiones(carniceriaId);
+  const palabra = palabraDeOcasion(ocasion, texto);
+  const nombreDe = (p: Producto) => (nombrar ? nombrar(p) : p.alias_display ?? p.nombre_display).toLowerCase();
+
+  // Lo que sí sirve para esto y hay hoy (para ofrecer cuando no conviene o no hay).
+  const alternativas = (excluir: Set<string>) =>
+    tabla[ocasion].cortes
+      .map((c) => catalogo.porCodigo.get(c))
+      .filter((p): p is Producto => p != null && p.stock_actual > 0 && !excluir.has(p.id))
+      .slice(0, 3)
+      .map(nombreDe);
+
+  const frases: string[] = [];
+  const excluir = new Set(productos.map((p) => p.id));
+  for (const producto of productos) {
+    const nombre = nombreDe(producto);
+    const hay = producto.stock_actual > 0;
+    const sabido = aptitud(producto.codigo, ocasion);
+    const enLaLista = tabla[ocasion].cortes.includes(producto.codigo) || tabla[ocasion].acompanan.includes(producto.codigo);
+    const apto = sabido ? sabido.apto : enLaLista;
+
+    // El porqué va después de dos puntos: los dos puntos internos del texto
+    // de la ficha pasan a coma, así no queda "...: ...: ...".
+    const motivo = sabido ? sabido.motivo.replace(/:\s*/g, ", ") : "";
+    if (apto) {
+      const porque = sabido ? `: ${motivo}` : "";
+      const si = elegir(["Sí 👌", "Sí, de una.", "¡Sí!"]);
+      frases.push(`${si} ${capitalizarPrimera(conArticulo(nombre))} va muy bien para ${palabra}${porque}.`);
+      if (hay) {
+        // "¿Tienen algo para estofado? ¿Aguja?": se contesta por la aguja y
+        // se nombran un par de opciones más, que es lo que preguntó primero.
+        const otras = /\balgo\b/i.test(texto) ? alternativas(excluir) : [];
+        frases.push(otras.length > 0 ? `Hoy tengo, y también ${enumerarY(otras)}.` : elegir(["Hoy tengo.", "Hoy hay.", "Tengo hoy."]));
+      }
+      if (!hay) {
+        const otras = alternativas(excluir);
+        frases.push(otras.length > 0 ? `Justo hoy no me queda 😕 Para ${palabra} tengo ${enumerar(otras)}.` : "Justo hoy no me queda 😕");
+      }
+    } else {
+      const porque = sabido ? `: ${motivo}` : ".";
+      const otras = alternativas(excluir);
+      frases.push(
+        `${capitalizarPrimera(conArticulo(nombre))} para ${palabra} no es lo ideal${porque}${sabido ? "." : ""}` +
+          (otras.length > 0 ? ` Para eso te recomiendo ${enumerar(otras)}, que tengo hoy.` : "")
+      );
+    }
+  }
+  return frases.join(" ").replace(/\.\./g, ".");
+}
+
+/** "¿Qué es la marucha?" → de dónde sale y para qué va, desde las fichas. */
+function responderQueEs(
+  catalogo: CatalogoCarniceria,
+  codigos: string[],
+  nombrar?: (producto: Producto) => string
+): string | null {
+  const producto = codigos.map((c) => catalogo.porCodigo.get(c)).find((p): p is Producto => p != null);
+  if (!producto) return null;
+  const descripcion = queEs(producto.codigo);
+  if (!descripcion) return null;
+  const nombre = (nombrar ? nombrar(producto) : producto.alias_display ?? producto.nombre_display).toLowerCase();
+  const ficha = Object.keys(FICHAS[producto.codigo]?.bien ?? {});
+  const paraQue = ficha
+    .slice(0, 3)
+    .map((o) => tituloDeOcasion(o as OcasionConcreta).replace(/^Para /, "").replace(/\s*\(.*\)$/, ""));
+  return `${capitalizarPrimera(conArticulo(nombre))} ${descripcion}.${paraQue.length > 0 ? ` Va muy bien para ${enumerarY(paraQue)}.` : ""}`;
+}
+
+function enumerarY(nombres: string[]): string {
+  if (nombres.length <= 1) return nombres[0] ?? "";
+  return `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`;
 }
 
 /**

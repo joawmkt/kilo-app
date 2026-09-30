@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requerirSesion } from "@/lib/panel/sesion";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { despostarLote, terminarDesposte, trozar, type SalidaPesada } from "@/lib/lotes";
+import { despostarLote, pesarDesposteVacuno, terminarDesposte, trozar, type SalidaPesada } from "@/lib/lotes";
 import type { Especie } from "@/lib/especies";
 
 // Acciones del desposte pesado y del trozado.
@@ -55,11 +55,19 @@ export async function accionCargarDesposte(
     return { ok: false, mensaje: "Poné al menos un peso." };
   }
 
-  const resultado = await despostarLote({
-    carniceriaId: sesion.carniceria.id,
-    loteId,
-    salidas,
-  });
+  // La vaca ya tiene sus cortes (estimados): despostarla es ponerles el peso
+  // real. El cerdo no tiene cortes hasta que se desposta: acá nacen.
+  const { data: lote } = await getSupabaseAdmin()
+    .from("recepciones_lote")
+    .select("especie")
+    .eq("id", loteId)
+    .eq("carniceria_id", sesion.carniceria.id)
+    .maybeSingle();
+
+  const resultado =
+    lote?.especie === "vacuno"
+      ? await pesarDesposteVacuno({ carniceriaId: sesion.carniceria.id, loteId, salidas })
+      : await despostarLote({ carniceriaId: sesion.carniceria.id, loteId, salidas });
 
   if (resultado.ok) revalidar();
   return { ok: resultado.ok, mensaje: resultado.mensaje };

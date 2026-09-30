@@ -42,13 +42,14 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 /**
  * Cuánto esperar desde el último mensaje antes de contestar.
  *
- * La especificación dice 20 segundos; el fundador eligió 6 (10/09/2026) para
+ * La especificación dice 20 segundos; el fundador eligió 6 (10/09/2026) y después 3 (01/10: "se hace muy
+ * tedioso conversar con el bot con los 6 actuales") para
  * que el bot no se sienta lento: agrupa las ráfagas reales de WhatsApp, que es
  * el caso que importa, sin dejar al cliente mirando la pantalla.
  *
  * Se puede mover sin tocar código con VENTANA_AGRUPACION_SEGUNDOS.
  */
-export const VENTANA_SEGUNDOS = Number(process.env.VENTANA_AGRUPACION_SEGUNDOS ?? "6");
+export const VENTANA_SEGUNDOS = Number(process.env.VENTANA_AGRUPACION_SEGUNDOS ?? "3");
 
 /**
  * Solo se agrupan mensajes recientes. Si el proceso que tenía que despertarse

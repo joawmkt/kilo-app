@@ -111,7 +111,11 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
       producto.peso_aproximado_unidad_kg !== null
         ? ` [también se puede pedir por unidad, ~${producto.peso_aproximado_unidad_kg}kg c/u]`
         : "";
-    lineasProductos.push(`- ${fila.codigo} (${fila.unidad}): ${vocabulario}${nota}`);
+    // Lo que no tiene stock se marca: la IA no lo puede ofrecer como opción
+    // (01/10/2026). Igual se lista, porque el cliente lo puede nombrar y hay
+    // que entenderlo para decirle que no hay y ofrecerle otra cosa.
+    const sinStock = producto.stock_actual > 0 ? "" : " [SIN STOCK HOY]";
+    lineasProductos.push(`- ${fila.codigo} (${fila.unidad}): ${vocabulario}${nota}${sinStock}`);
   }
 
   // Un término ambiguo solo importa si quedan 2+ productos candidatos activos.
@@ -122,6 +126,13 @@ export async function cargarCatalogo(carniceriaId: string): Promise<CatalogoCarn
   const lineasAmbiguos: string[] = [];
 
   for (const fila of ambiguosRows) {
+    // "Asado" nunca es un término ambiguo entre cortes (el fundador, 01/10:
+    // "ASADO proviene de ASAR... NO ES UN CORTE ESPECÍFICO"). "¿Asado tenés?"
+    // es una pregunta por la parrilla y la contesta el detector de ocasión
+    // (`ocasionPedida`), no una pregunta "¿qué tipo de asado?". Se corta acá,
+    // en código, para que valga aunque la tabla de una carnicería todavía
+    // tenga la fila vieja.
+    if (fila.texto.trim().toLowerCase() === "asado") continue;
     const opcionesActivas = fila.opciones_codigos.filter((c) => porCodigo.has(c));
     if (opcionesActivas.length >= 2) {
       terminosAmbiguos.push({
@@ -331,3 +342,88 @@ export function productosEnTexto(catalogo: CatalogoCarniceria, texto: string): {
     .map(({ codigo, posicion }) => ({ codigo, posicion }));
 }
 
+
+// ============================================================
+// Nunca ofrecer lo que no hay, tampoco en una pregunta (01/10/2026)
+// ============================================================
+//
+// Bug: el cliente dijo "cerdo" y el bot preguntó "¿Cuál de cerdo: asado,
+// costilla, matambre, bondiola, pechito, medallón, milanesa, hamburguesa o
+// chorizo?". Eligió milanesa, el bot le preguntó cuántos kilos, y recién
+// ahí le dijo que no había. El fundador: "¿por qué me ofrece cosas que no
+// tiene en stock?".
+//
+// Las preguntas con opciones las escribe la IA (o salen de la tabla de
+// términos ambiguos). La IA ya recibe qué está sin stock, pero no se confía
+// en eso (Patrón 3): acá se leen las opciones de la pregunta y se sacan las
+// que son productos sin stock. Una opción que no se reconoce como producto
+// se deja (no se puede saber si falta).
+
+function productoPorNombreExacto(catalogo: CatalogoCarniceria, frase: string): Producto | null {
+  const f = normalizar(frase).replace(/[^a-z0-9ñ]+/g, " ").trim();
+  if (!f) return null;
+  for (const producto of catalogo.productos) {
+    for (const palabra of vocabularioDe(producto)) {
+      const v = normalizar(palabra).replace(/[^a-z0-9ñ]+/g, " ").trim();
+      if (v && (f === v || f === `${v}s` || f === `${v}es` || `${f}s` === v)) return producto;
+    }
+  }
+  return null;
+}
+
+function enumerarConO(opciones: string[]): string {
+  if (opciones.length <= 1) return opciones[0] ?? "";
+  return `${opciones.slice(0, -1).join(", ")} o ${opciones[opciones.length - 1]}`;
+}
+
+/**
+ * La pregunta sin las opciones que no tienen stock. Devuelve la misma
+ * pregunta si no había nada que sacar, y `null` si TODAS las opciones eran
+ * productos sin stock (quien llama dice que no hay, en vez de preguntar).
+ *
+ *   "¿Cuál de cerdo: bondiola, milanesa o chorizo?" (sin milanesa de cerdo)
+ *     → "¿Cuál de cerdo: bondiola o chorizo?"
+ *   "¿Milanesa de carne, de pollo o de cerdo?" (sin la de carne)
+ *     → "¿Milanesa de pollo o de cerdo?"
+ */
+export function sinOpcionesAgotadas(pregunta: string, catalogo: CatalogoCarniceria): string | null {
+  const m = /¿([^¿?]+)\?/.exec(pregunta);
+  if (!m) return pregunta;
+  const cuerpo = m[1];
+  const dosPuntos = cuerpo.indexOf(":");
+  const cabeza = dosPuntos >= 0 ? cuerpo.slice(0, dosPuntos + 1) : "";
+  const lista = (dosPuntos >= 0 ? cuerpo.slice(dosPuntos + 1) : cuerpo).trim();
+  const opciones = lista.split(/\s*,\s*|\s+o\s+/).map((o) => o.trim()).filter(Boolean);
+  if (opciones.length < 2) return pregunta;
+
+  // El contexto que completa cada opción: "¿Cuál de cerdo: milanesa...?" →
+  // "milanesa de cerdo"; "¿Milanesa de carne, de pollo...?" → "milanesa de pollo".
+  const sufijo = /\bde\s+(cerdo|pollo|vaca|carne|ternera)\b/i.exec(cabeza)?.[0] ?? "";
+  const sustantivo = dosPuntos < 0 ? (/^([a-záéíóúñ ]+?)\s+de\s+/i.exec(opciones[0])?.[1] ?? "") : "";
+
+  const agotada = (opcion: string): boolean => {
+    const candidatos = [
+      sufijo ? `${opcion} ${sufijo}` : "",
+      sustantivo && /^de\s/i.test(opcion) ? `${sustantivo} ${opcion}` : "",
+      opcion,
+    ].filter(Boolean);
+    for (const c of candidatos) {
+      const producto = productoPorNombreExacto(catalogo, c);
+      if (producto) return !(producto.stock_actual > 0);
+    }
+    return false;
+  };
+
+  const quedan = opciones.filter((o) => !agotada(o));
+  if (quedan.length === opciones.length) return pregunta;
+  if (quedan.length === 0) return null;
+
+  // Si se fue la primera ("Milanesa de carne"), el sustantivo pasa a la nueva primera.
+  if (sustantivo && !quedan[0].toLowerCase().startsWith(sustantivo.toLowerCase()) && /^de\s/i.test(quedan[0])) {
+    quedan[0] = `${sustantivo} ${quedan[0]}`;
+  }
+  let nuevaLista = enumerarConO(quedan);
+  if (!cabeza) nuevaLista = nuevaLista.charAt(0).toUpperCase() + nuevaLista.slice(1);
+  const nuevoCuerpo = cabeza ? `${cabeza} ${nuevaLista}` : nuevaLista;
+  return pregunta.replace(m[0], `¿${nuevoCuerpo}?`);
+}

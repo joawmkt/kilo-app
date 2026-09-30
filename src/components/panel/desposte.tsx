@@ -36,7 +36,12 @@ export type LoteAbierto = {
   /** Los cortes que ya se cargaron, para mostrarlos (y que no se repitan). */
   cargados: { nombre: string; kg: number }[];
   /** Solo los cortes que TODAVÍA no se cargaron de esta media res. */
-  sugeridos: { codigo: string; nombre: string; esSubproducto: boolean }[];
+  sugeridos: { codigo: string; nombre: string; esSubproducto: boolean; estimadoKg?: number }[];
+  /**
+   * "desposte" (cerdo): los cortes nacen al pesarlos. "pesar_estimados"
+   * (vaca): los cortes ya existen estimados y el peso real los reemplaza.
+   */
+  modo?: "desposte" | "pesar_estimados";
 };
 
 export type PrecargaPollo = {
@@ -97,7 +102,7 @@ function FormularioDesposte({ lotes }: { lotes: LoteAbierto[] }) {
       <Tarjeta>
         <EstadoVacio
           titulo="No hay lotes esperando desposte"
-          descripcion="Cuando cargues una media res de cerdo, va a aparecer acá para que le pongas los pesos."
+          descripcion="Cuando cargues una media res (de vaca o de cerdo), va a aparecer acá para que le pongas los pesos."
         />
       </Tarjeta>
     );
@@ -105,6 +110,7 @@ function FormularioDesposte({ lotes }: { lotes: LoteAbierto[] }) {
 
   const cargandoAhora = Object.values(valores).reduce((suma, v) => suma + aNumero(v), 0);
   const seVaDelPeso = cargandoAhora > lote.restanteKg * MARGEN_BALANZA;
+  const esVaca = lote.modo === "pesar_estimados";
 
   return (
     <Tarjeta>
@@ -158,8 +164,17 @@ function FormularioDesposte({ lotes }: { lotes: LoteAbierto[] }) {
           )}
         </div>
 
+        {esVaca && lote.sugeridos.length > 0 && (
+          <p className="text-sm text-ink-3">
+            Los cortes de la vaca ya están cargados con el peso estimado (el número gris). Poné el real de los que pesaste:
+            reemplaza al estimado y va afinando tu tabla. Lo que no peses, queda como estaba.
+          </p>
+        )}
+
         {lote.sugeridos.length === 0 ? (
-          <p className="text-sm text-ink-2">Ya cargaste todos los cortes de esta media res.</p>
+          <p className="text-sm text-ink-2">
+            {esVaca ? "Ya pesaste todos los cortes de esta media res." : "Ya cargaste todos los cortes de esta media res."}
+          </p>
         ) : (
           <div className="flex flex-col gap-2">
             {lote.sugeridos.map((producto) => (
@@ -177,7 +192,9 @@ function FormularioDesposte({ lotes }: { lotes: LoteAbierto[] }) {
           <p className={`text-sm ${seVaDelPeso ? "text-danger" : "text-ink-3"}`} role="status">
             {seVaDelPeso
               ? `Eso suma ${kg(cargandoAhora)} kg y a esta media res le quedan ${kg(lote.restanteKg)} kg. Revisá los pesos.`
-              : `Estás cargando ${kg(cargandoAhora)} kg. Van a quedar ${kg(Math.max(0, lote.restanteKg - cargandoAhora))} kg por despostar.`}
+              : esVaca
+                ? `Estás pesando ${kg(cargandoAhora)} kg.`
+                : `Estás cargando ${kg(cargandoAhora)} kg. Van a quedar ${kg(Math.max(0, lote.restanteKg - cargandoAhora))} kg por despostar.`}
           </p>
         )}
 
@@ -195,16 +212,19 @@ function FormularioDesposte({ lotes }: { lotes: LoteAbierto[] }) {
           >
             {pendiente ? "Guardando..." : "Guardar lo que pesé"}
           </button>
-          <button
-            type="button"
-            disabled={pendiente}
-            onClick={() => {
-              iniciar(async () => setResultado(await accionTerminarDesposte(lote.id)));
-            }}
-            className={clasesBoton("secundario")}
-          >
-            Terminé de despostar
-          </button>
+          {/* En la vaca no hay "terminé": lo no pesado sigue estimado, no es merma. */}
+          {!esVaca && (
+            <button
+              type="button"
+              disabled={pendiente}
+              onClick={() => {
+                iniciar(async () => setResultado(await accionTerminarDesposte(lote.id)));
+              }}
+              className={clasesBoton("secundario")}
+            >
+              Terminé de despostar
+            </button>
+          )}
         </div>
       </form>
     </Tarjeta>
@@ -321,7 +341,7 @@ function FilaPeso({
   valor,
   onCambio,
 }: {
-  producto: { codigo: string; nombre: string; esSubproducto: boolean };
+  producto: { codigo: string; nombre: string; esSubproducto: boolean; estimadoKg?: number };
   valor: string;
   onCambio: (valor: string) => void;
 }) {
@@ -336,7 +356,7 @@ function FilaPeso({
         inputMode="decimal"
         value={valor}
         onChange={(evento) => onCambio(evento.target.value)}
-        placeholder="kg"
+        placeholder={producto.estimadoKg ? `~${kg(producto.estimadoKg)}` : "kg"}
         className="min-h-11 w-28 rounded-tarjeta border border-border bg-surface px-3 text-right text-base text-ink"
       />
       {producto.esSubproducto && (

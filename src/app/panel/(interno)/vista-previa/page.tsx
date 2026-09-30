@@ -59,8 +59,8 @@ const PEDIDO_PENDIENTE: PedidoDelPanel = {
     },
     {
       producto_id: "p3",
-      producto_codigo: "costilla",
-      nombre_display: "Costilla",
+      producto_codigo: "entrana",
+      nombre_display: "Entraña",
       cantidad: 3,
       unidad: "kg",
       disponible: false,
@@ -94,9 +94,10 @@ const PEDIDOS_HISTORIAL: PedidoDelPanel[] = [
 ];
 
 const PRODUCTOS: ProductoDelPanel[] = [
-  producto("asado", "Asado", "vacuno_parrilla", 18.5, 12900, "disponible"),
+  // Sin "asado": desde el 01/10/2026 es costilla (ver migración 0031).
+  producto("costilla", "Costilla", "vacuno_parrilla", 18.5, 12900, "disponible"),
   producto("vacio", "Vacío", "vacuno_parrilla", 2, 15400, "poco"),
-  producto("costilla", "Costilla", "vacuno_parrilla", 0, 11200, "sin_stock"),
+  producto("entrana", "Entraña", "vacuno_parrilla", 0, 11200, "sin_stock"),
   producto("matambre", "Matambre", "vacuno_parrilla", 7.5, null, "disponible"),
   producto("milanesa_de_nalga", "Milanesa de nalga", "vacuno_milanesa", 12, 16800, "disponible"),
   producto("pollo_entero", "Pollo entero", "pollo", 9, 6400, "disponible"),
